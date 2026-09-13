@@ -9,11 +9,11 @@
         "@tanstack/ai-opencode": "^0.4.5",
         "@tanstack/ai-sandbox": "^0.5.7",
         "@tanstack/ai-sandbox-local-process": "^0.2.5",
+        "effect": "4.0.0-rc.115",
       },
       "devDependencies": {
         "@effect/tsgo": "^0.45.0",
         "@types/bun": "latest",
-        "effect": "4.0.0-rc.115",
         "oxfmt": "^0.67.0",
         "oxlint": "^1.82.0",
         "oxlint-tsgolint": "^7.0.2001",
