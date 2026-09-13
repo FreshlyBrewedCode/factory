@@ -164,29 +164,39 @@ type in ADR 0003 (D20). What remains is the run engine and the CLI.
   written, and correlation moved to runtime-assigned ids.
 - ~~Promote the corpora to committed fixtures.~~ `test/corpus/`, which also unblocks the
   replay adapter.
+- ~~Make the fake adapter a corpus replayer.~~ `src/replay/adapter.ts` — `createCorpusReplayAdapter`
+  (contiguous per-step blocks, verified no interleaving) plus `createSlowFakeAdapter` for
+  cancellation timing control.
+- ~~Build the run engine.~~ `src/workflow.ts` (`defineWorkflow`, the six-member `ctx`) +
+  `src/runtime/run.ts` (`startRun`, `seq`/`stepId`/`execId` allocation, tier-1/tier-2
+  structured-output extraction, `RunEvent` emission).
+- ~~Unify on Effect `Schema`.~~ `workflow.ts` re-exports `Schema`; `AgentCallOptions.output`,
+  `WorkflowConfig`/`WorkflowDefinition` `input`/`output` are all `Schema.Codec<T, E>` (not
+  `Schema.Schema<T>` — Effect v4 RC's `decodeUnknownSync` needs `DecodingServices = never`,
+  which only `Codec` gives by default), converted to JSON Schema only at `ctx.agent`'s
+  `outputSchema` boundary.
+- ~~Harvest, don't rewrite.~~ `exec`/`writeback.ts`/`tree-snapshot.ts`/`clone.ts` were already
+  in `src/lib/`; `fullRoundTrip` is now `workflows/implement-issue.ts` on the `defineWorkflow`
+  surface. `src/spike/` deleted in one commit per ADR 0001 §5.
+- ~~Run the sandbox-reuse nonce probe.~~ `docs/findings/2-sandbox-reuse-nonce-probe.md` —
+  confirmed live, three runs: a nonce written in session 1 is read back correctly by session 2
+  (same `threadId`/`dir`, no shared transcript), both via the read tool's own
+  `TOOL_CALL_RESULT` and a direct host filesystem check.
+- ~~Pin the cancellation guarantee with a test.~~ `src/runtime/run.test.ts` — asserts Factory's
+  own `RunOutcome.outcome === "cancelled"` and an `AgentStepFinished{outcome:"cancelled"}`
+  event (never `RunFailed`), using `createSlowFakeAdapter` for deterministic timing.
 
 **Next:**
 
-- **Make the fake adapter a corpus replayer.** Real recorded chunks beat a stub hand-written
-  from docs that phase 0 already disproved, and it makes workflows testable under `bun test`
-  without burning tokens. The fixtures are in place; this reads them.
-- **Build the run engine**: `defineWorkflow` + the six-member `ctx`, emitting `RunEvent`s.
-  The engine owns `seq`, `stepId`/`execId` allocation, and the tier-1/tier-2 structured-output
-  extraction ADR 0002 assigns to the runtime.
-- **Harvest, don't rewrite**: `exec` returning exit codes, `writeback.ts` (with its artifact
-  cleanup and hard-fail), the `Stream.fromAsyncIterable` + `Effect.onInterrupt` wiring, and
-  the marker-based tree assertions are all tested against reality. Lift them, then delete
-  `src/spike/` in one commit.
-- **Run the sandbox-reuse nonce probe early** — D10 rests on it and it is ~20 lines.
-- **Unify on Effect `Schema`** for D5's input schema and D11's output schema, converting to
-  JSON Schema only at the `outputSchema` boundary, so phase 2 does not inherit two validators.
-- **Pin the cancellation guarantee with a test.** It currently rests on Effect internals
-  (`Channel.fromAsyncIterable`'s finalizer) on an RC version; a regression test turns that into
-  a contract that fails loudly on upgrade. D20 makes this sharper: since the harness emits
-  nothing on abort, the test must assert Factory's own `RunCancelled`/`cancelled` outcome.
+- **CLI: `factory run <workflow.ts>`.** Dynamic-import a workflow module, prepare/clone the
+  dir, run it against the real opencode adapter, stream `RunEvent`s to stdout + an NDJSON file,
+  handle `SIGINT` → `cancel()`.
 - Cheap and worth doing here: run the same workflow under `claudeCodeText` to see what a
   journal would have bought us, before D12 hardens into an assumption. D20 also wants this as
   the first real test of the opaque-passthrough bet.
+- The phase-1 exit criterion's live leg (a real implement → test → review workflow against
+  opencode, pushing a branch and opening a real PR) needs explicit user confirmation before it
+  runs — it is the one hard-to-revert, shared-state action in this phase.
 
 **Exit:** a real implement → test → review workflow runs end-to-end against opencode, **and**
 the same workflow runs green under the corpus-replay adapter in `bun test`.
@@ -227,11 +237,16 @@ cancellation correctness.
 
 1. Read `src/events.ts` and ADR 0003. It is the spine everything else in phase 1 hangs off,
    and its comments carry the corpus evidence for each non-obvious field.
-2. Read ADR 0001 §5 ("What phase 1 inherits and must not rediscover") before touching
-   `src/spike/`.
-3. Build the corpus-replay fake adapter over `test/corpus/`, then `defineWorkflow` + the run
-   context against it, lifting the spike per ADR 0002.
-4. Run the sandbox-reuse nonce probe and record the answer in `docs/findings/`.
-5. File the two root-caused library bugs upstream, so D16's workaround can eventually go. The
+2. Read ADR 0001 §5 ("What phase 1 inherits and must not rediscover") — `src/spike/` itself is
+   now deleted; the ADR is the record of what it proved.
+3. ~~Build the corpus-replay fake adapter over `test/corpus/`, then `defineWorkflow` + the run
+   context against it, lifting the spike per ADR 0002.~~ Done — `src/replay/adapter.ts`,
+   `src/workflow.ts`, `src/runtime/run.ts`, `workflows/implement-issue.ts`.
+4. ~~Run the sandbox-reuse nonce probe and record the answer in `docs/findings/`.~~ Done —
+   `docs/findings/2-sandbox-reuse-nonce-probe.md`.
+5. Build the CLI (`factory run <workflow.ts>`), then confirm with the user before running
+   `workflows/implement-issue.ts` live against opencode for the phase-1 exit criterion (pushes
+   a branch, opens a real PR — the one hard-to-revert action in this phase).
+6. File the two root-caused library bugs upstream, so D16's workaround can eventually go. The
    marker-path one now has a second symptom worth citing: it pollutes the `sandbox.file` event
    stream with `/workspace` + host-absolute paths (finding 8).

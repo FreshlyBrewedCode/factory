@@ -22,5 +22,6 @@ Conclusions → [`adr/0001-write-back-isolation-effect-boundary.md`](../adr/0001
 | Document | Subtask | Headline finding |
 |---|---|---|
 | [`1-event-type-corpus-analysis.md`](./1-event-type-corpus-analysis.md) | D3's event type, designed against the nine recorded NDJSON corpora | Chunk timestamps are not a valid ordering key — `sandbox.file` chunks are back-dated by up to 1473 ms because they carry an mtime — and cancellation emits no chunk at all, so both ordering and termination must be Factory's to record. The chunks themselves are AG-UI protocol, whose transport and client TanStack already ships. |
+| [`2-sandbox-reuse-nonce-probe.md`](./2-sandbox-reuse-nonce-probe.md) | D10 in isolation: does the working tree survive a fresh-session boundary, independent of any workflow's own prompts? | Confirmed, live, three runs: a nonce written to disk by session 1 was read back correctly by session 2 (same `threadId`/`dir`, no shared transcript) — both from the read tool's own `TOOL_CALL_RESULT` and from the host filesystem directly. |
 
-Conclusions → [`adr/0003-run-event-type.md`](../adr/0003-run-event-type.md).
+Conclusions → [`adr/0003-run-event-type.md`](../adr/0003-run-event-type.md) (D10 itself is recorded in `STATUS.md`'s decision table; this probe adds confirming evidence, no new decision).
