@@ -12,7 +12,7 @@
  * 2. Fiber interruption is bridged to the adapter's explicit cancel — the
  *    actual point of this file.
  *
- * WHY BRIDGING IS NEEDED (F4, docs/phase0-findings.md 0a-1/0a-2): closing
+ * WHY BRIDGING IS NEEDED (F4, docs/findings/ 0a-1 and 0a-2): closing
  * the IO stream does not terminate the opencode process; only an explicit
  * `AbortController.abort()` does, and even that is indirect, not a direct
  * kill signal. Read directly from

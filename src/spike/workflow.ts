@@ -60,7 +60,7 @@ const TRACKED_FILES = ["src/index.ts", "src/index.test.ts"] as const;
  * Substrings that must still be present in each tracked file after the fix
  * step for "step 2's contribution survived" to be considered true, above
  * and beyond "the file wasn't literally reverted to the seed". Chosen from
- * the actual 0a-1/0a-2 implement-step output (`docs/phase0-findings.md`,
+ * the actual 0a-1/0a-2 implement-step output (`docs/findings/0a-1-single-agent-step.md`,
  * `gh pr diff`), not guessed.
  */
 const REQUIRED_MARKERS: Readonly<Record<string, ReadonlyArray<string>>> = {

@@ -4,7 +4,7 @@
  * branch name and commit message; the agent only ever supplies `{title,
  * body}` for the PR (D11), which is passed in, not generated here.
  *
- * Stray-artifact hazard (see docs/phase0-findings.md "0a-1" finding #5):
+ * Stray-artifact hazard (see docs/findings/0a-1-single-agent-step.md finding #5):
  * merely configuring `defineWorkspace(...)` under `localProcessSandbox`
  * leaves a `.tanstack-projected-<hash>` marker file nested under a bogus
  * `data/...` path in the tree, untracked. `cleanStrayArtifacts` removes it

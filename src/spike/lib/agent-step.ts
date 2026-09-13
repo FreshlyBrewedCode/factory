@@ -4,7 +4,7 @@
  * streams. D10: never pass `modelOptions.sessionId` — every step gets a
  * fresh harness session; the tree (not the transcript) is the shared state.
  *
- * Workspace-source note (see docs/phase0-findings.md "0a-1" for the full
+ * Workspace-source note (see docs/findings/0a-1-single-agent-step.md for the full
  * evidence): `localProcessSandbox({ dir })` is what actually pins the
  * sandbox at a host directory. `workspace.source` is set to `{ type: 'none'
  * }` deliberately — `{ type: 'local', path }` looks like the documented
