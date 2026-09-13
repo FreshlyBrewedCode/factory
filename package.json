@@ -10,6 +10,12 @@
     "lint": "oxlint",
     "format": "oxfmt src package.json tsconfig.json .oxlintrc.json"
   },
+  "dependencies": {
+    "@tanstack/ai": "^0.54.0",
+    "@tanstack/ai-opencode": "^0.4.5",
+    "@tanstack/ai-sandbox": "^0.5.7",
+    "@tanstack/ai-sandbox-local-process": "^0.2.5"
+  },
   "devDependencies": {
     "@effect/tsgo": "^0.45.0",
     "@types/bun": "latest",
