@@ -185,12 +185,15 @@ type in ADR 0003 (D20). What remains is the run engine and the CLI.
 - ~~Pin the cancellation guarantee with a test.~~ `src/runtime/run.test.ts` — asserts Factory's
   own `RunOutcome.outcome === "cancelled"` and an `AgentStepFinished{outcome:"cancelled"}`
   event (never `RunFailed`), using `createSlowFakeAdapter` for deterministic timing.
+- ~~Build the CLI: `factory run <workflow.ts>`.~~ `src/cli.ts` — dynamic-imports a workflow
+  module's default export, optionally clones a fresh working tree, runs it through `startRun`
+  with an injectable `AgentAdapter`, streams `RunEvent`s to stdout + an NDJSON file via Bun's
+  `FileSink`, and maps `SIGINT` to the runtime's own `cancel()` rather than a process kill.
+  `src/cli.test.ts` exercises the real logic (import, dir/clone handling, NDJSON writing,
+  exit-code mapping) against `createSlowFakeAdapter`, no live opencode calls.
 
 **Next:**
 
-- **CLI: `factory run <workflow.ts>`.** Dynamic-import a workflow module, prepare/clone the
-  dir, run it against the real opencode adapter, stream `RunEvent`s to stdout + an NDJSON file,
-  handle `SIGINT` → `cancel()`.
 - Cheap and worth doing here: run the same workflow under `claudeCodeText` to see what a
   journal would have bought us, before D12 hardens into an assumption. D20 also wants this as
   the first real test of the opaque-passthrough bet.
@@ -244,7 +247,8 @@ cancellation correctness.
    `src/workflow.ts`, `src/runtime/run.ts`, `workflows/implement-issue.ts`.
 4. ~~Run the sandbox-reuse nonce probe and record the answer in `docs/findings/`.~~ Done —
    `docs/findings/2-sandbox-reuse-nonce-probe.md`.
-5. Build the CLI (`factory run <workflow.ts>`), then confirm with the user before running
+5. ~~Build the CLI (`factory run <workflow.ts>`).~~ Done — `src/cli.ts`, `src/cli.test.ts`,
+   `test/fixtures/echo-workflow.ts`. Confirm with the user before running
    `workflows/implement-issue.ts` live against opencode for the phase-1 exit criterion (pushes
    a branch, opens a real PR — the one hard-to-revert action in this phase).
 6. File the two root-caused library bugs upstream, so D16's workaround can eventually go. The
