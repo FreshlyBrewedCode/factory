@@ -12,10 +12,12 @@ Phase 0 was a spike, not architecture: three runs (0a-1, 0a-2, 0b) against a rea
 `FreshlyBrewedCode/factory-spike`, under commits `167744d`, `cd3b241`, `b752f0b`, `49b41df`,
 `22d1961`. It produced a real PR
 ([`factory-spike#3`](https://github.com/FreshlyBrewedCode/factory-spike/pull/3)) and a
-1059-line evidence log, `docs/phase0-findings.md`, which this ADR distills. Every claim below
-cites a specific section of that log (`0a-1 finding #N`, `0a-2 "<heading>"`, `0b A<N>`) or a
-`src/spike/**` file. Where the spike was inconclusive, this ADR says so — it does not upgrade a
-caveat into a confident statement.
+1059-line evidence log — since split into one document per subtask under `docs/findings/`
+(`docs/findings/0a-1-single-agent-step.md`, `docs/findings/0a-2-round-trip.md`,
+`docs/findings/0b-effect-boundary.md`; index at `docs/findings/README.md`) — which this ADR
+distills. Every claim below cites a specific section of that log (`0a-1 finding #N`, `0a-2
+"<heading>"`, `0b A<N>`) or a `src/spike/**` file. Where the spike was inconclusive, this ADR
+says so — it does not upgrade a caveat into a confident statement.
 
 `STATUS.md` named four things this ADR must record: the write-back strategy as tested, the
 isolation model, the Effect boundary, and which open questions turned out to be wrong. It
@@ -286,7 +288,9 @@ run context, and D3's event type directly against recorded evidence instead of d
 
 ## References
 
-- `docs/phase0-findings.md` — primary evidence log (sections `0a-1`, `0a-2`, `0b`)
+- `docs/findings/0a-1-single-agent-step.md`, `docs/findings/0a-2-round-trip.md`,
+  `docs/findings/0b-effect-boundary.md` — primary evidence log, split one document per subtask
+  (index: `docs/findings/README.md`)
 - `STATUS.md` — D1-D14, F1-F5, phase 0 plan and exit criterion
 - `src/spike/workflow.ts`, `src/spike/lib/writeback.ts`, `src/spike/lib/tree-snapshot.ts`,
   `src/spike/lib/effect-agent-step.ts`, `src/spike/effect-boundary-experiment.ts` — code as built
