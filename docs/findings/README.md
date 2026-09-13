@@ -1,8 +1,13 @@
-# Phase 0 findings
+# Findings
 
-Evidence log for the phase-0 spike work described in `STATUS.md`, split into one document per
-spike subtask. Each is written for a reader who was not there — every claim cites the exact
-source file/line or the exact NDJSON/`ps`/`git` output it's based on, not just "the docs say".
+Evidence log for the spike and design work described in `STATUS.md`, one document per subtask.
+Each is written for a reader who was not there — every claim cites the exact source file/line or
+the exact NDJSON/`ps`/`git` output it's based on, not just "the docs say".
+
+Conclusions drawn from this evidence live in `docs/adr/`, not here, so that a wrong conclusion
+can be revised without losing the measurements.
+
+## Phase 0 — spike
 
 | Document | Subtask | Headline finding |
 |---|---|---|
@@ -10,7 +15,12 @@ source file/line or the exact NDJSON/`ps`/`git` output it's based on, not just "
 | [`0a-2-round-trip.md`](./0a-2-round-trip.md) | The full eight-step round trip: clone, implement, test, fix, test, PR metadata, write-back, open PR | The round trip ran green end-to-end and opened a real PR with agent-generated title/body (tier 1, confirmed at runtime); the strengthened step-4 assertion confirmed the fix step's own sandbox re-bootstrap does not destroy or revert tracked files. |
 | [`0b-effect-boundary.md`](./0b-effect-boundary.md) | The Effect v4 ↔ TanStack AI boundary: does fiber interruption kill the opencode process? | Interruption reliably killed the process in all 4 runs — but it also died in the control condition with no explicit `abort()` wired, via `Stream.fromAsyncIterable`'s own scope-finalizer, refining (not confirming as originally stated) fact F4. |
 
-The conclusions drawn from this evidence — the write-back strategy, the isolation model, the
-Effect boundary decision, and which pre-phase-0 open questions turned out to be wrong — live in
-[`docs/adr/0001-write-back-isolation-effect-boundary.md`](../adr/0001-write-back-isolation-effect-boundary.md),
-not here.
+Conclusions → [`adr/0001-write-back-isolation-effect-boundary.md`](../adr/0001-write-back-isolation-effect-boundary.md).
+
+## Phase 1 — workflow runtime
+
+| Document | Subtask | Headline finding |
+|---|---|---|
+| [`1-event-type-corpus-analysis.md`](./1-event-type-corpus-analysis.md) | D3's event type, designed against the nine recorded NDJSON corpora | Chunk timestamps are not a valid ordering key — `sandbox.file` chunks are back-dated by up to 1473 ms because they carry an mtime — and cancellation emits no chunk at all, so both ordering and termination must be Factory's to record. The chunks themselves are AG-UI protocol, whose transport and client TanStack already ships. |
+
+Conclusions → [`adr/0003-run-event-type.md`](../adr/0003-run-event-type.md).

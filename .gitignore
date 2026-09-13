@@ -36,3 +36,8 @@ report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json
 # factory spike working dir + raw run dumps (D14)
 .factory/
 *.ndjson
+
+# ...except the recorded corpora promoted to committed test fixtures. D3's
+# event type is designed against these (ADR 0003) and phase 1's corpus-replay
+# adapter reads them, so they have to survive a fresh checkout. 128K total.
+!test/corpus/*.ndjson

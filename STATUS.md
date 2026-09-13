@@ -1,6 +1,7 @@
 # STATUS
 
-> **Phase 0 complete. Phase 1 (workflow runtime) is next.**
+> **Phase 0 complete. Phase 1 (workflow runtime) in progress — the authoring surface is
+> settled (ADR 0002, D19) and D3's event type now exists (ADR 0003, D20).**
 > The spike ran the full round trip unattended against a real repository and opened
 > [factory-spike#3](https://github.com/FreshlyBrewedCode/factory-spike/pull/3).
 
@@ -9,30 +10,35 @@ we have decided, and what is still unknown.
 
 | | |
 |---|---|
-| Conclusions | `docs/adr/0001-write-back-isolation-effect-boundary.md` |
-| Spike evidence | `docs/findings/` (one document per subtask) |
+| Conclusions | `docs/adr/0001-write-back-isolation-effect-boundary.md` (phase 0) · `0002-workflow-authoring-surface.md` (authoring syntax) · `0003-run-event-type.md` (D3's event type) |
+| Evidence | `docs/findings/` (one document per subtask) |
 | Pre-spike reading | `docs/research/2026-09-13-pre-spike-reading.md` (annotated where the spike overturned it) |
 
 ## Where we are
 
-A starved scaffold plus a **throwaway** spike that ran end to end. Nothing production-shaped
-exists yet: no `defineWorkflow`, no event type, no persistence, no server, no UI.
+A starved scaffold, a **throwaway** spike that ran end to end, and the first production-shaped
+piece: D3's event type. Still missing: `defineWorkflow`, the run engine, persistence, the
+server, the UI.
 
 ### On disk
 
 | Path | What it is | Fate |
 |---|---|---|
+| `src/events.ts`, `src/events.test.ts` | **D3's event type** (ADR 0003) and its corpus-validation suite. 22 tests, green | keep — the spine |
+| `test/corpus/` | The nine recorded NDJSON corpora, promoted out of gitignored `.factory/runs/` into committed fixtures (128 KB) | keep — tests and the replay adapter both read these |
 | `src/index.ts`, `src/index.test.ts` | 0c smoke test, proving `bun test` runs. Its function happens to be named `slugify`, unrelated to the spike target — a coincidence, not a dependency | replace in phase 1 |
-| `src/spike/` | The 0a/0b spike: workflow script → lib utilities → runtime (the D13 seam) | harvest the four proven pieces, then delete — see ADR §5 |
+| `src/spike/` | The 0a/0b spike: workflow script → lib utilities → runtime (the D13 seam) | harvest the four proven pieces, then delete — see ADR 0001 §5 |
 | `docs/adr/`, `docs/findings/`, `docs/research/` | Decisions, evidence, reading notes | keep |
-| `.factory/` | gitignored: the host-side clone and the NDJSON run corpora | keep (regenerable) |
+| `.factory/` | gitignored: the host-side clone and the raw run dumps | keep (regenerable) |
 
 Toolchain: bun 1.4.2, oxfmt, oxlint (type-aware, `@effect/tsgo` rules active and verified
 firing). Scripts: `test`, `typecheck`, `lint`, `format`. **`format` is deliberately scoped to
-explicit paths** — a bare `oxfmt .` reformats Markdown, including this file.
+explicit paths** — a bare `oxfmt .` reformats Markdown, including this file. `src/events.ts` is
+lint-clean; the remaining warnings are all in `src/spike/`, which gets deleted.
 
-Dependencies: `@tanstack/ai`, `-opencode`, `-sandbox`, `-sandbox-local-process` all `^0.4.4`;
-`effect` `4.0.0-rc.115` (no stable v4 exists yet — recheck before phase 2).
+Dependencies (verified against `node_modules` 2026-09-14, not just the manifest):
+`@tanstack/ai` `0.54.0`, `-opencode` `0.4.5`, `-sandbox` `0.5.7`, `-sandbox-local-process`
+`0.2.5`; `effect` `4.0.0-rc.115` (no stable v4 exists yet — recheck before phase 2).
 
 ### What phase 0 proved
 
@@ -71,13 +77,13 @@ persistence was never enabled, so F5's claim about it remains unverified.
 ## Decisions
 
 D1–D6 from the first research pass, D7–D14 from the pre-spike design session, D15–D18 forced
-by phase 0's findings.
+by phase 0's findings, D19 from the pre-phase-1 design session, D20 from the corpus analysis.
 
 | # | Decision | Rationale |
 |---|---|---|
 | D1 | **Workflows are imperative**, plain `async (ctx) => {...}` TypeScript — no step graph, no declarative DSL. | This is what makes sandcastle pleasant. |
 | D2 | **Factory owns git write-back** (branch / commit / push / PR). TanStack AI provides inbound only. | Forced by the write-back gap. Also fits dispatch better than `merge-to-head`: the PR is exactly what the blocker check in the wayful script reads. |
-| D3 | **One typed, append-only run-event log is the spine** shared by all three columns — runtime emits, sqlite stores, SSE replays, SPA renders. Define the event type in phase 1, before anything persists it. | Keeps the UI a thin client. Phase 0 strengthened this: the harness emits nothing about exec results, assertions or write-back, so our log is the only replay path that will ever exist. |
+| D3 | **One typed, append-only run-event log is the spine** shared by all three columns — runtime emits, sqlite stores, SSE replays, SPA renders. Define the event type in phase 1, before anything persists it. *(Done — D20 / ADR 0003.)* | Keeps the UI a thin client. Phase 0 strengthened this: the harness emits nothing about exec results, assertions or write-back, so our log is the only replay path that will ever exist. |
 | D4 | **Effect owns the server** (lifecycle, sqlite, dispatch, scheduling). Workflow authoring stays plain async TS. The runtime is the bridge. | Effect-ifying the authoring surface costs the ergonomics that are the point of column 1. |
 | D5 | Workflow modules export **`id` + input schema + the function** — a registration surface, not a step graph. | The daemon must enumerate and validate workflows without executing arbitrary files. |
 | D6 | **Web UI deferred to phase 4; the HTTP/SSE API ships in phase 3** alongside a `factory watch` CLI. | Keeps the slice vertical without paying SPA cost early, and proves the API before a client depends on it. |
@@ -93,6 +99,8 @@ by phase 0's findings.
 | D16 | **Keep `defineWorkspace(...)` configured under `localProcessSandbox`, and clean the resulting stray `.tanstack-projected-*` / `data/` artifact before staging.** | A `workspace` object is required to get `lifecycle.reuse:'thread'` at all. The artifact is a reproducible library bug, not something workflow authors should know about — write-back owns the cleanup and hard-fails if any survives. |
 | D17 | **Keep the explicit `Effect.onInterrupt` → `abortController.abort()` wiring**, even though 0b showed `Stream.fromAsyncIterable`'s implicit `.return()`-on-scope-close was sufficient in the tested case. | Cheap, never harmful, and covers the untested non-cooperative-abort case. |
 | D18 | **Use `Schema.TaggedError<T>()(tag, fields)` over `Data.TaggedError`** for typed errors crossing the Effect boundary. | Matches current v4 guidance and the `effecttsgo` lint rules. |
+| D19 | **Workflow authoring surface: `defineWorkflow(id, {input, output?, agent?, run})` with a six-member `ctx` (`dir`, `agent`, `exec`, `assert`, `log`, `writeBack`).** Ownership rule: the runtime owns the tree, the log, and cancellation; the workflow owns everything else. `ctx.assert` records a callback's outcome as a typed event but never throws; `ctx.log` is the generic escape hatch. | ADR 0002, designed against the spike's proven seam. Resolves the `ctx.agent()`-vs-`agentStep` naming drift and gives D3's event type a settled emission surface. Pre-implementation — phase 1's exit criterion falsifies it cheaply (in-memory, nothing persisted). Write-back on `ctx` is a border case with a stated demotion trigger: the first second workflow. |
+| D20 | **D3's event type: a typed Factory spine with harness chunks carried opaquely in AG-UI form.** `RunEvent = {runId, seq, ts, payload}`; 13 payload tags covering ADR 0002's emission surface, plus one `AgentChunk` member holding the chunk verbatim as `Schema.Json`. **`seq` — Factory-assigned, monotonic — is the only ordering key. Termination always carries an explicit outcome (`completed`/`failed`/`cancelled`). Correlation is by runtime-assigned `stepId`/`execId`, never by name.** | ADR 0003, designed against the nine corpora. Opaque because these chunks are AG-UI, a published cross-vendor protocol whose transport (SSE, NDJSON, resumable offsets) and client TanStack already ships — enumerating opencode's 16 types would break on the planned `claudeCodeText` comparison and buy nothing. The other three clauses are forced by measurement, not taste: chunk timestamps invert by up to 1473 ms because `sandbox.file` carries an mtime; cancellation emits no chunk whatsoever; and step names are not unique, so 0a-2's `{step, chunk}` envelope does not generalise. |
 
 ## Still unknown
 
@@ -103,8 +111,16 @@ What remains genuinely open:
   The evidence is consistent with reuse but does not prove it.
 - **Whether the explicit `abort()` wiring is ever load-bearing.** Only tested against a
   generator suspended at a clean yield point.
-- **Multi-chunk `delta` accumulation** for a single `TEXT_MESSAGE` — never observed in any
-  corpus; the handling is verified by inspection only.
+- **Multi-chunk `delta` accumulation** — now measured precisely and still unverified: every
+  delta in every corpus was single-chunk (24 `TEXT_MESSAGE_CONTENT`, 32 `TOOL_CALL_ARGS`, 13
+  `REASONING_MESSAGE_CONTENT`, all exactly one). That is a property of
+  `opencode-go/deepseek-v4.1-flash`, not a guarantee. The accumulation code has never run
+  against a genuinely streaming provider.
+- **Whether `@tanstack/ai-event-client` is usable for run-detail rendering.** D20 bets column 2
+  on it rather than pre-building a renderer. Untested — phase 4 pays if the bet is wrong.
+- **What a non-opencode adapter's stream actually looks like.** The protocol has 33 event
+  types, opencode emits 16, and the `claudeCodeText` comparison has not run. D20 is designed to
+  absorb the difference, but that is an argument, not evidence.
 
 ## Deferred, with triggers
 
@@ -119,6 +135,8 @@ What remains genuinely open:
 | Sandbox-instance reuse probe (nonce written at bootstrap, compared across steps) | Phase 1, while it is still cheap to get wrong |
 | Non-cooperative abort case (a generator stuck where `.return()` cannot unstick it) | First timeout/cancel bug against a non-tool-call step |
 | The stray-artifact workaround (`cleanStrayArtifacts` in write-back) | Delete once an upstream release fixes the marker-path resolution — recheck on every `@tanstack/ai-sandbox*` bump |
+| Promoting `sandbox.file` to a typed file-change event (a "files changed" UI affordance) | Same upstream fix as the stray artifact: today its paths are in two incompatible namespaces and 9 of 15 occurrences are about the stray marker, not real work |
+| A Factory-owned run-detail renderer, instead of `@tanstack/ai-event-client` | The first phase-4 spike that finds the client unusable for run detail |
 
 ## Phases
 
@@ -131,30 +149,44 @@ contradictions were found and root-caused to source. See the ADR and `docs/findi
 
 ### Phase 1 — Workflow runtime (column 1) ← **we are here**
 
-The `defineWorkflow` surface, the run engine, run context (`ctx.agent()`, `ctx.exec()`, typed
-output), and D3's event type. In-memory; no server, no sqlite. CLI: `factory run <workflow.ts>`.
+The `defineWorkflow` surface, the run engine, run context, and D3's event type. In-memory;
+no server, no sqlite. CLI: `factory run <workflow.ts>`.
 
-Shaped by phase 0:
+Both design decisions are now settled: the authoring surface in ADR 0002 (D19) and the event
+type in ADR 0003 (D20). What remains is the run engine and the CLI.
 
-- **Design the event type first**, against the NDJSON corpora. It is a *superset*: harness
-  chunks (a small closed set) plus Factory lifecycle events — step boundaries, exec results,
-  assertions, write-back, the PR URL — none of which the harness emits. 0a-2's `{step, chunk}`
-  NDJSON envelope is already the right shape to generalise.
+**Done:**
+
+- ~~Design the event type first, against the NDJSON corpora.~~ `src/events.ts` + ADR 0003 +
+  `docs/findings/1-event-type-corpus-analysis.md`. Three corpus findings changed the design
+  from what the sketch below assumed: chunk timestamps cannot order events, cancellation emits
+  nothing at all, and step names are not unique — so `{step, chunk}` did *not* generalise as
+  written, and correlation moved to runtime-assigned ids.
+- ~~Promote the corpora to committed fixtures.~~ `test/corpus/`, which also unblocks the
+  replay adapter.
+
+**Next:**
+
 - **Make the fake adapter a corpus replayer.** Real recorded chunks beat a stub hand-written
   from docs that phase 0 already disproved, and it makes workflows testable under `bun test`
-  without burning tokens.
-- **Harvest, don't rewrite**: `exec` returning exit codes, the step-tagged NDJSON envelope,
-  `writeback.ts` (with its artifact cleanup and hard-fail), the `Stream.fromAsyncIterable` +
-  `Effect.onInterrupt` wiring, and the marker-based tree assertions are all tested against
-  reality. Lift them, then delete `src/spike/` in one commit.
+  without burning tokens. The fixtures are in place; this reads them.
+- **Build the run engine**: `defineWorkflow` + the six-member `ctx`, emitting `RunEvent`s.
+  The engine owns `seq`, `stepId`/`execId` allocation, and the tier-1/tier-2 structured-output
+  extraction ADR 0002 assigns to the runtime.
+- **Harvest, don't rewrite**: `exec` returning exit codes, `writeback.ts` (with its artifact
+  cleanup and hard-fail), the `Stream.fromAsyncIterable` + `Effect.onInterrupt` wiring, and
+  the marker-based tree assertions are all tested against reality. Lift them, then delete
+  `src/spike/` in one commit.
 - **Run the sandbox-reuse nonce probe early** — D10 rests on it and it is ~20 lines.
 - **Unify on Effect `Schema`** for D5's input schema and D11's output schema, converting to
   JSON Schema only at the `outputSchema` boundary, so phase 2 does not inherit two validators.
 - **Pin the cancellation guarantee with a test.** It currently rests on Effect internals
   (`Channel.fromAsyncIterable`'s finalizer) on an RC version; a regression test turns that into
-  a contract that fails loudly on upgrade.
+  a contract that fails loudly on upgrade. D20 makes this sharper: since the harness emits
+  nothing on abort, the test must assert Factory's own `RunCancelled`/`cancelled` outcome.
 - Cheap and worth doing here: run the same workflow under `claudeCodeText` to see what a
-  journal would have bought us, before D12 hardens into an assumption.
+  journal would have bought us, before D12 hardens into an assumption. D20 also wants this as
+  the first real test of the opaque-passthrough bet.
 
 **Exit:** a real implement → test → review workflow runs end-to-end against opencode, **and**
 the same workflow runs green under the corpus-replay adapter in `bun test`.
@@ -193,9 +225,13 @@ cancellation correctness.
 
 ## Start here
 
-1. Read ADR §5 ("What phase 1 inherits and must not rediscover") before touching `src/spike/`.
-2. Design D3's event type against `.factory/runs/*/chunks.ndjson`. Nothing else in phase 1 is
-   safe to build first — the runtime, the CLI and phase 2's schema all hang off it.
-3. Build the corpus-replay fake adapter, then `defineWorkflow` + the run context against it.
+1. Read `src/events.ts` and ADR 0003. It is the spine everything else in phase 1 hangs off,
+   and its comments carry the corpus evidence for each non-obvious field.
+2. Read ADR 0001 §5 ("What phase 1 inherits and must not rediscover") before touching
+   `src/spike/`.
+3. Build the corpus-replay fake adapter over `test/corpus/`, then `defineWorkflow` + the run
+   context against it, lifting the spike per ADR 0002.
 4. Run the sandbox-reuse nonce probe and record the answer in `docs/findings/`.
-5. File the two root-caused library bugs upstream, so D16's workaround can eventually go.
+5. File the two root-caused library bugs upstream, so D16's workaround can eventually go. The
+   marker-path one now has a second symptom worth citing: it pollutes the `sandbox.file` event
+   stream with `/workspace` + host-absolute paths (finding 8).
