@@ -1,0 +1,24 @@
+{
+  "name": "factory",
+  "private": true,
+  "type": "module",
+  "module": "src/index.ts",
+  "scripts": {
+    "prepare": "effect-tsgo patch --oxlint",
+    "test": "bun test",
+    "typecheck": "tsc --noEmit",
+    "lint": "oxlint",
+    "format": "oxfmt src package.json tsconfig.json .oxlintrc.json"
+  },
+  "devDependencies": {
+    "@effect/tsgo": "^0.45.0",
+    "@types/bun": "latest",
+    "effect": "4.0.0-rc.115",
+    "oxfmt": "^0.67.0",
+    "oxlint": "^1.82.0",
+    "oxlint-tsgolint": "^7.0.2001"
+  },
+  "peerDependencies": {
+    "typescript": "^7"
+  }
+}
