@@ -1,7 +1,10 @@
 # STATUS
 
-> **Phase 0 — not started, fully specified.** No code yet. Two research passes and a design
-> session are done; 0a is ready to write. Start at [Start here](#start-here).
+> **Phase 0 — complete.** 0a and 0b both ran green against a real target repo
+> (`FreshlyBrewedCode/factory-spike`), producing a real PR
+> (https://github.com/FreshlyBrewedCode/factory-spike/pull/3) and a 1059-line evidence log.
+> Findings: `docs/phase0-findings.md`. Exit ADR: `docs/adr/0001-write-back-isolation-effect-boundary.md`.
+> Phase 1 is next — see [Phases](#phases).
 
 Project pitch, stack and constraints live in `AGENTS.md`. This file tracks where we are,
 what we have decided, and what is still unknown.
@@ -197,35 +200,34 @@ D1–D6 come from the first research pass; D7–D14 from the 2026-09-13 design s
 | D12 | **Crash recovery is deprioritized.** Factory runs as a long-lived server process. | TanStack's durability / attach / takeover machinery targets serverless hosts that lose the process between turns. Moot regardless: F5 says `opencodeText` has no journal, so none of it applies to our primary adapter anyway. Phase 2 shrinks to "mark interrupted runs and keep history queryable." |
 | D13 | **Spike shape: workflow script → imported utilities → a runtime that executes the workflow.** Three pieces, even in 0a. No `defineWorkflow`, no registry, no schemas, no Effect. | The seam between "what a workflow author writes" and "what runs it" is the single most important thing phase 1 inherits. Getting it wrong in a flat script means discovering it late. |
 | D14 | **0a dumps every raw stream chunk to NDJSON.** No schema, no types. | A corpus, not a log. Phase 1 designs D3's event type against real recorded chunks instead of the docs' summary of them. Costs about five lines. |
+| D15 | **`localProcessSandbox({dir})` is how D8 is implemented, not `workspace.source: {type:'local', path}`** — the latter is dead code in the installed package. Pair it with `workspace: defineWorkspace({source:{type:'none'}, setup:[]})`. | 0a-1 finding #1: `bootstrapWorkspace()` has no `'local'` case; empirical inode/single-directory check confirmed in-place edits. D8's outcome (Factory owns the tree) held; its stated mechanism didn't. |
+| D16 | **Keep `defineWorkspace(...)` configured under `localProcessSandbox` (even `{source:{type:'none'}, setup:[]}`), and clean the resulting stray `.tanstack-projected-*`/`data/` artifact before staging**, rather than trying to avoid `defineWorkspace` entirely. | A `workspace` object is required to get `lifecycle.reuse:'thread'` binding at all. The artifact is a reproducible library bug (0a-1 finding #5), not something workflow authors should know about — write-back owns the cleanup and hard-fails if any survives. |
+| D17 | **Keep the explicit `Effect.onInterrupt` → `abortController.abort()` wiring in phase 1's agent-step Effect wrapper**, even though 0b's control experiment showed `Stream.fromAsyncIterable`'s implicit `.return()`-on-scope-close was sufficient in the tested case. | Cheap, never harmful, and covers the untested non-cooperative-abort case (a generator stuck somewhere `.return()` can't cleanly unstick). |
+| D18 | **Use `Schema.TaggedError<T>()(tag, fields)` over `Data.TaggedError` for typed errors crossing the Effect boundary.** | Matches current-generation v4 guidance (`oxlint`'s `effecttsgo` rules); used for `AgentStepChunkError` with `Schema.Defect()` wrapping `cause: unknown`. |
 
 ## Open questions
 
-Everything blocking is now empirical — 0a answers these by running, not by discussion.
+All resolved in phase 0 — full verdicts and evidence pointers in
+`docs/adr/0001-write-back-isolation-effect-boundary.md` (§4, "Which open questions turned out
+wrong"). Summary:
 
-**Answered by 0a:**
+| Question | Verdict |
+|---|---|
+| Structured output mechanism (D11) | confirmed at runtime |
+| `source: {type:'local'}` in place or copy, needed at all under `localProcess`? | refuted — dead code; `localProcessSandbox({dir})` is the real mechanism (D15) |
+| `threadId` + omitted `sessionId` behaves as F2/F3 predict? | confirmed, behaviorally |
+| `localProcess` re-bootstrap destroys tracked files between steps? | refuted (did not destroy) — but only the `unchanged` outcome was exercised |
+| Which CUSTOM events arrive from `opencodeText`? | refined — only `sandbox.file`, `opencode.session-id`, `structured-output.*`; never `file.changed`/`sandbox.file.diff` |
+| Policy needed on `localProcess`? `acceptEdits` behave as documented? | refuted as relevant (policy never consulted) / confirmed (`acceptEdits` worked) |
+| Cancellation across the Effect boundary (0b) | confirmed, with a refinement to F4 (§3 of the ADR) |
 
-- **Structured output from a harness adapter.** D11 needs `{ title, body }` back from an
-  agent step. Harness adapters own their own agent loop and return text — can they be given
-  a schema at all, or must the agent write JSON to a file that Factory reads, or must we
-  parse the final assistant message? This decides D11's *mechanism*, not its shape.
-- **Does `source: { type: 'local', path }` operate in place or copy?** And with
-  `opencodeText({ directory })` already pointing at the tree, is a workspace `source` needed
-  at all under `localProcess`, or is `{ type: 'none' }` correct?
-- **Does one `threadId` + omitted `sessionId` behave as F2/F3 predict** — sandbox preserved,
-  tree intact, transcript empty? The explicit assertion in 0a step 4.
-- **Does `localProcess` re-bootstrap destroy anything** between steps, given `setup: []`?
-- **Which CUSTOM events actually arrive from `opencodeText`?** F5 says it does not parse
-  NDJSON; `events.md` says `file.changed` is emitted by the harness adapter. Both cannot be
-  fully true for opencode. The NDJSON dump (D14) settles it.
-- **Is a policy needed at all on `localProcess`,** and does `permissionMode: 'acceptEdits'`
-  behave as documented for opencode?
+**Genuinely still unknown, carried into phase 1+** (also in the Deferred table below):
 
-**Answered by 0b:**
-
-- **Cancellation across the Effect boundary.** No longer "does it propagate?" — F4 already
-  says stream closure does not kill the agent. The question is narrower: does interrupting
-  the Effect fiber invoke the explicit cancel, and does the opencode process actually die?
-  Verified by checking the process table, not by trusting the abstraction.
+- True sandbox-instance-level reuse, independent of the marker-file's disk-state idempotency.
+- Whether the explicit `abort()` wiring is ever load-bearing (only tested against a generator
+  suspended at a clean yield point; a non-cooperative case was never constructed).
+- Multi-chunk `delta` accumulation for a single `TEXT_MESSAGE` (never observed in either 0a-2
+  run's corpus; verified by code inspection only).
 
 ## Deferred, with triggers
 
@@ -239,10 +241,13 @@ Recorded so they stay visible rather than becoming invisible "later"s.
 | Concurrency isolation — N sandboxes with one worktree each, rather than one shared tree (F2: contention within a key is undefined) | Phase 3, when the dispatcher can start more than one run |
 | Durable attach / takeover, and adapters that have journals (`claudeCodeText`, `codexText`) | Only if Factory stops being a long-lived process (D12) |
 | Portability of the spike off this machine | Reduced already — `opencode-go` is a hosted gateway rather than the tailnet `cpa` provider — but a second machine still needs an opencode login |
+| Sandbox-instance-level reuse probe (nonce file written at bootstrap, compared byte-for-byte across steps) — distinguishes true reuse from disk-state idempotency | Phase 1, when the run context's sandbox lifecycle is designed against D10 |
+| Non-cooperative abort case (generator stuck inside something `.return()` can't unstick, e.g. an in-flight `fetch()` with no cancellation token) | First real timeout/cancel bug report against a non-tool-call step |
+| `@tanstack/ai-sandbox`/`ai-sandbox-local-process` stray-artifact workaround (`cleanStrayArtifacts` in `writeback.ts`, root-caused in 0a-1 finding #5 — a path-double-resolution bug in `handle.js`'s `resolve()`) | Drop the workaround once an upstream release fixes the marker-path resolution — recheck on every `@tanstack/ai-sandbox*` version bump |
 
 ## Phases
 
-### Phase 0 — Spike & scaffold ← **we are here**
+### Phase 0 — Spike & scaffold — complete
 
 Produce *decisions*, not architecture. All spike code is throwaway and may be hardcoded.
 
@@ -281,7 +286,7 @@ package (`package.json`, `src/index.ts` with one exported function, a passing
 verification step. Issue #1: *"Add a `slugify(input: string): string` export, with tests."*
 Not yet created.
 
-### Phase 1 — Workflow runtime (column 1)
+### Phase 1 — Workflow runtime (column 1) ← **we are here**
 
 The `defineWorkflow` surface, the run engine, run context (`ctx.agent()`, `ctx.exec()`,
 typed output), and the event type from D3 — designed against the NDJSON corpus from D14.
