@@ -28,8 +28,19 @@ describe("persistence/store", () => {
 
   test("a run with no terminal event is reported interrupted", () => {
     const db = openStore(":memory:");
-    appendEvent(db, event("run-crashed", 0, { _tag: "RunStarted", workflowId: "wf", dir: "/tmp/b", input: {} }));
-    appendEvent(db, event("run-crashed", 1, { _tag: "ExecStarted", execId: "exec-0", command: ["bun", "test"], cwd: "/tmp/b" }));
+    appendEvent(
+      db,
+      event("run-crashed", 0, { _tag: "RunStarted", workflowId: "wf", dir: "/tmp/b", input: {} }),
+    );
+    appendEvent(
+      db,
+      event("run-crashed", 1, {
+        _tag: "ExecStarted",
+        execId: "exec-0",
+        command: ["bun", "test"],
+        cwd: "/tmp/b",
+      }),
+    );
     // process died here — no RunFinished/RunFailed/RunCancelled ever written
 
     const [summary] = listRuns(db);
@@ -40,7 +51,10 @@ describe("persistence/store", () => {
 
   test("a completed run is reported with its terminal status", () => {
     const db = openStore(":memory:");
-    appendEvent(db, event("run-ok", 0, { _tag: "RunStarted", workflowId: "wf", dir: "/tmp/c", input: {} }));
+    appendEvent(
+      db,
+      event("run-ok", 0, { _tag: "RunStarted", workflowId: "wf", dir: "/tmp/c", input: {} }),
+    );
     appendEvent(db, event("run-ok", 1, { _tag: "RunFinished", durationMs: 5 }));
 
     const [summary] = listRuns(db);
@@ -50,8 +64,14 @@ describe("persistence/store", () => {
 
   test("listRuns reports every distinct run", () => {
     const db = openStore(":memory:");
-    appendEvent(db, event("run-1", 0, { _tag: "RunStarted", workflowId: "wf", dir: "/tmp", input: {} }));
-    appendEvent(db, event("run-2", 0, { _tag: "RunStarted", workflowId: "wf", dir: "/tmp", input: {} }));
+    appendEvent(
+      db,
+      event("run-1", 0, { _tag: "RunStarted", workflowId: "wf", dir: "/tmp", input: {} }),
+    );
+    appendEvent(
+      db,
+      event("run-2", 0, { _tag: "RunStarted", workflowId: "wf", dir: "/tmp", input: {} }),
+    );
 
     expect(listRuns(db).map((r) => r.runId)).toEqual(["run-1", "run-2"]);
   });

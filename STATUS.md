@@ -1,28 +1,36 @@
 # STATUS
 
-> **Phases 0–2 complete.** Phase 1's exit criterion is met on both legs: the
-> `defineWorkflow`/`startRun` runtime ran a real implement → test → review workflow end-to-end
-> against opencode, opening [factory-spike#4](https://github.com/FreshlyBrewedCode/factory-spike/pull/4)
+> **Phases 0–2 complete. Phase 3 complete except one gated live leg.** Phase 1's exit criterion
+> is met on both legs: the `defineWorkflow`/`startRun` runtime ran a real implement → test →
+> review workflow end-to-end against opencode, opening
+> [factory-spike#4](https://github.com/FreshlyBrewedCode/factory-spike/pull/4)
 > (`docs/findings/3-live-e2e-run.md`), and the same workflow runs green under the corpus-replay
 > adapter in `bun test` (`workflows/implement-issue.test.ts`). Phase 2's exit criterion is met:
 > a `SIGKILL` mid-run, followed by a real process restart against the same sqlite file, leaves
 > an intact, correctly-`"interrupted"` partial history (`docs/findings/4-crash-mid-run-recovery.md`).
-> Phase 0's spike opened [factory-spike#3](https://github.com/FreshlyBrewedCode/factory-spike/pull/3).
+> Phase 3's exit criterion is met against fakes — unattended Ready-item pickup, a run to
+> completion, and SSE watchability, all proven end-to-end in
+> `src/server/integration.test.ts` — with one leg still outstanding: a live unattended dispatch
+> run against the real GitHub project that opens a real PR, gated behind explicit user
+> confirmation (ADR 0004). Phase 0's spike opened
+> [factory-spike#3](https://github.com/FreshlyBrewedCode/factory-spike/pull/3).
 
 Project pitch, stack and constraints live in `AGENTS.md`. This file tracks where we are, what
 we have decided, and what is still unknown.
 
 |                   |                                                                                                                                                                          |
 | ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Conclusions       | `docs/adr/0001-write-back-isolation-effect-boundary.md` (phase 0) · `0002-workflow-authoring-surface.md` (authoring syntax) · `0003-run-event-type.md` (D3's event type) |
+| Conclusions       | `docs/adr/0001-write-back-isolation-effect-boundary.md` (phase 0) · `0002-workflow-authoring-surface.md` (authoring syntax) · `0003-run-event-type.md` (D3's event type) · `0004-server-dispatch.md` (D22–D24, phase 3) |
 | Evidence          | `docs/findings/` (one document per subtask)                                                                                                                              |
 | Pre-spike reading | `docs/research/2026-09-13-pre-spike-reading.md` (annotated where the spike overturned it)                                                                                |
 
 ## Where we are
 
-Phase 1's runtime (`defineWorkflow`, `startRun`, the CLI) and phase 2's persistence
-(`src/persistence/store.ts`, the `factory runs`/`factory log` CLI surface) are built and
-validated. Still missing: the server, dispatch, the UI.
+Phase 1's runtime (`defineWorkflow`, `startRun`, the CLI), phase 2's persistence
+(`src/persistence/store.ts`, the `factory runs`/`factory log` CLI surface), and phase 3's
+server/dispatch (`src/server/`) are built and validated against fakes. Still missing: the live
+leg of phase 3's exit criterion (a real dispatch run that opens a real PR, gated behind user
+confirmation), and the UI (phase 4).
 
 ### On disk
 
@@ -38,6 +46,13 @@ validated. Still missing: the server, dispatch, the UI.
 | `workflows/implement-issue.ts`, `implement-issue.test.ts`         | The one real workflow: implement → test → fix/review → test → PR metadata → write-back. Live-validated (factory-spike#4) and replay-validated                            | keep                                                              |
 | `test/corpus/`                                                    | The nine recorded NDJSON corpora, promoted out of gitignored `.factory/runs/` into committed fixtures (128 KB)                                                           | keep — tests and the replay adapter both read these               |
 | `test/fixtures/echo-workflow.ts`, `slow-workflow.ts`              | Minimal workflows for CLI-level tests — `echo-workflow` for one fast agent step, `slow-workflow` for a long-running `ctx.exec` to kill mid-flight                        | keep                                                              |
+| `src/server/http.ts`, `http.test.ts`                              | HTTP API + SSE replay-then-tail over the event log (D22, ADR 0004)                                                                                                       | keep                                                              |
+| `src/server/ready-source.ts`                                      | Pluggable `ReadySource` — `makeGitHubProjectsSource` + `makeFakeReadySource` (D23, ADR 0004)                                                                             | keep                                                              |
+| `src/server/dispatch.ts`, `dispatch.test.ts`                      | Reconciliation loop — WIP limit, event-log-derived backoff, `Effect.repeat` scheduling (D24, ADR 0004)                                                                   | keep                                                              |
+| `src/server/runs.ts`                                               | In-process active-run registry backing the WIP limit and cancel                                                                                                          | keep                                                              |
+| `src/server/pubsub.ts`                                             | Live event fan-out for SSE tailing                                                                                                                                       | keep                                                              |
+| `src/server/daemon.ts`, `viewer.ts`, `viewer.html`                 | `factory serve` wiring (`startDaemon`) + optional single-file HTML+SSE viewer                                                                                            | keep                                                              |
+| `src/server/integration.test.ts`                                   | Phase 3's exit criterion, the fakes/replay-provable parts, end to end through `reconcileOnce` -> `startTrackedRun` -> the event log -> SSE                              | keep                                                              |
 | `src/index.ts`, `src/index.test.ts`                               | 0c smoke test, proving `bun test` runs. Its function happens to be named `slugify`, unrelated to the spike target — a coincidence, not a dependency                      | still unreplaced; harmless, low priority                          |
 | `docs/adr/`, `docs/findings/`, `docs/research/`                   | Decisions, evidence, reading notes                                                                                                                                       | keep                                                              |
 | `.factory/`                                                       | gitignored: the host-side clone, the raw run dumps, and (new in phase 2) `factory.db`                                                                                    | keep (regenerable)                                                |
@@ -116,6 +131,9 @@ D21 from phase 2's persistence design.
 | D19 | **Workflow authoring surface: `defineWorkflow(id, {input, output?, agent?, run})` with a six-member `ctx` (`dir`, `agent`, `exec`, `assert`, `log`, `writeBack`).** Ownership rule: the runtime owns the tree, the log, and cancellation; the workflow owns everything else. `ctx.assert` records a callback's outcome as a typed event but never throws; `ctx.log` is the generic escape hatch.                                                                                                   | ADR 0002, designed against the spike's proven seam. Resolves the `ctx.agent()`-vs-`agentStep` naming drift and gives D3's event type a settled emission surface. Pre-implementation — phase 1's exit criterion falsifies it cheaply (in-memory, nothing persisted). Write-back on `ctx` is a border case with a stated demotion trigger: the first second workflow.                                                                                                                                                                                                                                       |
 | D20 | **D3's event type: a typed Factory spine with harness chunks carried opaquely in AG-UI form.** `RunEvent = {runId, seq, ts, payload}`; 13 payload tags covering ADR 0002's emission surface, plus one `AgentChunk` member holding the chunk verbatim as `Schema.Json`. **`seq` — Factory-assigned, monotonic — is the only ordering key. Termination always carries an explicit outcome (`completed`/`failed`/`cancelled`). Correlation is by runtime-assigned `stepId`/`execId`, never by name.** | ADR 0003, designed against the nine corpora. Opaque because these chunks are AG-UI, a published cross-vendor protocol whose transport (SSE, NDJSON, resumable offsets) and client TanStack already ships — enumerating opencode's 16 types would break on the planned `claudeCodeText` comparison and buy nothing. The other three clauses are forced by measurement, not taste: chunk timestamps invert by up to 1473 ms because `sandbox.file` carries an mtime; cancellation emits no chunk whatsoever; and step names are not unique, so 0a-2's `{step, chunk}` envelope does not generalise.         |
 | D21 | **Persist the event log with plain synchronous functions over `bun:sqlite` (not `@effect/sql-sqlite-bun`, not installed), in a single `events` table** (`run_id, seq, ts, tag, payload`, PK `(run_id, seq)`) — no separate `runs`/`steps`/`artifacts` tables.                                                                                                                                                                                                                                      | D4 scopes "Effect owns the server" to phase 3's daemon; phase 2 is still CLI-driven, so wrapping synchronous in-process sqlite I/O in Effect here would add a layer with nothing to bridge — matches `ctx.exec`/`ctx.writeBack` staying plain async functions. A run's identity, outcome and timing are all derivable from its own event rows (`RunStarted`, and the terminal event or its absence), so a second table would only be a cache that can drift from the log it caches. `"interrupted"` status is derived at read time, not written at crash time — nothing observes the crash as it happens. |
+| D22 | **Plain `Bun.serve` for HTTP + SSE, not Effect.** Request/response handling and the SSE replay-then-tail stream are ordinary functions.                                                                                                                                                                                                                                                                                                                                                           | ADR 0004. Same reasoning as D21: synchronous callback-shaped I/O with nothing for Effect to bridge. Effect's actual job in phase 3 is the dispatcher's scheduling loop, not request handling.                                                                                                                                                                                                                                                                                                                                                                                                          |
+| D23 | **`ReadySource`: a two-method pluggable interface** (`listReady`/`claim`), ported from the wayful script's GraphQL query + `gh project item-edit` claim, with the same soft/hard blocker distinction.                                                                                                                                                                                                                                                                                             | ADR 0004. `makeGitHubProjectsSource` is the only real implementation today; `makeFakeReadySource` backs `dispatch.test.ts`/`integration.test.ts`. A failed claim is "lost the race, skip", not an error.                                                                                                                                                                                                                                                                                                                                                                                              |
+| D24 | **No separate retry-state file.** Backoff is derived at reconcile time from the sqlite event log (`RunStarted.input.issueNumber` as the join key), doubling per consecutive failure. WIP limit of 1 is enforced via the current process's in-memory active-run registry, not sqlite. Per-issue backoff, not the wayful script's global pause-on-any-failure.                                                                                                                                    | ADR 0004. Nothing to keep in sync with the log it would cache. D12's "interrupted ≠ active" applies to dispatch too: a dead process's run doesn't block new dispatch after a restart. Global pause doesn't fit Factory — workflows are one-shot (D19), so a retry is always a fresh run, and global pause would starve unrelated issues for no offsetting benefit.                                                                                                                                                                                                                                  |
 
 ## Still unknown
 
@@ -245,20 +263,48 @@ The event log becomes durable. Crash recovery scoped down per D12. Still CLI-dri
 **Exit — met:** kill the process mid-run, restart, and the run's history is intact and
 queryable.
 
-### Phase 3 — Server & dispatch (column 3)
+### Phase 3 — Server & dispatch (column 3) — **complete except one gated live leg**
 
 HTTP API + SSE replay over the log; run create / cancel / list / get. Dispatcher as a
 reconciliation loop with a pluggable source (GitHub project first), porting the claim-lock,
 WIP-limit, pause-on-failure and backoff semantics from the wayful script (recorded in
 `docs/research/2026-09-13-pre-spike-reading.md`).
 
+**Done:**
+
+- ~~HTTP API + SSE server over the event log.~~ `src/server/http.ts` — `GET/POST /api/runs`,
+  `GET /api/runs/:id`, `POST /api/runs/:id/cancel`, `GET /api/runs/:id/events` (subscribe-
+  before-read replay-then-tail, de-duplicated by `seq`). D22, ADR 0004.
+- ~~Pluggable `ReadySource` + GitHub Projects implementation.~~ `src/server/ready-source.ts` —
+  `makeGitHubProjectsSource` (the wayful script's GraphQL query + claim, same soft/hard blocker
+  distinction) and `makeFakeReadySource` for tests. D23, ADR 0004.
+- ~~Reconciliation loop: WIP limit, backoff, dispatch.~~ `src/server/dispatch.ts` —
+  `reconcileOnce` (plain async, directly testable) wrapped by `runDispatchLoop`
+  (`Effect.repeat(Schedule.spaced(...))`). Backoff derived from the event log, no second store;
+  WIP limit of 1 via `src/server/runs.ts`'s in-process registry; per-issue backoff instead of
+  the wayful script's global pause. D24, ADR 0004. `dispatch.test.ts` caught and fixed a real
+  off-by-one in the backoff-doubling exponent.
+- ~~`factory serve` CLI + optional HTML+SSE viewer.~~ `src/server/daemon.ts` (`startDaemon`,
+  dispatch opt-in via `--dispatch-*` flags), `src/server/viewer.ts`/`viewer.html` (~100-line
+  single-file SSE viewer), wired into `src/cli.ts`'s `serve` subcommand.
+- ~~Validate the exit criterion.~~ `src/server/integration.test.ts` — wires `reconcileOnce`
+  directly against `makeFakeReadySource` and a real `serve()`, proving unattended pickup, a run
+  to completion, SSE watchability (`RunStarted`...`RunFinished` over the wire), and WIP-limit
+  enforcement across reconcile passes, all without live GitHub access. Along the way, fixed a
+  fake-fidelity gap (`makeFakeReadySource.listReady` wasn't filtering out claimed items) and an
+  async test-timing bug (a fire-and-forget dispatched run outliving its test's `finally` block,
+  closing the db out from under it) — see ADR 0004 and `dispatch.ts`/`ready-source.ts` history.
+
 This is where concurrency stops being deferrable — see Deferred.
 
-Optional and cheap: a ~100-line single-file HTML+SSE run viewer, to prove the event stream is
-UI-shaped before React touches it.
-
-**Exit:** the daemon picks up a Ready issue unattended, runs the workflow, opens a PR, and the
-run is watchable over SSE.
+**Exit — met against fakes:** the daemon picks up a Ready issue unattended, runs the workflow,
+and the run is watchable over SSE (`integration.test.ts`). **Not yet run:** the same cycle live
+against the real GitHub project, ending in a real PR — the "opens a PR" leg needs a real
+unattended dispatch run, which is a hard-to-revert, shared-state action (same class as phase 1's
+live E2E leg) and is gated behind explicit user confirmation before it runs. The write-back call
+path itself (`ctx.writeBack` → PR open) was already proven live in phase 1
+(`docs/findings/3-live-e2e-run.md`); what's unproven specifically for phase 3 is the dispatcher
+driving that call unattended.
 
 ### Phase 4 — Web UI (column 2)
 
@@ -272,17 +318,21 @@ cancellation correctness.
 
 ## Start here
 
-Phases 0–2 are complete (all exit criteria met — see each phase's section above). Phase 3
-(server & dispatch, column 3) is next.
+Phases 0–2 are complete; phase 3 is complete against fakes (all exit criteria met — see each
+phase's section above, and ADR 0004 for D22–D24).
 
-1. Read `src/persistence/store.ts` and `src/cli.ts`'s `runCli`/`listRunsCli`/`logRunCli` — the
-   read/write surface phase 3's HTTP API wraps. The daemon's job is to expose this over
-   HTTP + SSE and add create/cancel/list/get, not to redesign storage.
-2. Read D6 (HTTP/SSE API ships in phase 3 alongside a `factory watch` CLI) and D2 (Factory owns
-   git write-back — the dispatcher's blocker check reads the PR the workflow opens).
-3. Read `docs/research/2026-09-13-pre-spike-reading.md` for the wayful script's claim-lock,
-   WIP-limit, pause-on-failure and backoff semantics — phase 3 ports these into a reconciliation
-   loop with a pluggable source (GitHub project first).
+What's next is a choice, not a default: the one remaining piece of phase 3 is its gated live
+leg (an unattended `startDaemon` dispatch cycle against the real GitHub project, ending in a
+real PR) — this needs explicit user confirmation before running, same precedent as phase 1's
+live E2E leg. Absent that, phase 4 (web UI, column 2) is the next phase proper.
+
+1. To run phase 3's live leg: read `src/server/daemon.ts`'s `DispatchWiring` for what a real
+   run needs (a `GitHubProjectsConfig`, a clone SSH URL, a git identity, a workflow path), and
+   confirm with the user first — it opens a real PR against a real project, same class of action
+   as phase 1's live E2E run.
+2. To start phase 4 instead: read D6 (web UI deferred to phase 4, thin because the API
+   predates it) and `src/server/http.ts`'s route surface — the SPA is a client of what already
+   exists, not a redesign.
 
 Left over from earlier phases, not exit-blocking, worth doing opportunistically:
 

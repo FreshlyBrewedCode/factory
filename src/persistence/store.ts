@@ -58,7 +58,12 @@ export function getRunEvents(db: Database, runId: string): ReadonlyArray<RunEven
     .all(runId);
 
   return rows.map((row) =>
-    decodeEvent({ runId: row.run_id, seq: row.seq, ts: row.ts, payload: JSON.parse(row.payload) as unknown }),
+    decodeEvent({
+      runId: row.run_id,
+      seq: row.seq,
+      ts: row.ts,
+      payload: JSON.parse(row.payload) as unknown,
+    }),
   );
 }
 
@@ -70,7 +75,10 @@ export function getRunEvents(db: Database, runId: string): ReadonlyArray<RunEven
  * detects the crash as it happens, so there is nothing to mark until someone
  * asks.
  */
-export type RunStatus = Extract<RunEventPayload["_tag"], "RunFinished" | "RunFailed" | "RunCancelled">;
+export type RunStatus = Extract<
+  RunEventPayload["_tag"],
+  "RunFinished" | "RunFailed" | "RunCancelled"
+>;
 
 export interface RunSummary {
   readonly runId: string;

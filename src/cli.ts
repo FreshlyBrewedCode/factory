@@ -15,14 +15,15 @@
  */
 
 import { mkdir } from "node:fs/promises";
-import { dirname, resolve } from "node:path";
+import { dirname } from "node:path";
 import type { RunEvent } from "./events";
 import { resetClone, type GitIdentity } from "./lib/clone";
+import { loadWorkflow } from "./lib/load-workflow";
 import { appendEvent, getRunEvents, listRuns, openStore } from "./persistence/store";
 import type { AgentAdapter } from "./runtime/agent-adapter";
 import { opencodeAdapter } from "./runtime/opencode-adapter";
 import { startRun } from "./runtime/run";
-import type { WorkflowDefinition } from "./workflow";
+import { startDaemon, type DaemonOptions } from "./server/daemon";
 
 const DEFAULT_DB_PATH = ".factory/factory.db";
 
@@ -42,11 +43,7 @@ function formatEvent(event: RunEvent): string {
 }
 
 export async function runCli(options: CliOptions): Promise<number> {
-  const imported: unknown = await import(resolve(options.workflowPath));
-  const workflow = (imported as { default?: WorkflowDefinition }).default;
-  if (workflow === undefined || typeof workflow.run !== "function") {
-    throw new Error(`${options.workflowPath} has no default defineWorkflow(...) export`);
-  }
+  const workflow = await loadWorkflow(options.workflowPath);
 
   if (options.clone !== undefined) {
     await resetClone(options.dir, options.clone.sshUrl, options.clone.identity);
@@ -134,6 +131,12 @@ function usageError(message: string): never {
       "  factory run <workflow.ts> --input <json> --dir <path> [--clone <sshUrl> --git-name <name> --git-email <email>] [--out <path>] [--db <path>]",
       "  factory runs [--db <path>]",
       "  factory log <runId> [--db <path>]",
+      "  factory serve [--port <n>] [--db <path>]",
+      "    [--dispatch-workflow <path> --dispatch-owner <login> --dispatch-project-number <n>",
+      "     --dispatch-project-id <id> --dispatch-status-field-id <id> --dispatch-in-progress-option-id <id>",
+      "     --dispatch-repo <owner/repo> --dispatch-base-branch <branch> --dispatch-clone <sshUrl>",
+      "     --dispatch-git-name <name> --dispatch-git-email <email> --dispatch-work-dir <path>",
+      "     --dispatch-interval-ms <n>]",
     ].join("\n"),
   );
   process.exit(1);
@@ -188,6 +191,59 @@ function parseArgs(argv: ReadonlyArray<string>): CliOptions {
   return { workflowPath, input, dir, clone, outPath: out, dbPath, adapter: opencodeAdapter };
 }
 
+const DISPATCH_FLAG_NAMES = [
+  "dispatch-workflow",
+  "dispatch-owner",
+  "dispatch-project-number",
+  "dispatch-project-id",
+  "dispatch-status-field-id",
+  "dispatch-in-progress-option-id",
+  "dispatch-repo",
+  "dispatch-base-branch",
+  "dispatch-clone",
+  "dispatch-git-name",
+  "dispatch-git-email",
+  "dispatch-work-dir",
+] as const;
+
+function parseServeArgs(argv: ReadonlyArray<string>): DaemonOptions {
+  const flags = parseFlags(argv, 1);
+  const dbPath = flags.get("db") ?? DEFAULT_DB_PATH;
+  const portRaw = flags.get("port");
+  const port = portRaw !== undefined ? Number(portRaw) : undefined;
+
+  const present = DISPATCH_FLAG_NAMES.filter((name) => flags.has(name));
+  if (present.length === 0) return { dbPath, port };
+
+  const missing = DISPATCH_FLAG_NAMES.filter((name) => !flags.has(name));
+  if (missing.length > 0) {
+    usageError(`--dispatch-* flags given but missing: ${missing.map((m) => `--${m}`).join(", ")}`);
+  }
+
+  const get = (name: (typeof DISPATCH_FLAG_NAMES)[number]): string => flags.get(name) as string;
+
+  return {
+    dbPath,
+    port,
+    dispatch: {
+      workflowPath: get("dispatch-workflow"),
+      repoSlug: get("dispatch-repo"),
+      baseBranch: get("dispatch-base-branch"),
+      workDirRoot: get("dispatch-work-dir"),
+      cloneSshUrl: get("dispatch-clone"),
+      gitIdentity: { name: get("dispatch-git-name"), email: get("dispatch-git-email") },
+      intervalMs: Number(flags.get("dispatch-interval-ms") ?? "60000"),
+      github: {
+        owner: get("dispatch-owner"),
+        projectNumber: Number(get("dispatch-project-number")),
+        projectId: get("dispatch-project-id"),
+        statusFieldId: get("dispatch-status-field-id"),
+        inProgressOptionId: get("dispatch-in-progress-option-id"),
+      },
+    },
+  };
+}
+
 if (import.meta.main) {
   const argv = process.argv.slice(2);
   if (argv[0] === "runs") {
@@ -196,6 +252,15 @@ if (import.meta.main) {
     const runId = argv[1];
     if (runId === undefined) usageError("expected: factory log <runId> ...");
     logRunCli(parseFlags(argv, 2).get("db") ?? DEFAULT_DB_PATH, runId);
+  } else if (argv[0] === "serve") {
+    const daemonOptions = parseServeArgs(argv);
+    const { server, dispatchFiber } = await startDaemon(daemonOptions);
+    console.log(`factory serve: listening on http://localhost:${server.port}`);
+    console.log(
+      dispatchFiber !== undefined
+        ? "dispatch loop: running"
+        : "dispatch loop: disabled (no --dispatch-* flags)",
+    );
   } else {
     const options = parseArgs(argv);
     const exitCode = await runCli(options);

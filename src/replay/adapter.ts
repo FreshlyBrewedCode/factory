@@ -81,10 +81,7 @@ export function createCorpusReplayAdapter(path: string): AgentAdapter {
  * regression test in place of a corpus (no recorded trace can be paused on
  * demand; a corpus is a fixed sequence, not a controllable one).
  */
-export function createSlowFakeAdapter(
-  chunks: ReadonlyArray<unknown>,
-  delayMs = 20,
-): AgentAdapter {
+export function createSlowFakeAdapter(chunks: ReadonlyArray<unknown>, delayMs = 20): AgentAdapter {
   return {
     stream(_options: AgentAdapterOptions): AsyncIterable<unknown> {
       return {

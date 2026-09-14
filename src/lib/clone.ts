@@ -19,7 +19,11 @@ export interface GitIdentity {
  * identity. Throws with the captured stderr on any failed step so a caller
  * sees exactly which git invocation failed rather than a bare exit code.
  */
-export async function resetClone(dir: string, sshUrl: string, identity: GitIdentity): Promise<void> {
+export async function resetClone(
+  dir: string,
+  sshUrl: string,
+  identity: GitIdentity,
+): Promise<void> {
   if (existsSync(dir)) {
     await rm(dir, { recursive: true, force: true });
   }
@@ -36,7 +40,9 @@ export async function resetClone(dir: string, sshUrl: string, identity: GitIdent
   for (const args of config) {
     const result = await hostExec(args, { cwd: dir });
     if (result.exitCode !== 0) {
-      throw new Error(`${args.join(" ")} failed (exit ${result.exitCode}): ${result.stderr.trim()}`);
+      throw new Error(
+        `${args.join(" ")} failed (exit ${result.exitCode}): ${result.stderr.trim()}`,
+      );
     }
   }
 }

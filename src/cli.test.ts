@@ -20,7 +20,11 @@ describe("runCli", () => {
       outPath,
       dbPath: join(dir, "factory.db"),
       adapter: createSlowFakeAdapter(
-        [{ type: "TEXT_MESSAGE_START" }, { type: "TEXT_MESSAGE_CONTENT", delta: "hi" }, { type: "TEXT_MESSAGE_END" }],
+        [
+          { type: "TEXT_MESSAGE_START" },
+          { type: "TEXT_MESSAGE_CONTENT", delta: "hi" },
+          { type: "TEXT_MESSAGE_END" },
+        ],
         1,
       ),
     });
@@ -41,7 +45,9 @@ describe("runCli", () => {
     const runs = listRuns(db);
     expect(runs).toHaveLength(1);
     expect(runs[0]?.status).toBe("RunFinished");
-    const persistedTags: string[] = getRunEvents(db, runs[0]?.runId ?? "").map((e) => e.payload._tag);
+    const persistedTags: string[] = getRunEvents(db, runs[0]?.runId ?? "").map(
+      (e) => e.payload._tag,
+    );
     expect(persistedTags).toEqual(tags);
     db.close();
 

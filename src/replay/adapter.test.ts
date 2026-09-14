@@ -70,7 +70,11 @@ describe("createCorpusReplayAdapter", () => {
 describe("createSlowFakeAdapter", () => {
   test("yields every chunk when left uninterrupted", async () => {
     const adapter = createSlowFakeAdapter(
-      [{ type: "TEXT_MESSAGE_START" }, { type: "TEXT_MESSAGE_CONTENT", delta: "hi" }, { type: "TEXT_MESSAGE_END" }],
+      [
+        { type: "TEXT_MESSAGE_START" },
+        { type: "TEXT_MESSAGE_CONTENT", delta: "hi" },
+        { type: "TEXT_MESSAGE_END" },
+      ],
       1,
     );
 

@@ -1,0 +1,30 @@
+/**
+ * In-process fan-out of live `RunEvent`s, keyed by `runId`. Exists only so
+ * `/api/runs/:id/events` (`src/server/http.ts`) can tail a run that is still
+ * in flight — persisted history always comes from `getRunEvents`
+ * (`src/persistence/store.ts`); this is the gap between "last flushed to
+ * sqlite" and "just happened", not a second source of truth.
+ */
+
+import type { RunEvent } from "../events";
+
+type Listener = (event: RunEvent) => void;
+
+const subscribers = new Map<string, Set<Listener>>();
+
+export function publish(runId: string, event: RunEvent): void {
+  for (const listener of subscribers.get(runId) ?? []) listener(event);
+}
+
+export function subscribe(runId: string, listener: Listener): () => void {
+  let set = subscribers.get(runId);
+  if (set === undefined) {
+    set = new Set();
+    subscribers.set(runId, set);
+  }
+  set.add(listener);
+  return () => {
+    set.delete(listener);
+    if (set.size === 0) subscribers.delete(runId);
+  };
+}

@@ -63,7 +63,10 @@ async function porcelainPaths(dir: string, exec: ExecFn): Promise<ReadonlyArray<
  * Remove anything matching the known stray-artifact shape from the working
  * tree, based on `git status --porcelain`. Returns the paths it removed.
  */
-export async function cleanStrayArtifacts(dir: string, exec: ExecFn): Promise<ReadonlyArray<string>> {
+export async function cleanStrayArtifacts(
+  dir: string,
+  exec: ExecFn,
+): Promise<ReadonlyArray<string>> {
   const paths = await porcelainPaths(dir, exec);
   const stray = paths.filter(isStrayPath);
   for (const path of stray) {

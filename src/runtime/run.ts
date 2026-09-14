@@ -191,7 +191,9 @@ export function startRun<I, O>(
           chunkCount: handle.partial.chunkCount,
           durationMs,
           finalText: handle.partial.finalText,
-          ...(handle.partial.sessionId !== undefined ? { sessionId: handle.partial.sessionId } : {}),
+          ...(handle.partial.sessionId !== undefined
+            ? { sessionId: handle.partial.sessionId }
+            : {}),
         });
         throw new RunCancelledSignal();
       }
@@ -278,7 +280,8 @@ export function startRun<I, O>(
       );
 
       const outcome = result.prResult.exitCode === 0 ? "completed" : "failed";
-      const failureDetail = result.prResult.stderr || result.pushResult.stderr || result.commitResult.stderr;
+      const failureDetail =
+        result.prResult.stderr || result.pushResult.stderr || result.commitResult.stderr;
 
       emit({
         _tag: "WriteBackFinished",
@@ -325,7 +328,12 @@ export function startRun<I, O>(
       return { outcome: "failed", error: message };
     }
 
-    emit({ _tag: "RunStarted", workflowId: workflow.id, dir: options.dir, input: decodedInput as never });
+    emit({
+      _tag: "RunStarted",
+      workflowId: workflow.id,
+      dir: options.dir,
+      input: decodedInput as never,
+    });
 
     try {
       const output = await workflow.run(ctx, decodedInput);
