@@ -4,10 +4,12 @@
 
 Accepted, 2026-09-14. Validated against fakes end-to-end
 (`src/server/integration.test.ts`, `src/server/dispatch.test.ts`, `src/server/http.test.ts` —
-49/49 tests passing, repeated 4x with no flakiness, `typecheck`/`lint` clean). The one leg not
-yet validated live — a real unattended dispatch run against the real GitHub project that opens
-a real PR — is explicitly gated behind user confirmation, same precedent as phase 1's live E2E
-leg (`docs/findings/3-live-e2e-run.md`).
+49/49 tests passing, repeated 4x with no flakiness, `typecheck`/`lint` clean), **and live**: a
+real unattended `factory serve --dispatch-*` run against a real GitHub Project picked up an
+issue and opened a real PR, [factory-spike#5](https://github.com/FreshlyBrewedCode/factory-spike/pull/5)
+(`docs/findings/6-live-dispatch-run.md`), confirmed with the user first, same precedent as phase
+1's live E2E leg (`docs/findings/3-live-e2e-run.md`). That run also surfaced and fixed a genuine
+stray-artifact bug (D25, `src/lib/writeback.ts`) — see Consequences.
 
 ## Context
 
@@ -159,12 +161,16 @@ behavior for Factory's shape, not just a workaround for the lack of resumability
   partly as that circuit breaker. Factory has no equivalent yet — accepted here because there is
   no resumability to protect, but if runs start being noticeably expensive (cost, not just
   wall-clock) a repeated-systemic-failure circuit breaker is a real gap, not a hypothetical one.
-- **The "opens a PR" leg of phase 3's exit criterion is unvalidated as of this ADR.** Everything
-  provable against fakes is proven (`integration.test.ts`): unattended pickup, run to
-  completion, SSE watchability, WIP-limit enforcement across reconcile passes. The live leg —
-  a real `startDaemon` dispatch cycle against the real GitHub project, opening a real PR — needs
-  explicit user confirmation before running, per the phase 1 precedent, and has not yet been
-  attempted.
+- **The "opens a PR" leg of phase 3's exit criterion is now validated live**
+  (`docs/findings/6-live-dispatch-run.md`), but the live run exposed a real defect that no test
+  against fakes had triggered: `cleanStrayArtifacts`'s stray-path matching operates on
+  `git status --porcelain` output, and plain `--porcelain` collapses a wholly-new untracked
+  directory into a single `?? dir/` summary line rather than enumerating the files inside it.
+  This run's D16 marker happened to land under a directory git had never seen before, so it went
+  undetected and shipped into the real PR (factory-spike#5). Fixed by passing
+  `--untracked-files=all` (D25), pinned by `src/lib/writeback.test.ts`. The PR itself was left
+  unamended — a decision for the user, not something to fix unilaterally on a real, shared,
+  already-visible PR.
 
 ## References
 

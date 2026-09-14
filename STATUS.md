@@ -1,18 +1,20 @@
 # STATUS
 
-> **Phases 0–2 complete. Phase 3 complete except one gated live leg.** Phase 1's exit criterion
-> is met on both legs: the `defineWorkflow`/`startRun` runtime ran a real implement → test →
-> review workflow end-to-end against opencode, opening
+> **Phases 0–3 complete.** Phase 1's exit criterion is met on both legs: the
+> `defineWorkflow`/`startRun` runtime ran a real implement → test → review workflow end-to-end
+> against opencode, opening
 > [factory-spike#4](https://github.com/FreshlyBrewedCode/factory-spike/pull/4)
 > (`docs/findings/3-live-e2e-run.md`), and the same workflow runs green under the corpus-replay
 > adapter in `bun test` (`workflows/implement-issue.test.ts`). Phase 2's exit criterion is met:
 > a `SIGKILL` mid-run, followed by a real process restart against the same sqlite file, leaves
 > an intact, correctly-`"interrupted"` partial history (`docs/findings/4-crash-mid-run-recovery.md`).
-> Phase 3's exit criterion is met against fakes — unattended Ready-item pickup, a run to
-> completion, and SSE watchability, all proven end-to-end in
-> `src/server/integration.test.ts` — with one leg still outstanding: a live unattended dispatch
-> run against the real GitHub project that opens a real PR, gated behind explicit user
-> confirmation (ADR 0004). Phase 0's spike opened
+> Phase 3's exit criterion is now met on both legs: fakes-provable (unattended Ready-item pickup,
+> a run to completion, and SSE watchability, `src/server/integration.test.ts`) **and live** — a
+> real `factory serve --dispatch-*` run against a real GitHub Project picked up an issue
+> unattended and opened
+> [factory-spike#5](https://github.com/FreshlyBrewedCode/factory-spike/pull/5)
+> (`docs/findings/6-live-dispatch-run.md`). That live run also surfaced and fixed a genuine
+> stray-artifact bug in write-back (below). Phase 0's spike opened
 > [factory-spike#3](https://github.com/FreshlyBrewedCode/factory-spike/pull/3).
 
 Project pitch, stack and constraints live in `AGENTS.md`. This file tracks where we are, what
@@ -28,9 +30,9 @@ we have decided, and what is still unknown.
 
 Phase 1's runtime (`defineWorkflow`, `startRun`, the CLI), phase 2's persistence
 (`src/persistence/store.ts`, the `factory runs`/`factory log` CLI surface), and phase 3's
-server/dispatch (`src/server/`) are built and validated against fakes. Still missing: the live
-leg of phase 3's exit criterion (a real dispatch run that opens a real PR, gated behind user
-confirmation), and the UI (phase 4).
+server/dispatch (`src/server/`) are built and validated against fakes **and live** — the phase 3
+live dispatch run (`docs/findings/6-live-dispatch-run.md`) closed the last gated leg. Still
+missing: the UI (phase 4).
 
 ### On disk
 
@@ -134,6 +136,7 @@ D21 from phase 2's persistence design.
 | D22 | **Plain `Bun.serve` for HTTP + SSE, not Effect.** Request/response handling and the SSE replay-then-tail stream are ordinary functions.                                                                                                                                                                                                                                                                                                                                                           | ADR 0004. Same reasoning as D21: synchronous callback-shaped I/O with nothing for Effect to bridge. Effect's actual job in phase 3 is the dispatcher's scheduling loop, not request handling.                                                                                                                                                                                                                                                                                                                                                                                                          |
 | D23 | **`ReadySource`: a two-method pluggable interface** (`listReady`/`claim`), ported from the wayful script's GraphQL query + `gh project item-edit` claim, with the same soft/hard blocker distinction.                                                                                                                                                                                                                                                                                             | ADR 0004. `makeGitHubProjectsSource` is the only real implementation today; `makeFakeReadySource` backs `dispatch.test.ts`/`integration.test.ts`. A failed claim is "lost the race, skip", not an error.                                                                                                                                                                                                                                                                                                                                                                                              |
 | D24 | **No separate retry-state file.** Backoff is derived at reconcile time from the sqlite event log (`RunStarted.input.issueNumber` as the join key), doubling per consecutive failure. WIP limit of 1 is enforced via the current process's in-memory active-run registry, not sqlite. Per-issue backoff, not the wayful script's global pause-on-any-failure.                                                                                                                                    | ADR 0004. Nothing to keep in sync with the log it would cache. D12's "interrupted ≠ active" applies to dispatch too: a dead process's run doesn't block new dispatch after a restart. Global pause doesn't fit Factory — workflows are one-shot (D19), so a retry is always a fresh run, and global pause would starve unrelated issues for no offsetting benefit.                                                                                                                                                                                                                                  |
+| D25 | **`porcelainPaths` (`src/lib/writeback.ts`) always passes `--untracked-files=all` to `git status --porcelain`.** | Found by phase 3's live dispatch run, not by any prior test: plain `--porcelain` collapses a wholly-new untracked directory into one `?? dir/` line instead of listing files inside it, which let a nested D16 marker slip past `isStrayPath` and ship into a real PR (factory-spike#5). `docs/findings/6-live-dispatch-run.md`, `src/lib/writeback.test.ts`. |
 
 ## Still unknown
 
@@ -263,7 +266,7 @@ The event log becomes durable. Crash recovery scoped down per D12. Still CLI-dri
 **Exit — met:** kill the process mid-run, restart, and the run's history is intact and
 queryable.
 
-### Phase 3 — Server & dispatch (column 3) — **complete except one gated live leg**
+### Phase 3 — Server & dispatch (column 3) — **complete**
 
 HTTP API + SSE replay over the log; run create / cancel / list / get. Dispatcher as a
 reconciliation loop with a pluggable source (GitHub project first), porting the claim-lock,
@@ -294,17 +297,25 @@ WIP-limit, pause-on-failure and backoff semantics from the wayful script (record
   fake-fidelity gap (`makeFakeReadySource.listReady` wasn't filtering out claimed items) and an
   async test-timing bug (a fire-and-forget dispatched run outliving its test's `finally` block,
   closing the db out from under it) — see ADR 0004 and `dispatch.ts`/`ready-source.ts` history.
+- ~~Run the exit criterion's live leg.~~ Confirmed with the user first (same precedent as phase
+  1's live E2E leg), then run for real: a new GitHub Project (`factory-spike dispatch`, #4, its
+  default "Todo" option renamed to "Ready") wired via `factory serve --dispatch-*`, which picked
+  up issue #1 unattended and opened
+  [factory-spike#5](https://github.com/FreshlyBrewedCode/factory-spike/pull/5) —
+  `docs/findings/6-live-dispatch-run.md`. This run also found and fixed a genuine stray-artifact
+  bug: `git status --porcelain` collapses a wholly-new untracked directory into one summary line,
+  which let a D16 marker slip past `cleanStrayArtifacts` and ship into the PR. Fixed by D25
+  (`--untracked-files=all`), pinned by `src/lib/writeback.test.ts`.
 
 This is where concurrency stops being deferrable — see Deferred.
 
-**Exit — met against fakes:** the daemon picks up a Ready issue unattended, runs the workflow,
-and the run is watchable over SSE (`integration.test.ts`). **Not yet run:** the same cycle live
-against the real GitHub project, ending in a real PR — the "opens a PR" leg needs a real
-unattended dispatch run, which is a hard-to-revert, shared-state action (same class as phase 1's
-live E2E leg) and is gated behind explicit user confirmation before it runs. The write-back call
-path itself (`ctx.writeBack` → PR open) was already proven live in phase 1
-(`docs/findings/3-live-e2e-run.md`); what's unproven specifically for phase 3 is the dispatcher
-driving that call unattended.
+**Exit — met on both legs:** fakes-provable (`integration.test.ts` — unattended pickup, a run to
+completion, SSE watchability, WIP-limit enforcement) and live (`docs/findings/6-live-dispatch-run.md`
+— a real `factory serve --dispatch-*` run picked up a Ready issue unattended and opened a real
+PR, factory-spike#5). The write-back call path itself (`ctx.writeBack` → PR open) was already
+proven live in phase 1 (`docs/findings/3-live-e2e-run.md`); this run proved the dispatcher
+driving that call unattended. **Open item, not exit-blocking:** PR #5 itself still carries the
+stray-artifact file the live run's D25 fix came too late to prevent — see "Start here."
 
 ### Phase 4 — Web UI (column 2)
 
@@ -318,21 +329,18 @@ cancellation correctness.
 
 ## Start here
 
-Phases 0–2 are complete; phase 3 is complete against fakes (all exit criteria met — see each
-phase's section above, and ADR 0004 for D22–D24).
+Phases 0–3 are complete on every exit criterion, fakes and live (see each phase's section above,
+and ADR 0004 for D22–D24). Phase 4 (web UI, column 2) is the next phase proper.
 
-What's next is a choice, not a default: the one remaining piece of phase 3 is its gated live
-leg (an unattended `startDaemon` dispatch cycle against the real GitHub project, ending in a
-real PR) — this needs explicit user confirmation before running, same precedent as phase 1's
-live E2E leg. Absent that, phase 4 (web UI, column 2) is the next phase proper.
+Before that: **[factory-spike#5](https://github.com/FreshlyBrewedCode/factory-spike/pull/5)**,
+the PR the phase 3 live run opened, still carries the stray-artifact file its own D25 fix came
+too late to prevent (`docs/findings/6-live-dispatch-run.md`). It is real, shared-visibility state
+on GitHub — decide with the user how to handle it (leave as-is as a POC artifact demonstrating
+the bug, push a follow-up commit removing the file, or close it) before touching it unilaterally.
 
-1. To run phase 3's live leg: read `src/server/daemon.ts`'s `DispatchWiring` for what a real
-   run needs (a `GitHubProjectsConfig`, a clone SSH URL, a git identity, a workflow path), and
-   confirm with the user first — it opens a real PR against a real project, same class of action
-   as phase 1's live E2E run.
-2. To start phase 4 instead: read D6 (web UI deferred to phase 4, thin because the API
-   predates it) and `src/server/http.ts`'s route surface — the SPA is a client of what already
-   exists, not a redesign.
+To start phase 4: read D6 (web UI deferred to phase 4, thin because the API predates it) and
+`src/server/http.ts`'s route surface — the SPA is a client of what already exists, not a
+redesign.
 
 Left over from earlier phases, not exit-blocking, worth doing opportunistically:
 

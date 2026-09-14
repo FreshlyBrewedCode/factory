@@ -50,9 +50,16 @@ function isStrayPath(path: string): boolean {
   return STRAY_ARTIFACT_PATTERNS.some((re) => re.test(path));
 }
 
-/** `git status --porcelain` lines are `XY path` (or `XY old -> new` for renames). */
+/**
+ * `git status --porcelain` lines are `XY path` (or `XY old -> new` for renames).
+ * `--untracked-files=all` is required, not the default: for a wholly-new
+ * untracked directory, plain `--porcelain` collapses it to one `?? dir/` line
+ * instead of listing the files inside, which let a nested
+ * `.tanstack-projected-*` marker (D16) slip past `isStrayPath` undetected and
+ * ship into a real commit — the pattern only ever matches individual paths.
+ */
 async function porcelainPaths(dir: string, exec: ExecFn): Promise<ReadonlyArray<string>> {
-  const status = await exec(["git", "status", "--porcelain"]);
+  const status = await exec(["git", "status", "--porcelain", "--untracked-files=all"]);
   return status.stdout
     .split("\n")
     .filter((line) => line.trim() !== "")
