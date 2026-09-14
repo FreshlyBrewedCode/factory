@@ -8,13 +8,33 @@ import { serve } from "./http";
 
 const ECHO_WORKFLOW = `${import.meta.dir}/../../test/fixtures/echo-workflow.ts`;
 
+interface SseFrame {
+  /** The frame's `id:` line, i.e. the event's `seq` — `undefined` today is the G3 bug. */
+  readonly id: number | undefined;
+  readonly seq: number;
+  readonly tag: string;
+}
+
+function parseFrame(raw: string): SseFrame | undefined {
+  let id: number | undefined;
+  let data: string | undefined;
+  for (const line of raw.split("\n")) {
+    if (line.startsWith("id:")) id = Number(line.slice("id:".length).trim());
+    else if (line.startsWith("data:")) data = line.slice("data:".length).trimStart();
+  }
+  if (data === undefined) return undefined;
+  const event = JSON.parse(data) as { seq: number; payload: { _tag: string } };
+  return { id, seq: event.seq, tag: event.payload._tag };
+}
+
 async function readSseUntilTerminal(
   url: string,
-): Promise<ReadonlyArray<{ payload: { _tag: string } }>> {
-  const res = await fetch(url);
+  headers?: Record<string, string>,
+): Promise<ReadonlyArray<SseFrame>> {
+  const res = await fetch(url, headers === undefined ? undefined : { headers });
   const reader = res.body!.getReader();
   const decoder = new TextDecoder();
-  const events: Array<{ payload: { _tag: string } }> = [];
+  const frames: Array<SseFrame> = [];
   let buffer = "";
 
   while (true) {
@@ -24,20 +44,20 @@ async function readSseUntilTerminal(
 
     let idx = buffer.indexOf("\n\n");
     while (idx !== -1) {
-      const frame = buffer.slice(0, idx);
+      const raw = buffer.slice(0, idx);
       buffer = buffer.slice(idx + 2);
-      if (frame.startsWith("data: ")) {
-        const event = JSON.parse(frame.slice("data: ".length)) as { payload: { _tag: string } };
-        events.push(event);
-        if (["RunFinished", "RunFailed", "RunCancelled"].includes(event.payload._tag)) {
+      const frame = parseFrame(raw);
+      if (frame !== undefined) {
+        frames.push(frame);
+        if (["RunFinished", "RunFailed", "RunCancelled"].includes(frame.tag)) {
           reader.releaseLock();
-          return events;
+          return frames;
         }
       }
       idx = buffer.indexOf("\n\n");
     }
   }
-  return events;
+  return frames;
 }
 
 describe("phase 3 HTTP API + SSE", () => {
@@ -64,8 +84,8 @@ describe("phase 3 HTTP API + SSE", () => {
       const { runId } = (await startRes.json()) as { runId: string };
       expect(typeof runId).toBe("string");
 
-      const events = await readSseUntilTerminal(`${base}/api/runs/${runId}/events`);
-      const tags = events.map((e) => e.payload._tag);
+      const frames = await readSseUntilTerminal(`${base}/api/runs/${runId}/events`);
+      const tags = frames.map((f) => f.tag);
       expect(tags).toContain("RunStarted");
       expect(tags).toContain("RunFinished");
 
@@ -118,6 +138,49 @@ describe("phase 3 HTTP API + SSE", () => {
       const getRes = await fetch(`${base}/api/runs/${runId}`);
       const run = (await getRes.json()) as { status: string };
       expect(run.status).toBe("RunCancelled");
+    } finally {
+      await server.stop(true);
+      db.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("SSE frames carry id: <seq>, and a Last-Event-ID reconnect resumes past that seq", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "factory-http-resume-test-"));
+    const db = openStore(join(dir, "factory.db"));
+    const adapter = createSlowFakeAdapter(
+      [
+        { type: "TEXT_MESSAGE_START" },
+        { type: "TEXT_MESSAGE_CONTENT", delta: "hi" },
+        { type: "TEXT_MESSAGE_END" },
+      ],
+      1,
+    );
+    const server = serve({ db, adapter, port: 0 });
+    const base = `http://localhost:${server.port}`;
+
+    try {
+      const startRes = await fetch(`${base}/api/runs`, {
+        method: "POST",
+        body: JSON.stringify({ workflowPath: ECHO_WORKFLOW, input: {}, dir }),
+      });
+      const { runId } = (await startRes.json()) as { runId: string };
+      const eventsUrl = `${base}/api/runs/${runId}/events`;
+
+      const first = await readSseUntilTerminal(eventsUrl);
+      expect(first.length).toBeGreaterThan(2);
+      // Every frame is stamped with its own seq.
+      for (const frame of first) expect(frame.id).toBe(frame.seq);
+
+      // Reconnect from a seq partway through: exactly the events after it, no
+      // replay of the prefix (the whole point of `id:` + Last-Event-ID).
+      const resumeFrom = first[1]!.seq;
+      const expectedAfter = first.filter((f) => f.seq > resumeFrom).map((f) => f.seq);
+      const resumed = await readSseUntilTerminal(eventsUrl, {
+        "Last-Event-ID": String(resumeFrom),
+      });
+      expect(resumed.map((f) => f.seq)).toEqual(expectedAfter);
+      expect(resumed.every((f) => f.seq > resumeFrom)).toBe(true);
     } finally {
       await server.stop(true);
       db.close();

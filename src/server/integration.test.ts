@@ -96,8 +96,11 @@ describe("phase 3 exit criterion (fakes): unattended pickup -> run -> SSE watch"
         while (idx !== -1) {
           const frame = buffer.slice(0, idx);
           buffer = buffer.slice(idx + 2);
-          if (frame.startsWith("data: ")) {
-            const event = JSON.parse(frame.slice("data: ".length)) as { payload: { _tag: string } };
+          const dataLine = frame.split("\n").find((line) => line.startsWith("data:"));
+          if (dataLine !== undefined) {
+            const event = JSON.parse(dataLine.slice("data:".length).trimStart()) as {
+              payload: { _tag: string };
+            };
             tags.push(event.payload._tag);
             if (["RunFinished", "RunFailed", "RunCancelled"].includes(event.payload._tag)) {
               reader.releaseLock();

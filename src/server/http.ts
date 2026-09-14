@@ -48,17 +48,31 @@ function json(body: unknown, init?: { readonly status?: number }): Response {
   });
 }
 
-function sseStream(db: Database, runId: string): ReadableStream<Uint8Array> {
+/**
+ * The SSE `Last-Event-ID` header, or `undefined` if absent or not a sequence
+ * number. `EventSource` sends it automatically on reconnect, and `seq` is the
+ * value we stamp on each frame's `id:` line, so it is the resume offset.
+ */
+function parseLastEventId(req: Request): number | undefined {
+  const raw = req.headers.get("last-event-id");
+  if (raw === null || !/^\d+$/.test(raw)) return undefined;
+  return Number(raw);
+}
+
+function sseStream(db: Database, runId: string, lastEventId?: number): ReadableStream<Uint8Array> {
   const encoder = new TextEncoder();
 
   return new ReadableStream({
     start(controller) {
-      let lastSeq = -1;
+      // `Last-Event-ID` makes this resume: seed `lastSeq` from it and the
+      // persisted replay below skips everything the client already has, exactly
+      // as the live tail already does. `seq` is the offset (D20/D26).
+      let lastSeq = lastEventId ?? -1;
       let draining = false;
       const buffered: Array<RunEvent> = [];
 
       const send = (event: RunEvent): void => {
-        controller.enqueue(encoder.encode(`data: ${JSON.stringify(event)}\n\n`));
+        controller.enqueue(encoder.encode(`id: ${event.seq}\ndata: ${JSON.stringify(event)}\n\n`));
         lastSeq = event.seq;
       };
 
@@ -75,7 +89,10 @@ function sseStream(db: Database, runId: string): ReadableStream<Uint8Array> {
         }
       });
 
-      for (const event of getRunEvents(db, runId)) send(event);
+      for (const event of getRunEvents(db, runId)) {
+        if (event.seq <= lastSeq) continue;
+        send(event);
+      }
 
       draining = true;
       let sawTerminal = false;
@@ -154,7 +171,7 @@ export function createHandler(options: ServerOptions): (req: Request) => Promise
       const runId = eventsMatch[1] as string;
       const exists = listRuns(options.db).some((r) => r.runId === runId);
       if (!exists) return json({ error: "not found" }, { status: 404 });
-      return new Response(sseStream(options.db, runId), {
+      return new Response(sseStream(options.db, runId, parseLastEventId(req)), {
         headers: {
           "content-type": "text/event-stream",
           "cache-control": "no-cache",
