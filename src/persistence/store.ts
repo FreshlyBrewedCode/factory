@@ -91,11 +91,11 @@ export interface RunSummary {
 }
 
 export function listRuns(db: Database): ReadonlyArray<RunSummary> {
-  const rows = db
-    .query<{ run_id: string }, []>("SELECT DISTINCT run_id FROM events ORDER BY run_id ASC")
-    .all();
+  const rows = db.query<{ run_id: string }, []>("SELECT DISTINCT run_id FROM events").all();
 
-  return rows.map(({ run_id }) => summarizeRun(db, run_id));
+  return rows
+    .map(({ run_id }) => summarizeRun(db, run_id))
+    .sort((a, b) => b.startedAt - a.startedAt || a.runId.localeCompare(b.runId));
 }
 
 function summarizeRun(db: Database, runId: string): RunSummary {

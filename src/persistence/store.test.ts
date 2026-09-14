@@ -6,6 +6,10 @@ function event(runId: string, seq: number, payload: RunEvent["payload"]): RunEve
   return { runId, seq, ts: 1_000 + seq, payload };
 }
 
+function eventAt(runId: string, seq: number, ts: number, payload: RunEvent["payload"]): RunEvent {
+  return { runId, seq, ts, payload };
+}
+
 describe("persistence/store", () => {
   test("round-trips events through sqlite in seq order", () => {
     const db = openStore(":memory:");
@@ -74,5 +78,36 @@ describe("persistence/store", () => {
     );
 
     expect(listRuns(db).map((r) => r.runId)).toEqual(["run-1", "run-2"]);
+  });
+
+  test("listRuns orders by start time, newest first — not by runId", () => {
+    const db = openStore(":memory:");
+    const start = (runId: string, ts: number): RunEvent =>
+      eventAt(runId, 0, ts, { _tag: "RunStarted", workflowId: "wf", dir: "/tmp", input: {} });
+
+    // Insertion order, runId order and start order all disagree, so only a
+    // start-time sort yields the expected sequence. `run-zzz`'s second event is
+    // back-dated (as `sandbox.file` chunks are) to pin that the start time is
+    // the *first* event's ts, not the run's minimum ts.
+    appendEvent(db, start("run-mmm", 2_000));
+    appendEvent(db, start("run-zzz", 3_000));
+    appendEvent(db, start("run-aaa", 1_000));
+    appendEvent(
+      db,
+      eventAt("run-zzz", 1, 10, { _tag: "LogRecorded", name: "back-dated", data: {} }),
+    );
+
+    expect(listRuns(db).map((r) => r.runId)).toEqual(["run-zzz", "run-mmm", "run-aaa"]);
+  });
+
+  test("listRuns breaks start-time ties deterministically by runId", () => {
+    const db = openStore(":memory:");
+    const start = (runId: string): RunEvent =>
+      eventAt(runId, 0, 5_000, { _tag: "RunStarted", workflowId: "wf", dir: "/tmp", input: {} });
+
+    appendEvent(db, start("run-b"));
+    appendEvent(db, start("run-a"));
+
+    expect(listRuns(db).map((r) => r.runId)).toEqual(["run-a", "run-b"]);
   });
 });
