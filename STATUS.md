@@ -378,7 +378,10 @@ Standing rule for every step: **tests drive the real server and a real sqlite ev
 mocks `fetch`. `test/corpus/` plus the two existing fake adapters make a realistic backend
 deterministic, so the UI never needs stubbed data.
 
-**S1 — API fixes.** G1, G2, G3. No UI, no new endpoints.
+**S1 — API fixes.** G1, G2, G3. No UI, no new endpoints. **Done** — `listRuns` now orders
+newest-first by start time (ties broken by `runId`) and builds every summary from SQL
+aggregates without reading a run's events; SSE frames carry `id: ${seq}` and the handler honours
+`Last-Event-ID`. All three pinned by new tests in `store.test.ts`/`http.test.ts` (54 passing).
 _Validated by:_ `bun test` alone. The ordering test seeds runs with deliberately out-of-order
 UUIDs and interleaved timestamps — today's suite cannot see G1. G2 is a refactor, so equivalence
 of the summary fields is the criterion, not throughput (asserting perf here would be flaky and
@@ -446,11 +449,13 @@ and ADR 0004 for D22–D24).
 prevent — was closed with the user's confirmation, not amended
 (`docs/findings/6-live-dispatch-run.md`).
 
-**Next: phase 4, step S1** — the three server-side fixes (G1 run ordering, G2 cheap summaries,
-G3 resumable SSE), which need no UI and are provable in `bun test` alone. The full step plan,
-the four API gaps it closes, and the validation criteria for every step are in the phase 4
-section above. Read D6 and D26 first, then `src/server/http.ts`'s route surface — the SPA is a
-client of what already exists, not a redesign.
+**Next: phase 4, step S2** — the SPA scaffold: React + TanStack Router/Query + tailwind +
+shadcn, bundled by Bun and served from the same `Bun.serve` as the API (`/`), plus the first
+playwright smoke test wired through `nix develop`. S1 closed all three server-side gaps — run
+ordering, cheap summaries, resumable SSE — and needs no UI. The full step plan, the four API
+gaps and the validation criteria for every step are in the phase 4 section above. Read D6 and
+D26 first, then `src/server/http.ts`'s route surface — the SPA is a client of what already
+exists, not a redesign.
 
 Left over from earlier phases, not exit-blocking, worth doing opportunistically:
 
