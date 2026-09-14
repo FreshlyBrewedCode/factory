@@ -1,6 +1,13 @@
 import { describe, expect, test } from "bun:test";
-import type { RunEvent } from "../events";
-import { appendEvent, getRunEvents, listRuns, openStore } from "./store";
+import { isTerminal, type RunEvent } from "../events";
+import {
+  appendEvent,
+  getRunEvents,
+  listRuns,
+  openStore,
+  type RunStatus,
+  type RunSummary,
+} from "./store";
 
 function event(runId: string, seq: number, payload: RunEvent["payload"]): RunEvent {
   return { runId, seq, ts: 1_000 + seq, payload };
@@ -8,6 +15,25 @@ function event(runId: string, seq: number, payload: RunEvent["payload"]): RunEve
 
 function eventAt(runId: string, seq: number, ts: number, payload: RunEvent["payload"]): RunEvent {
   return { runId, seq, ts, payload };
+}
+
+/**
+ * The pre-refactor definition of a summary, kept here as an oracle: `listRuns`
+ * must produce exactly these fields after G2's cheap-summary rewrite. Reads
+ * every event on purpose — correct but expensive is the reference.
+ */
+function referenceSummary(runId: string, events: ReadonlyArray<RunEvent>): RunSummary {
+  const started = events.find((e) => e.payload._tag === "RunStarted");
+  const terminal = events.find((e) => isTerminal(e.payload));
+  return {
+    runId,
+    workflowId: started?.payload._tag === "RunStarted" ? started.payload.workflowId : undefined,
+    dir: started?.payload._tag === "RunStarted" ? started.payload.dir : undefined,
+    startedAt: events[0]?.ts ?? 0,
+    finishedAt: terminal?.ts,
+    status: terminal !== undefined ? (terminal.payload._tag as RunStatus) : "interrupted",
+    eventCount: events.length,
+  };
 }
 
 describe("persistence/store", () => {
@@ -109,5 +135,41 @@ describe("persistence/store", () => {
     appendEvent(db, start("run-a"));
 
     expect(listRuns(db).map((r) => r.runId)).toEqual(["run-a", "run-b"]);
+  });
+
+  test("listRuns summaries are field-equivalent to reading every event (G2)", () => {
+    const db = openStore(":memory:");
+    const started = (runId: string, ts: number, dir: string): RunEvent =>
+      eventAt(runId, 0, ts, { _tag: "RunStarted", workflowId: `wf-${runId}`, dir, input: {} });
+
+    // A completed, a failed, a cancelled and an interrupted run, with events
+    // interleaved across runs so no per-run read order is assumed.
+    appendEvent(db, started("run-ok", 100, "/ok"));
+    appendEvent(db, started("run-bad", 300, "/bad"));
+    appendEvent(db, started("run-cancelled", 400, "/cancelled"));
+    appendEvent(db, started("run-dead", 500, "/dead"));
+    appendEvent(
+      db,
+      eventAt("run-ok", 1, 110, {
+        _tag: "AgentStepStarted",
+        stepId: "step-0",
+        name: "implement",
+        model: "m",
+        prompt: "p",
+        structured: false,
+      }),
+    );
+    appendEvent(
+      db,
+      eventAt("run-bad", 1, 310, { _tag: "RunFailed", message: "boom", durationMs: 10 }),
+    );
+    appendEvent(db, eventAt("run-ok", 2, 120, { _tag: "RunFinished", durationMs: 20 }));
+    appendEvent(db, eventAt("run-cancelled", 1, 410, { _tag: "RunCancelled", durationMs: 5 }));
+    // run-dead gets no terminal event — it is the interrupted case.
+
+    const actual = new Map(listRuns(db).map((summary) => [summary.runId, summary]));
+    for (const runId of ["run-ok", "run-bad", "run-cancelled", "run-dead"]) {
+      expect(actual.get(runId)).toEqual(referenceSummary(runId, getRunEvents(db, runId)));
+    }
   });
 });

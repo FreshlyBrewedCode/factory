@@ -18,7 +18,7 @@
 
 import { Database } from "bun:sqlite";
 import { Schema, SchemaParser } from "effect";
-import { isTerminal, RunEvent, type RunEventPayload } from "../events";
+import { RunEvent, type RunEventPayload } from "../events";
 
 export function openStore(path: string): Database {
   const db = new Database(path, { create: true });
@@ -90,26 +90,70 @@ export interface RunSummary {
   readonly eventCount: number;
 }
 
-export function listRuns(db: Database): ReadonlyArray<RunSummary> {
-  const rows = db.query<{ run_id: string }, []>("SELECT DISTINCT run_id FROM events").all();
-
-  return rows
-    .map(({ run_id }) => summarizeRun(db, run_id))
-    .sort((a, b) => b.startedAt - a.startedAt || a.runId.localeCompare(b.runId));
+interface RunSummaryRow {
+  readonly run_id: string;
+  readonly event_count: number;
+  readonly started_at: number;
+  readonly started_payload: string | null;
+  readonly finished_at: number | null;
+  readonly status: string | null;
 }
 
-function summarizeRun(db: Database, runId: string): RunSummary {
-  const events = getRunEvents(db, runId);
-  const started = events.find((e) => e.payload._tag === "RunStarted");
-  const terminal = events.find((e) => isTerminal(e.payload));
+/**
+ * One row per run, aggregated by SQL so a summary never reads (or decodes) a
+ * run's events. The correlated subqueries pick, per run: the first event (its
+ * `ts` is the start time — the old `events[0].ts`, deliberately not `MIN(ts)`,
+ * which a back-dated `sandbox.file`-style chunk would corrupt), the `RunStarted`
+ * row (for `workflowId`/`dir`) and the first terminal row (for status/timing).
+ *
+ * Ordering is the runs page's: newest first, ties broken by `runId` so the
+ * order is stable rather than whatever the row scan happens to produce.
+ */
+export function listRuns(db: Database): ReadonlyArray<RunSummary> {
+  const rows = db
+    .query<RunSummaryRow, []>(`
+      SELECT
+        agg.run_id AS run_id,
+        agg.event_count AS event_count,
+        first_evt.ts AS started_at,
+        started.payload AS started_payload,
+        term.ts AS finished_at,
+        term.tag AS status
+      FROM (SELECT run_id, COUNT(*) AS event_count FROM events GROUP BY run_id) AS agg
+      JOIN events AS first_evt
+        ON first_evt.run_id = agg.run_id
+       AND first_evt.seq = (SELECT MIN(m.seq) FROM events AS m WHERE m.run_id = agg.run_id)
+      LEFT JOIN events AS started
+        ON started.run_id = agg.run_id
+       AND started.seq = (
+         SELECT MIN(s.seq) FROM events AS s
+         WHERE s.run_id = agg.run_id AND s.tag = 'RunStarted'
+       )
+      LEFT JOIN events AS term
+        ON term.run_id = agg.run_id
+       AND term.seq = (
+         SELECT MIN(t.seq) FROM events AS t
+         WHERE t.run_id = agg.run_id
+           AND t.tag IN ('RunFinished', 'RunFailed', 'RunCancelled')
+       )
+      ORDER BY started_at DESC, agg.run_id ASC
+    `)
+    .all();
 
-  return {
-    runId,
-    workflowId: started?.payload._tag === "RunStarted" ? started.payload.workflowId : undefined,
-    dir: started?.payload._tag === "RunStarted" ? started.payload.dir : undefined,
-    startedAt: events[0]?.ts ?? 0,
-    finishedAt: terminal?.ts,
-    status: terminal !== undefined ? (terminal.payload._tag as RunStatus) : "interrupted",
-    eventCount: events.length,
-  };
+  return rows.map((row) => {
+    const started =
+      row.started_payload === null
+        ? undefined
+        : (JSON.parse(row.started_payload) as RunEventPayload);
+
+    return {
+      runId: row.run_id,
+      workflowId: started?._tag === "RunStarted" ? started.workflowId : undefined,
+      dir: started?._tag === "RunStarted" ? started.dir : undefined,
+      startedAt: row.started_at,
+      finishedAt: row.finished_at ?? undefined,
+      status: row.status === null ? "interrupted" : (row.status as RunStatus),
+      eventCount: row.event_count,
+    };
+  });
 }
