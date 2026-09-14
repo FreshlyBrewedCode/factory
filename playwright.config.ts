@@ -23,12 +23,15 @@ export default defineConfig({
   use: {
     baseURL: BASE_URL,
     trace: "on-first-retry",
+    // Finding 7's review viewport; wide enough for the run detail's steps +
+    // details two-pane layout.
+    viewport: { width: 1440, height: 900 },
   },
   projects: [{ name: "chromium", use: { ...devices["Desktop Chrome"] } }],
   webServer: {
-    command: `bun src/cli.ts serve --db .factory/e2e/factory.db --port ${PORT}`,
+    command: `bun e2e/server.ts`,
     url: `${BASE_URL}/api/runs`,
     reuseExistingServer: process.env.CI === undefined,
-    timeout: 30_000,
+    timeout: 60_000,
   },
 });
