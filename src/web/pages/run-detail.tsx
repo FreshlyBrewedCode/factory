@@ -1,11 +1,25 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { Link, useParams } from "@tanstack/react-router";
 import { PanelRight, X } from "lucide-react";
 import type { RunEvent } from "@/web/api";
 import { Button } from "@/web/components/ui/button";
+import {
+  MessageScroller,
+  MessageScrollerContent,
+  MessageScrollerItem,
+  MessageScrollerProvider,
+  MessageScrollerViewport,
+} from "@/web/components/ui/message-scroller";
 import { useRun, useRunEvents, useTickingNow } from "@/web/hooks";
 import { formatAgo, formatClock, formatDuration } from "@/web/lib/format";
-import { deriveRunMeta, deriveSteps, summarizeEvent, type StepView } from "@/web/lib/run-events";
+import {
+  deriveRunMeta,
+  deriveSteps,
+  summarizeEvent,
+  type AgentStepView,
+  type StepView,
+} from "@/web/lib/run-events";
+import { deriveTranscript, toTranscriptRows, type TranscriptRow } from "@/web/lib/transcript";
 import { runDisplayStatus } from "@/web/lib/status";
 import { StatusCell } from "@/web/components/status-cell";
 import { useEscapeKey } from "@/web/lib/use-escape-key";
@@ -217,14 +231,16 @@ function StepsList({
 function Disclosure({
   label,
   hint,
+  testId,
   children,
 }: {
   readonly label: string;
   readonly hint?: string;
+  readonly testId?: string;
   readonly children: React.ReactNode;
 }) {
   return (
-    <details className="border border-border bg-muted/40">
+    <details data-testid={testId} className="border border-border bg-muted/40">
       <summary className="flex cursor-pointer items-center gap-2 px-3 py-2 font-mono text-[11px]">
         <span>{label}</span>
         {hint !== undefined ? <span className="ml-auto text-muted-foreground">{hint}</span> : null}
@@ -268,6 +284,118 @@ function JsonBlock({ value }: { readonly value: unknown }) {
   );
 }
 
+/** One transcript part: prose for text, the shared disclosure for the rest. */
+function TranscriptRowView({ row }: { readonly row: TranscriptRow }) {
+  switch (row.kind) {
+    case "text":
+      return (
+        <p
+          data-testid="transcript-text"
+          className="text-xs leading-relaxed break-words whitespace-pre-wrap"
+        >
+          {row.content}
+        </p>
+      );
+    case "thinking":
+      return (
+        <Disclosure testId="transcript-reasoning" label="Reasoning">
+          {row.content}
+        </Disclosure>
+      );
+    case "tool-call":
+      return (
+        <Disclosure testId="transcript-tool" label={row.name} hint={row.state}>
+          {row.args !== "" ? <div data-testid="transcript-tool-args">{row.args}</div> : null}
+          {row.result !== undefined ? (
+            <div
+              data-testid="transcript-tool-result"
+              className={cn("mt-2", row.isError && "text-status-blocked")}
+            >
+              {row.result}
+            </div>
+          ) : null}
+        </Disclosure>
+      );
+    case "structured-output":
+      return (
+        <Disclosure
+          testId="transcript-structured-output"
+          label="Structured output"
+          hint={row.status}
+        >
+          <JsonBlock value={row.data} />
+        </Disclosure>
+      );
+  }
+}
+
+/**
+ * Full-panel transcript (finding 7): the step's original prompt at the top,
+ * then the message stream, with a back control. The `message-scroller` owns the
+ * scroll; `autoScroll` only while the step is live so a reader can scroll back
+ * without being yanked to the edge. `defaultScrollPosition="start"` opens a
+ * saved transcript at the prompt.
+ */
+function TranscriptPanel({
+  step,
+  events,
+  onBack,
+}: {
+  readonly step: AgentStepView;
+  readonly events: ReadonlyArray<RunEvent>;
+  readonly onBack: () => void;
+}) {
+  const { prompt, messages } = useMemo(
+    () => deriveTranscript(events, step.stepId),
+    [events, step.stepId],
+  );
+  const rows = useMemo(() => toTranscriptRows(messages), [messages]);
+  const live = step.status === "running";
+
+  return (
+    <div data-testid="transcript" className="flex h-full min-h-0 flex-col">
+      <div className="flex items-center gap-2 border-b border-border px-4 py-2">
+        <button
+          type="button"
+          data-testid="transcript-back"
+          onClick={onBack}
+          className="font-mono text-[11px] text-muted-foreground hover:text-foreground"
+        >
+          ‹ {step.name}
+        </button>
+        <span className="ml-auto font-mono text-[11px] text-muted-foreground">transcript</span>
+      </div>
+      <MessageScrollerProvider defaultScrollPosition="start" autoScroll={live}>
+        <MessageScroller className="min-h-0 flex-1">
+          <MessageScrollerViewport>
+            <MessageScrollerContent className="gap-3 p-4">
+              <MessageScrollerItem messageId="prompt" scrollAnchor>
+                <span className="text-[11px] font-semibold tracking-wide text-muted-foreground uppercase">
+                  Prompt
+                </span>
+                <div
+                  data-testid="transcript-prompt"
+                  className="mt-1.5 border border-border bg-muted/40 px-3 py-2 font-mono text-[11px] leading-relaxed break-words whitespace-pre-wrap"
+                >
+                  {prompt}
+                </div>
+              </MessageScrollerItem>
+              {rows.map((row, index) => (
+                <MessageScrollerItem key={`${row.kind}-${index}`} messageId={`row-${index}`}>
+                  <TranscriptRowView row={row} />
+                </MessageScrollerItem>
+              ))}
+              {live ? (
+                <span className="font-mono text-[11px] text-muted-foreground">streaming…</span>
+              ) : null}
+            </MessageScrollerContent>
+          </MessageScrollerViewport>
+        </MessageScroller>
+      </MessageScrollerProvider>
+    </div>
+  );
+}
+
 function fieldRow(label: string, value: React.ReactNode) {
   return (
     <div key={label} className="flex gap-3 text-xs">
@@ -277,8 +405,14 @@ function fieldRow(label: string, value: React.ReactNode) {
   );
 }
 
-/** Progressive step detail: summary fields, then collapsed disclosures. The transcript is S4. */
-function StepDetails({ step }: { readonly step: StepView }) {
+/** Progressive step detail: summary fields, then collapsed disclosures, then the transcript. */
+function StepDetails({
+  step,
+  onOpenTranscript,
+}: {
+  readonly step: StepView;
+  readonly onOpenTranscript?: () => void;
+}) {
   const fields: Array<React.ReactNode> = [];
   switch (step.kind) {
     case "agent":
@@ -383,6 +517,17 @@ function StepDetails({ step }: { readonly step: StepView }) {
         <div className="grid gap-1.5">{fields}</div>
       </section>
       <section className="grid gap-2">
+        {step.kind === "agent" && onOpenTranscript !== undefined ? (
+          <button
+            type="button"
+            data-testid="open-transcript"
+            onClick={onOpenTranscript}
+            className="flex w-full items-center gap-2 border border-border bg-muted/40 px-3 py-2 text-left font-mono text-[11px] hover:text-foreground"
+          >
+            <span>Transcript</span>
+            <span className="ml-auto text-muted-foreground">prompt + {step.chunkCount} chunks</span>
+          </button>
+        ) : null}
         {disclosures}
         <Disclosure label="Raw payload" hint="step view">
           <JsonBlock value={step} />
@@ -442,11 +587,16 @@ function RunDetailView({ runId }: { readonly runId: string }) {
   const [tab, setTab] = useState<"steps" | "events">("steps");
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
   const [inspectorOpen, setInspectorOpen] = useState(false);
+  const [transcriptOpen, setTranscriptOpen] = useState(false);
   const inspectorCompact = useMediaQuery(INSPECTOR_COMPACT_QUERY);
-  const closeInspector = () => setInspectorOpen(false);
+  const closeInspector = () => {
+    setInspectorOpen(false);
+    setTranscriptOpen(false);
+  };
   const selectStep = (key: string) => {
     setSelectedKey(key);
     setInspectorOpen(true);
+    setTranscriptOpen(false);
   };
 
   useEscapeKey(inspectorCompact && inspectorOpen, closeInspector);
@@ -504,6 +654,23 @@ function RunDetailView({ runId }: { readonly runId: string }) {
   const showAside = selected !== null && inspectorOpen;
   const desktopAside = showAside && !inspectorCompact;
   const mobileSheet = showAside && inspectorCompact;
+
+  const selectedAgent = selected?.kind === "agent" ? selected : null;
+  const inspectorBody =
+    selected === null ? null : transcriptOpen && selectedAgent !== null ? (
+      <TranscriptPanel
+        step={selectedAgent}
+        events={events}
+        onBack={() => setTranscriptOpen(false)}
+      />
+    ) : (
+      <div className="min-h-0 flex-1 overflow-y-auto p-4">
+        <StepDetails
+          step={selected}
+          onOpenTranscript={selected.kind === "agent" ? () => setTranscriptOpen(true) : undefined}
+        />
+      </div>
+    );
 
   return (
     <section data-testid="run-detail" className="flex h-full overflow-hidden">
@@ -599,8 +766,8 @@ function RunDetailView({ runId }: { readonly runId: string }) {
       </div>
 
       {desktopAside && selected !== null ? (
-        <aside className="h-full w-[22rem] shrink-0 overflow-y-auto border-l border-border p-4">
-          <StepDetails step={selected} />
+        <aside className="flex h-full w-[22rem] shrink-0 flex-col overflow-hidden border-l border-border">
+          {inspectorBody}
         </aside>
       ) : null}
 
@@ -612,16 +779,21 @@ function RunDetailView({ runId }: { readonly runId: string }) {
         />
       ) : null}
       {selected !== null && inspectorOpen && inspectorCompact ? (
-        <aside className="fixed top-14 right-0 bottom-0 z-50 w-full max-w-sm overflow-y-auto border-l border-border bg-card p-4 shadow-lg">
-          <div className="mb-3 flex items-center justify-between">
+        <aside className="fixed top-14 right-0 bottom-0 z-50 flex w-full max-w-sm flex-col overflow-hidden border-l border-border bg-card shadow-lg">
+          <div className="flex items-center justify-between border-b border-border px-4 py-2">
             <span className="text-[11px] font-semibold tracking-wide text-muted-foreground uppercase">
               Step detail
             </span>
-            <Button variant="ghost" size="icon" aria-label="Close inspector" onClick={closeInspector}>
+            <Button
+              variant="ghost"
+              size="icon"
+              aria-label="Close inspector"
+              onClick={closeInspector}
+            >
               <X />
             </Button>
           </div>
-          <StepDetails step={selected} />
+          {inspectorBody}
         </aside>
       ) : null}
     </section>
