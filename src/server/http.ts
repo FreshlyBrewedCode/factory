@@ -10,7 +10,14 @@
  *   POST /api/runs              -> {runId}, starts a run      (`startTrackedRun`)
  *   POST /api/runs/:id/cancel   -> {runId, cancelled} | 409 (not active)
  *   GET  /api/runs/:id/events   -> SSE: persisted history, then live tail
- *   GET  /                      -> the optional static viewer, if configured
+ *   GET  /                      -> the phase 4 SPA (all non-API paths)
+ *
+ * Since phase 4, `serve()` is the composition root: the API handler is mounted
+ * under `/api/*` and Bun's fullstack bundler serves `src/web/index.html` at `/`
+ * and every other path (`/*`), so a client-side route deep link still gets the
+ * SPA shell. Both live on one origin, which is why CORS never has to exist.
+ * The route precedence — `/api/*` beating `/*` — is Bun's, exercised by
+ * `http.test.ts`.
  *
  * SSE replay-then-tail race: `sseStream` subscribes to the live pubsub
  * *before* reading `getRunEvents`, buffering anything that arrives in
@@ -25,13 +32,13 @@ import { resetClone, type GitIdentity } from "../lib/clone";
 import { loadWorkflow } from "../lib/load-workflow";
 import { getRunEvents, listRuns } from "../persistence/store";
 import type { AgentAdapter } from "../runtime/agent-adapter";
+import index from "../web/index.html";
 import { subscribe } from "./pubsub";
 import { getActiveHandle, isActive, startTrackedRun } from "./runs";
 
 export interface ServerOptions {
   readonly db: Database;
   readonly adapter: AgentAdapter;
-  readonly viewerHtml?: string;
 }
 
 interface StartRunBody {
@@ -114,12 +121,6 @@ export function createHandler(options: ServerOptions): (req: Request) => Promise
   return async (req: Request): Promise<Response> => {
     const url = new URL(req.url);
 
-    if (req.method === "GET" && url.pathname === "/") {
-      return new Response(options.viewerHtml ?? "factory server\n", {
-        headers: { "content-type": options.viewerHtml !== undefined ? "text/html" : "text/plain" },
-      });
-    }
-
     if (req.method === "GET" && url.pathname === "/api/runs") {
       return json(listRuns(options.db));
     }
@@ -193,5 +194,19 @@ export function createHandler(options: ServerOptions): (req: Request) => Promise
 }
 
 export function serve(options: ServerOptions & { port?: number }): ReturnType<typeof Bun.serve> {
-  return Bun.serve({ port: options.port ?? 0, fetch: createHandler(options) });
+  const handler = createHandler(options);
+  return Bun.serve({
+    port: options.port ?? 0,
+    routes: {
+      "/": index,
+      "/api/*": (req) => handler(req),
+      "/*": index,
+    },
+    // Bun's `development: true` HMR mode crashes TanStack Router at boot
+    // (`Cannot read properties of null (reading 'replaceRouteChunk')` from
+    // router-core's dev-only prototype patch). Runtime bundling with
+    // `development: false` still serves the same HTML-route bundle, cached and
+    // minified, so the POC takes correctness over hot reload. See STATUS S2.
+    development: false,
+  });
 }

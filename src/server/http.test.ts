@@ -60,6 +60,40 @@ async function readSseUntilTerminal(
   return frames;
 }
 
+describe("phase 4 SPA serving", () => {
+  test("serves the bundled SPA at / and deep links, and /api/* same-origin", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "factory-spa-test-"));
+    const db = openStore(join(dir, "factory.db"));
+    const adapter = createSlowFakeAdapter([{ type: "TEXT_MESSAGE_START" }], 1);
+    const server = serve({ db, adapter, port: 0 });
+    const base = `http://localhost:${server.port}`;
+
+    try {
+      const rootRes = await fetch(`${base}/`);
+      expect(rootRes.status).toBe(200);
+      expect(rootRes.headers.get("content-type")).toContain("text/html");
+      expect(await rootRes.text()).toContain('id="root"');
+
+      // A client-side route that the server never sees on a fresh load still
+      // has to return the SPA shell, not a 404.
+      const deepRes = await fetch(`${base}/dispatch`);
+      expect(deepRes.status).toBe(200);
+      expect(deepRes.headers.get("content-type")).toContain("text/html");
+      expect(await deepRes.text()).toContain('id="root"');
+
+      // The SPA is served by the same origin as the API — no CORS involved.
+      const apiRes = await fetch(`${base}/api/runs`);
+      expect(apiRes.status).toBe(200);
+      expect(apiRes.headers.get("content-type")).toContain("application/json");
+      expect(await apiRes.json()).toEqual([]);
+    } finally {
+      await server.stop(true);
+      db.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("phase 3 HTTP API + SSE", () => {
   test("start a run, list it, replay its events over SSE, then see it finished", async () => {
     const dir = mkdtempSync(join(tmpdir(), "factory-http-test-"));

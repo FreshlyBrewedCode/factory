@@ -24,7 +24,6 @@ import {
   type ReadyItem,
 } from "./ready-source";
 import { activeRunIds, startTrackedRun } from "./runs";
-import { VIEWER_HTML } from "./viewer";
 
 export interface DispatchWiring {
   readonly github: GitHubProjectsConfig;
@@ -56,7 +55,7 @@ export async function startDaemon(options: DaemonOptions): Promise<DaemonHandle>
   const db = openStore(options.dbPath);
   const adapter = options.adapter ?? opencodeAdapter;
 
-  const server = serve({ db, adapter, port: options.port, viewerHtml: VIEWER_HTML });
+  const server = serve({ db, adapter, port: options.port });
 
   let dispatchFiber: AnyFiber | undefined;
   if (options.dispatch !== undefined) {
