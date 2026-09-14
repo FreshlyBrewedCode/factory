@@ -31,11 +31,13 @@ we have decided, and what is still unknown.
 Phase 1's runtime (`defineWorkflow`, `startRun`, the CLI), phase 2's persistence
 (`src/persistence/store.ts`, the `factory runs`/`factory log` CLI surface), and phase 3's
 server/dispatch (`src/server/`) are built and validated against fakes **and live** — the phase 3
-live dispatch run (`docs/findings/6-live-dispatch-run.md`) closed the last gated leg. Still
-missing: the UI (phase 4) proper; a throwaway visual mock exists for brainstorming and has had one
-refinement pass (`prototypes/phase4-ui/index.html`,
-`docs/findings/7-phase4-ui-prototype-refinement.md`). Phase 4 now has an agreed step plan with
-per-step validation criteria and one new decision (D26, live-data transport) — see its section.
+live dispatch run (`docs/findings/6-live-dispatch-run.md`) closed the last gated leg. Phase 4's SPA
+scaffold is on screen (S2): React + TanStack Router/Query + Tailwind/shadcn served by the same
+`Bun.serve` as the API, with the first playwright smoke test wired through `nix develop`; the runs
+pages proper are S3. A throwaway visual mock exists for brainstorming and has had one refinement
+pass (`prototypes/phase4-ui/index.html`, `docs/findings/7-phase4-ui-prototype-refinement.md`).
+Phase 4 has an agreed step plan with per-step validation criteria and one decision (D26, live-data
+transport) — see its section.
 
 ### On disk
 
@@ -51,12 +53,14 @@ per-step validation criteria and one new decision (D26, live-data transport) —
 | `workflows/implement-issue.ts`, `implement-issue.test.ts`         | The one real workflow: implement → test → fix/review → test → PR metadata → write-back. Live-validated (factory-spike#4) and replay-validated                            | keep                                                              |
 | `test/corpus/`                                                    | The nine recorded NDJSON corpora, promoted out of gitignored `.factory/runs/` into committed fixtures (128 KB)                                                           | keep — tests and the replay adapter both read these               |
 | `test/fixtures/echo-workflow.ts`, `slow-workflow.ts`              | Minimal workflows for CLI-level tests — `echo-workflow` for one fast agent step, `slow-workflow` for a long-running `ctx.exec` to kill mid-flight                        | keep                                                              |
-| `src/server/http.ts`, `http.test.ts`                              | HTTP API + SSE replay-then-tail over the event log (D22, ADR 0004)                                                                                                       | keep                                                              |
+| `src/server/http.ts`, `http.test.ts`                     | HTTP API + SSE replay-then-tail over the event log (D22, ADR 0004); `serve()` also mounts the phase 4 SPA under `/` and `/*`. viewerHtml is gone | keep — `serve()` is now the UI+API composition root |
 | `src/server/ready-source.ts`                                      | Pluggable `ReadySource` — `makeGitHubProjectsSource` + `makeFakeReadySource` (D23, ADR 0004)                                                                             | keep                                                              |
 | `src/server/dispatch.ts`, `dispatch.test.ts`                      | Reconciliation loop — WIP limit, event-log-derived backoff, `Effect.repeat` scheduling (D24, ADR 0004)                                                                   | keep                                                              |
 | `src/server/runs.ts`                                               | In-process active-run registry backing the WIP limit and cancel                                                                                                          | keep                                                              |
 | `src/server/pubsub.ts`                                             | Live event fan-out for SSE tailing                                                                                                                                       | keep                                                              |
-| `src/server/daemon.ts`, `viewer.ts`, `viewer.html`                 | `factory serve` wiring (`startDaemon`) + optional single-file HTML+SSE viewer                                                                                            | keep                                                              |
+| `src/server/daemon.ts`                                             | `factory serve` wiring (`startDaemon`, dispatch opt-in via `--dispatch-*` flags)                                                                                          | keep                                                              |
+| `src/web/`                                                         | Phase 4 SPA: `index.html` + `main.tsx`/`router.tsx`/`app-shell.tsx`, shadcn primitives, Tailwind design tokens; bundled by Bun's fullstack bundler                     | keep — S3 fills in the runs pages                                 |
+| `e2e/`, `playwright.config.ts`                                     | Phase 4's playwright suite and its real-daemon webServer; runs through `nix develop`                                                                                      | keep — grows each step                                            |
 | `src/server/integration.test.ts`                                   | Phase 3's exit criterion, the fakes/replay-provable parts, end to end through `reconcileOnce` -> `startTrackedRun` -> the event log -> SSE                              | keep                                                              |
 | `src/index.ts`, `src/index.test.ts`                               | 0c smoke test, proving `bun test` runs. Its function happens to be named `slugify`, unrelated to the spike target — a coincidence, not a dependency                      | still unreplaced; harmless, low priority                          |
 | `docs/adr/`, `docs/findings/`, `docs/research/`                   | Decisions, evidence, reading notes                                                                                                                                       | keep                                                              |
@@ -66,17 +70,25 @@ per-step validation criteria and one new decision (D26, live-data transport) —
 | `.factory/`                                                       | gitignored: the host-side clone, the raw run dumps, and (new in phase 2) `factory.db`                                                                                    | keep (regenerable)                                                |
 
 Toolchain: bun 1.4.2, oxfmt, oxlint (type-aware, `@effect/tsgo` rules active and verified
-firing). Scripts: `test`, `typecheck`, `lint`, `format`. **`format` is deliberately scoped to
-explicit paths** — a bare `oxfmt .` reformats Markdown, including this file. `lint` exits 0
-across the repo; the remaining output is all `effecttsgo` advisory warnings (async functions,
-`Date.now()`, `console.*`, `process.env`) that flag idiomatic-Effect alternatives rather than
-defects — none currently block the exit code.
+firing; the react plugin is now enabled for TSX — `rules-of-hooks`/`exhaustive-deps`, with
+`react-in-jsx-scope` off for the automatic runtime). Scripts: `test`, `test:e2e`, `typecheck`,
+`lint`, `format`. **`format` is deliberately scoped to explicit paths** — a bare `oxfmt .`
+reformats Markdown, including this file; the script now names `src`, `e2e`, and the root configs.
+`lint` exits 0 across the repo; the remaining output is all `effecttsgo` advisory warnings (async
+functions, `Date.now()`, `console.*`, `process.env`, `global-fetch`) that flag idiomatic-Effect
+alternatives rather than defects — none currently block the exit code.
 
 Dependencies (verified against `node_modules` 2026-09-14, not just the manifest):
 `@tanstack/ai` `0.54.0`, `-opencode` `0.4.5`, `-sandbox` `0.5.7`, `-sandbox-local-process`
-`0.2.5`; `effect` `4.0.0-rc.115` (no stable v4 exists yet — recheck when phase 4 adds the SPA
-dependencies). `@tanstack/ai-event-client` `0.11.3` is present transitively, not declared;
-phase 4's S4 decides whether it becomes a direct dependency.
+`0.2.5`; `effect` `4.0.0-rc.115` (no stable v4 exists yet — recheck on the next dependency move;
+the S2 SPA additions pulled no second copy). Phase 4 S2 added React `19.3.0`, `react-dom`,
+`@tanstack/react-router` `1.170.36`, `@tanstack/react-query` `5.102.8`, `tailwindcss` `4.3.3`
+via `bun-plugin-tailwind` `0.1.2`, the shadcn primitives (`class-variance-authority`, `clsx`,
+`tailwind-merge`, `@radix-ui/react-slot`, `lucide-react`), and self-hosted
+`@fontsource-variable/{inter,jetbrains-mono}` `5.3.0`; `@playwright/test` `1.63.0` (its bundled
+Chromium revision `1243` matches the host's `~/.cache/ms-playwright`). `@tanstack/ai-event-client`
+`0.11.3` is present transitively, not declared; phase 4's S4 decides whether it becomes a direct
+dependency.
 
 ### What phase 0 proved
 
@@ -391,11 +403,26 @@ below that `seq` arrives.
 **S2 — SPA scaffold.** React + TanStack Router/Query + tailwind + shadcn, Bun fullstack bundler,
 served from the same `Bun.serve` as the API — which is also why CORS never has to exist. Decide
 `viewer.html`'s fate here (it becomes redundant at `/`).
-_Validated by:_ `typecheck` + `lint` clean with TSX in scope, `/` serving the SPA, `/api/*` still
-answering same-origin, and the **first playwright smoke test** — wired here, while there is nothing
-to break, rather than at the exit criterion. Two known friction points to settle in this step:
-`format` is deliberately scoped to explicit paths, and `.oxlintrc.json` has no React/JSX config.
-Prove playwright runs under `nix develop` (AGENTS.md) now, not at S6.
+**Done** — `serve()` is now the composition root: the API handler is mounted under `/api/*` and the
+bundled `src/web/index.html` is served at `/` and `/*` (deep links return the shell), so UI and API
+share one origin and CORS never has to exist. `viewer.ts`/`viewer.html` and the `viewerHtml` option
+are deleted. The scaffold is `src/web/`: the design guideline's tokens as Tailwind v4 CSS variables,
+the first shadcn primitives (`badge`, `button`, `cn`), an app shell (56px top bar, nav, inspector),
+code-based TanStack Router with a page per category, and a `QueryClient` reading `/api/runs` through
+one client API seam. `bunfig.toml` registers `bun-plugin-tailwind`; tsconfig gains the `@/` alias
+and DOM libs; `.oxlintrc.json` enables the react plugin (`rules-of-hooks`, `exhaustive-deps`) for
+TSX; `format` now names `src`, `e2e` and the root configs. Playwright is wired with its own
+real-daemon `webServer` (`e2e/smoke.e2e.ts` via `test:e2e`, files ending `.e2e.ts` so `bun test`
+leaves them alone), proven under `nix develop`. One criterion friction point turned into a real
+incompatibility worth recording: Bun's `development: true` HMR crashes TanStack Router at boot
+(`Cannot read properties of null (reading 'replaceRouteChunk')`, router-core's dev-only prototype
+patch), so `serve()` runs `development: false` — the same runtime-bundled, cached, minified HTML
+route, just without hot reload.
+_Validated by:_ `typecheck` + `lint` clean with TSX in scope (the react plugin catches a
+conditional-hook probe). `http.test.ts` fetches `/` and a deep link and asserts `text/html` +
+`id="root"`, then fetches `/api/runs` and asserts same-origin JSON. The playwright smoke runs the
+real `factory serve` CLI on a temp sqlite db through `nix develop`: the shell mounts at `/` with
+`0 recorded` from a real `/api/runs`, and clicking the nav reaches the Dispatch/Workflows routes.
 
 **S3 — Runs list, run overview, step list.** Factory-owned typed payloads only — no transcript, no
 AG-UI. Ports finding 7's refined layout onto real data.
@@ -449,13 +476,13 @@ and ADR 0004 for D22–D24).
 prevent — was closed with the user's confirmation, not amended
 (`docs/findings/6-live-dispatch-run.md`).
 
-**Next: phase 4, step S2** — the SPA scaffold: React + TanStack Router/Query + tailwind +
-shadcn, bundled by Bun and served from the same `Bun.serve` as the API (`/`), plus the first
-playwright smoke test wired through `nix develop`. S1 closed all three server-side gaps — run
-ordering, cheap summaries, resumable SSE — and needs no UI. The full step plan, the four API
-gaps and the validation criteria for every step are in the phase 4 section above. Read D6 and
-D26 first, then `src/server/http.ts`'s route surface — the SPA is a client of what already
-exists, not a redesign.
+**Next: phase 4, step S3** — the runs list, run overview and step list on real data. S2 put the SPA
+on screen: React + TanStack Router/Query + tailwind + shadcn, bundled by Bun and served from the
+same `Bun.serve` as the API (`/` and `/*`), with the first playwright smoke test wired through
+`nix develop`. S1 closed the three server-side gaps — run ordering, cheap summaries, resumable
+SSE — and needs no UI. The full step plan, the four API gaps and the validation criteria for every
+step are in the phase 4 section above. Read D6 and D26 first, then `src/server/http.ts`'s route
+surface and `src/web/api.ts` — the SPA is a client of what already exists, not a redesign.
 
 Left over from earlier phases, not exit-blocking, worth doing opportunistically:
 
