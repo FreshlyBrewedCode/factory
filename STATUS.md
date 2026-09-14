@@ -34,7 +34,8 @@ server/dispatch (`src/server/`) are built and validated against fakes **and live
 live dispatch run (`docs/findings/6-live-dispatch-run.md`) closed the last gated leg. Still
 missing: the UI (phase 4) proper; a throwaway visual mock exists for brainstorming and has had one
 refinement pass (`prototypes/phase4-ui/index.html`,
-`docs/findings/7-phase4-ui-prototype-refinement.md`).
+`docs/findings/7-phase4-ui-prototype-refinement.md`). Phase 4 now has an agreed step plan with
+per-step validation criteria and one new decision (D26, live-data transport) — see its section.
 
 ### On disk
 
@@ -59,6 +60,9 @@ refinement pass (`prototypes/phase4-ui/index.html`,
 | `src/server/integration.test.ts`                                   | Phase 3's exit criterion, the fakes/replay-provable parts, end to end through `reconcileOnce` -> `startTrackedRun` -> the event log -> SSE                              | keep                                                              |
 | `src/index.ts`, `src/index.test.ts`                               | 0c smoke test, proving `bun test` runs. Its function happens to be named `slugify`, unrelated to the spike target — a coincidence, not a dependency                      | still unreplaced; harmless, low priority                          |
 | `docs/adr/`, `docs/findings/`, `docs/research/`                   | Decisions, evidence, reading notes                                                                                                                                       | keep                                                              |
+| `docs/design/`                                                    | wayful's UI design guideline + reference screenshots, copied verbatim. Phase 4's rough visual reference; wayful's repo stays canonical                                   | keep                                                              |
+| `prototypes/phase4-ui/index.html`                                 | The throwaway phase 4 visual mock — self-contained HTML/CSS/JS, no backend, simulated feed. Not the SPA, carries none of the stack                                       | throwaway — delete once phase 4's S3 renders real data            |
+| `flake.nix`, `flake.lock`                                         | Nix dev shell: pins bun 1.4.2 and puts playwright's browser libs on `LD_LIBRARY_PATH`. Required for anything that drives a browser                                       | keep — phase 4 tests run through `nix develop`                    |
 | `.factory/`                                                       | gitignored: the host-side clone, the raw run dumps, and (new in phase 2) `factory.db`                                                                                    | keep (regenerable)                                                |
 
 Toolchain: bun 1.4.2, oxfmt, oxlint (type-aware, `@effect/tsgo` rules active and verified
@@ -70,7 +74,9 @@ defects — none currently block the exit code.
 
 Dependencies (verified against `node_modules` 2026-09-14, not just the manifest):
 `@tanstack/ai` `0.54.0`, `-opencode` `0.4.5`, `-sandbox` `0.5.7`, `-sandbox-local-process`
-`0.2.5`; `effect` `4.0.0-rc.115` (no stable v4 exists yet — recheck before phase 2).
+`0.2.5`; `effect` `4.0.0-rc.115` (no stable v4 exists yet — recheck when phase 4 adds the SPA
+dependencies). `@tanstack/ai-event-client` `0.11.3` is present transitively, not declared;
+phase 4's S4 decides whether it becomes a direct dependency.
 
 ### What phase 0 proved
 
@@ -139,6 +145,7 @@ D21 from phase 2's persistence design.
 | D23 | **`ReadySource`: a two-method pluggable interface** (`listReady`/`claim`), ported from the wayful script's GraphQL query + `gh project item-edit` claim, with the same soft/hard blocker distinction.                                                                                                                                                                                                                                                                                             | ADR 0004. `makeGitHubProjectsSource` is the only real implementation today; `makeFakeReadySource` backs `dispatch.test.ts`/`integration.test.ts`. A failed claim is "lost the race, skip", not an error.                                                                                                                                                                                                                                                                                                                                                                                              |
 | D24 | **No separate retry-state file.** Backoff is derived at reconcile time from the sqlite event log (`RunStarted.input.issueNumber` as the join key), doubling per consecutive failure. WIP limit of 1 is enforced via the current process's in-memory active-run registry, not sqlite. Per-issue backoff, not the wayful script's global pause-on-any-failure.                                                                                                                                    | ADR 0004. Nothing to keep in sync with the log it would cache. D12's "interrupted ≠ active" applies to dispatch too: a dead process's run doesn't block new dispatch after a restart. Global pause doesn't fit Factory — workflows are one-shot (D19), so a retry is always a fresh run, and global pause would starve unrelated issues for no offsetting benefit.                                                                                                                                                                                                                                  |
 | D25 | **`porcelainPaths` (`src/lib/writeback.ts`) always passes `--untracked-files=all` to `git status --porcelain`.** | Found by phase 3's live dispatch run, not by any prior test: plain `--porcelain` collapses a wholly-new untracked directory into one `?? dir/` line instead of listing files inside it, which let a nested D16 marker slip past `isStrayPath` and ship into a real PR (factory-spike#5). `docs/findings/6-live-dispatch-run.md`, `src/lib/writeback.test.ts`. |
+| D26 | **Live data reaches the SPA by polling the runs list and per-run SSE for run detail.** A single multiplexed WebSocket for the whole app is deferred, not rejected. SSE frames gain `id: ${seq}` and the handler honours `Last-Event-ID` so a reconnect resumes instead of replaying. The client keeps one `subscribeToRun(runId, sinceSeq, onEvent)` seam, so swapping transport later is one file. | **The transcript is not a separate stream** — `AgentChunk` is a `RunEventPayload` member sharing the same `seq` space (ADR 0003), so there is nothing to multiplex it *with*. The only multiplexing available is across runs, and D24 pins WIP to 1: at most one run is live today, so the saved connections pay for concurrency that does not exist yet. What a WebSocket would genuinely buy — resumable reconnect — `seq` + `Last-Event-ID` buys for about five lines. Against that, a WS rewrite must reproduce `sseStream`'s subscribe-before-read → buffer → dedupe-by-`seq` ordering (`http.ts:51-94`) per *dynamic* subscription, which is the subtlest thing phase 3 built. Revisit on the trigger in Deferred. |
 
 ## Still unknown
 
@@ -154,8 +161,14 @@ What remains genuinely open:
   `REASONING_MESSAGE_CONTENT`, all exactly one). That is a property of
   `opencode-go/deepseek-v4.1-flash`, not a guarantee. The accumulation code has never run
   against a genuinely streaming provider.
-- **Whether `@tanstack/ai-event-client` is usable for run-detail rendering.** D20 bets column 2
-  on it rather than pre-building a renderer. Untested — phase 4 pays if the bet is wrong.
+- **Whether `@tanstack/ai-event-client` is usable for transcript rendering** — a narrower question
+  than ADR 0003 assumed. Inspected 2026-09-14: `0.11.3` ships three source files — `index.ts`
+  (AG-UI chunk/part/usage *types*), `envelope.ts` (a devtools event envelope) and
+  `devtools-middleware.ts` (a bridge to `@tanstack/devtools-event-client`). **No React components,
+  no renderer.** So D20's bet is really "typed chunk accessors vs. a hand-written reducer over
+  `AgentChunk`", and it touches only the transcript: the runs list, run overview and step list all
+  read Factory-owned typed payloads with no AG-UI involvement. That is why the spike moved from the
+  front of phase 4 to S4. Still untested.
 - **What a non-opencode adapter's stream actually looks like.** The protocol has 33 event
   types, opencode emits 16, and the `claudeCodeText` comparison has not run. D20 is designed to
   absorb the difference, but that is an argument, not evidence.
@@ -167,14 +180,14 @@ What remains genuinely open:
 | `dockerSandbox` + credential injection via `createSecrets`                                 | First untrusted repo, or first time two runs must be concurrent                                                                                               |
 | Host-side patch write-back (consume a diff, `git apply` on host)                           | Any move off `localProcess` — D9's host-side git stops working the moment the tree is in a container                                                          |
 | Private-repo clone auth inside a sandbox                                                   | Same trigger as docker                                                                                                                                        |
-| Concurrency isolation — N sandboxes with one worktree each, rather than one shared tree    | Phase 3, when the dispatcher can start more than one run                                                                                                      |
+| Concurrency isolation — N sandboxes with one worktree each, rather than one shared tree    | Phase 5, or whenever D24's WIP limit of 1 is lifted. Phase 3 shipped at WIP 1, so this trigger did not fire there as expected                                  |
 | Durable attach / takeover, and adapters that have journals (`claudeCodeText`, `codexText`) | Only if Factory stops being a long-lived process (D12)                                                                                                        |
 | Portability off this machine                                                               | A second machine still needs an opencode login                                                                                                                |
-| Sandbox-instance reuse probe (nonce written at bootstrap, compared across steps)           | Phase 1, while it is still cheap to get wrong                                                                                                                 |
 | Non-cooperative abort case (a generator stuck where `.return()` cannot unstick it)         | First timeout/cancel bug against a non-tool-call step                                                                                                         |
+| A single multiplexed WebSocket carrying every live feed, replacing polling + per-run SSE (D26) | The first of: D24's WIP limit lifting above 1, the SPA needing more than one live run on screen, or per-run connection count becoming a real problem      |
 | The stray-artifact workaround (`cleanStrayArtifacts` in write-back)                        | Delete once an upstream release fixes the marker-path resolution — recheck on every `@tanstack/ai-sandbox*` bump                                              |
 | Promoting `sandbox.file` to a typed file-change event (a "files changed" UI affordance)    | Same upstream fix as the stray artifact: today its paths are in two incompatible namespaces and 9 of 15 occurrences are about the stray marker, not real work |
-| A Factory-owned run-detail renderer, instead of `@tanstack/ai-event-client`                | The first phase-4 spike that finds the client unusable for run detail                                                                                         |
+| A Factory-owned transcript renderer (a reducer over `AgentChunk`), instead of `@tanstack/ai-event-client` | Phase 4's S4 spike failing its stated pass/fail criterion. Scope narrowed — see "Still unknown": the client is types + devtools middleware, so only the transcript was ever at stake                                                                                         |
 
 ## Phases
 
@@ -309,7 +322,9 @@ WIP-limit, pause-on-failure and backoff semantics from the wayful script (record
   which let a D16 marker slip past `cleanStrayArtifacts` and ship into the PR. Fixed by D25
   (`--untracked-files=all`), pinned by `src/lib/writeback.test.ts`.
 
-This is where concurrency stops being deferrable — see Deferred.
+Concurrency was expected to stop being deferrable here; it did not. Phase 3 shipped at a WIP limit
+of 1 (D24), so the isolation work moved to phase 5 with a trigger rather than a phase — see
+Deferred.
 
 **Exit — met on both legs:** fakes-provable (`integration.test.ts` — unattended pickup, a run to
 completion, SSE watchability, WIP-limit enforcement) and live (`docs/findings/6-live-dispatch-run.md`
@@ -321,8 +336,9 @@ fix came too late to prevent; it was closed with the user's confirmation rather 
 
 ### Phase 4 — Web UI (column 2)
 
-React SPA, TanStack Router + Query, shadcn, tailwind. Board view + live run detail over SSE.
-Thin, because the API predates it.
+React SPA, TanStack Router + Query, shadcn, tailwind, bundled by Bun and served from the same
+`Bun.serve` as the API. Runs list + live run detail over SSE. Thin, because the API predates it
+(D6).
 
 A throwaway visual mockup exists at `prototypes/phase4-ui/index.html` — one self-contained
 HTML/CSS/JS file, no backend, with a simulated live run (streams a step, finishes, opens a PR,
@@ -340,6 +356,82 @@ third after the step type), and moved all step detail into collapsed-by-default 
 inspector, with the transcript filling the panel from a click (original prompt at top). Also fixed
 a status-colour bug: agent/write-back `"completed"` was missing from the `[data-status]` mapping.
 
+#### What the API already covers, and the four gaps
+
+Read off the code, not off this file. The runs list, run overview and step list are **fully
+served today** by `GET /api/runs`, `/api/runs/:id` and `/api/runs/:id/events`. The gaps:
+
+| # | Gap | Closed by |
+| --- | --- | --- |
+| G1 | `listRuns` orders by `run_id ASC` (`store.ts:95`). Since `startTrackedRun` moved to `run-${crypto.randomUUID()}`, that ordering is effectively random — and the runs page is chronological. | S1 |
+| G2 | `listRuns` reads **every event of every run** (`summarizeRun` → `getRunEvents`) to build a summary. Fine at nine runs; wrong shape for a page that refreshes. | S1 |
+| G3 | SSE frames carry no `id:` (`http.ts:61`) and the handler ignores `Last-Event-ID`, so any reconnect replays the whole run. `seq` already makes resume trivially correct (D20). | S1 |
+| G4 | `POST /api/runs` demands `workflowPath` + `dir` as filesystem strings (`http.ts:117`); a browser cannot supply them. D5's registration surface was never built, and there is no `/api/workflows` or `/api/dispatch` at all. | S5 |
+
+#### Plan
+
+Six steps, ordered so the SPA is on screen against real data as early as possible. The two pages
+with no backend whatsoever (Workflows, Dispatch) and the transcript — the only part resting on an
+unvalidated library bet — are deliberately last.
+
+Standing rule for every step: **tests drive the real server and a real sqlite event log.** Nothing
+mocks `fetch`. `test/corpus/` plus the two existing fake adapters make a realistic backend
+deterministic, so the UI never needs stubbed data.
+
+**S1 — API fixes.** G1, G2, G3. No UI, no new endpoints.
+_Validated by:_ `bun test` alone. The ordering test seeds runs with deliberately out-of-order
+UUIDs and interleaved timestamps — today's suite cannot see G1. G2 is a refactor, so equivalence
+of the summary fields is the criterion, not throughput (asserting perf here would be flaky and
+prove nothing at POC scale). G3 reconnects with `Last-Event-ID` set and asserts nothing at or
+below that `seq` arrives.
+
+**S2 — SPA scaffold.** React + TanStack Router/Query + tailwind + shadcn, Bun fullstack bundler,
+served from the same `Bun.serve` as the API — which is also why CORS never has to exist. Decide
+`viewer.html`'s fate here (it becomes redundant at `/`).
+_Validated by:_ `typecheck` + `lint` clean with TSX in scope, `/` serving the SPA, `/api/*` still
+answering same-origin, and the **first playwright smoke test** — wired here, while there is nothing
+to break, rather than at the exit criterion. Two known friction points to settle in this step:
+`format` is deliberately scoped to explicit paths, and `.oxlintrc.json` has no React/JSX config.
+Prove playwright runs under `nix develop` (AGENTS.md) now, not at S6.
+
+**S3 — Runs list, run overview, step list.** Factory-owned typed payloads only — no transcript, no
+AG-UI. Ports finding 7's refined layout onto real data.
+_Validated by:_ two legs. **Static** — a real daemon on a temp db, driven through
+`createCorpusReplayAdapter` so a committed corpus becomes a real event log with no AI in the loop;
+playwright then asserts list ordering and status, run-detail meta against `RunSummary`, and that the
+step list's count/kind/order match the `AgentStepStarted`/`ExecStarted`/`WriteBackStarted` events
+that produced it. **Live** — `createSlowFakeAdapter` (built in phase 1 for exactly this timing
+control): start a run, assert the row reads as running with a ticking duration, assert the detail
+appends steps as they arrive, assert the terminal state lands. That second leg is column 2's
+analogue of `integration.test.ts`. **No visual snapshot tests** — the design is still moving and
+snapshots would be a maintenance tax, not a safety net; conformance to `docs/design/design.md` is
+reviewed by eye on screenshots.
+
+**S4 — Transcript.** The `@tanstack/ai-event-client` spike, moved here from the front of the phase
+(see "Still unknown" for why it is narrower than ADR 0003 assumed).
+_Validated by:_ a pass/fail criterion stated before the spike — can it render a real corpus
+`AgentChunk` sequence (text deltas, tool calls, reasoning) without us re-typing chunk types? If not,
+the deferred Factory-owned reducer fires. **Known limit, to be recorded rather than glossed:**
+corpus replay cannot validate multi-delta accumulation — every delta in every corpus was
+single-chunk (24 text / 32 tool-args / 13 reasoning, all exactly one), so that stays open until a
+genuinely streaming provider runs.
+
+**S5 — Workflows + Dispatch pages.** Needs G4: `GET /api/workflows`, `GET /api/dispatch`, and a
+workflow-id-based `POST /api/runs`.
+_Validated by:_ `http.test.ts` for the endpoints; `makeFakeReadySource` to drive Ready/claimed/
+blocked deterministically for the page. Backoff is derived from the event log (D24), so a db seeded
+with failed runs at chosen timestamps asserts the backoff rendering without waiting on wall-clock.
+
+**S6 — Exit criterion, both legs**, matching the precedent phases 1 and 3 set. _Fakes:_ the whole
+playwright suite green in one pass through `nix develop`. _Live:_ confirmed with the user first,
+then a real `factory serve --dispatch-*` watched from the browser as a dispatched run streams to a
+real PR. Output: a findings document and ADR 0005 (transport per D26, the dispatch API shape, and
+S4's verdict).
+
+**Exit:** the SPA renders the runs list and a live run detail from the real API — the fakes leg
+provable in `bun test`/playwright without network or AI, and one live dispatched run watched end to
+end in the browser.
+
 ### Phase 5 — Harden
 
 Per-run isolation and concurrency, docker + secrets (D7's deferral), observability,
@@ -354,10 +446,11 @@ and ADR 0004 for D22–D24).
 prevent — was closed with the user's confirmation, not amended
 (`docs/findings/6-live-dispatch-run.md`).
 
-Stopped here for review at the user's request, with phases 0–3 done. Phase 4 (web UI, column 2)
-is the next phase proper: read D6 (web UI deferred to phase 4, thin because the API predates it)
-and `src/server/http.ts`'s route surface — the SPA is a client of what already exists, not a
-redesign.
+**Next: phase 4, step S1** — the three server-side fixes (G1 run ordering, G2 cheap summaries,
+G3 resumable SSE), which need no UI and are provable in `bun test` alone. The full step plan,
+the four API gaps it closes, and the validation criteria for every step are in the phase 4
+section above. Read D6 and D26 first, then `src/server/http.ts`'s route surface — the SPA is a
+client of what already exists, not a redesign.
 
 Left over from earlier phases, not exit-blocking, worth doing opportunistically:
 
