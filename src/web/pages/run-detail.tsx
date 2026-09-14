@@ -1,11 +1,15 @@
 import { useState } from "react";
 import { Link, useParams } from "@tanstack/react-router";
+import { PanelRight, X } from "lucide-react";
 import type { RunEvent } from "@/web/api";
+import { Button } from "@/web/components/ui/button";
 import { useRun, useRunEvents, useTickingNow } from "@/web/hooks";
 import { formatAgo, formatClock, formatDuration } from "@/web/lib/format";
 import { deriveRunMeta, deriveSteps, summarizeEvent, type StepView } from "@/web/lib/run-events";
 import { runDisplayStatus } from "@/web/lib/status";
 import { StatusCell } from "@/web/components/status-cell";
+import { useEscapeKey } from "@/web/lib/use-escape-key";
+import { useMediaQuery } from "@/web/lib/use-media-query";
 import { cn } from "@/web/lib/utils";
 
 function metaRow(label: string, value: React.ReactNode, mono = false) {
@@ -232,6 +236,30 @@ function Disclosure({
   );
 }
 
+/** Exec output, styled as a terminal — always dark, regardless of the app theme. */
+function Terminal({
+  command,
+  stdout,
+  stderr,
+}: {
+  readonly command: ReadonlyArray<string>;
+  readonly stdout: string;
+  readonly stderr: string;
+}) {
+  return (
+    <div className="term">
+      <div className="term-head">
+        <span className="prompt">$</span>
+        <span>{command.join(" ")}</span>
+      </div>
+      <pre>
+        {stdout}
+        {stderr ? <span className="stderr">{`\n${stderr}`}</span> : null}
+      </pre>
+    </div>
+  );
+}
+
 function JsonBlock({ value }: { readonly value: unknown }) {
   return (
     <pre className="max-h-60 overflow-auto border border-border bg-muted/40 p-3 font-mono text-[11px] break-words whitespace-pre-wrap">
@@ -319,8 +347,7 @@ function StepDetails({ step }: { readonly step: StepView }) {
   } else if (step.kind === "exec") {
     disclosures.push(
       <Disclosure key="output" label="Output">
-        {step.stdout ?? ""}
-        {step.stderr ? `\n${step.stderr}` : ""}
+        <Terminal command={step.command} stdout={step.stdout ?? ""} stderr={step.stderr ?? ""} />
       </Disclosure>,
     );
   } else if (step.kind === "assert" && step.details !== undefined) {
@@ -407,11 +434,22 @@ export function RunDetailPage() {
   return <RunDetailView key={runId} runId={runId} />;
 }
 
+const INSPECTOR_COMPACT_QUERY = "(max-width: 1199px)";
+
 function RunDetailView({ runId }: { readonly runId: string }) {
   const runQuery = useRun(runId);
   const { events, streaming } = useRunEvents(runId);
   const [tab, setTab] = useState<"steps" | "events">("steps");
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
+  const [inspectorOpen, setInspectorOpen] = useState(false);
+  const inspectorCompact = useMediaQuery(INSPECTOR_COMPACT_QUERY);
+  const closeInspector = () => setInspectorOpen(false);
+  const selectStep = (key: string) => {
+    setSelectedKey(key);
+    setInspectorOpen(true);
+  };
+
+  useEscapeKey(inspectorCompact && inspectorOpen, closeInspector);
 
   const run = runQuery.data;
   const meta = deriveRunMeta(events);
@@ -463,70 +501,85 @@ function RunDetailView({ runId }: { readonly runId: string }) {
       />
     ) : null;
 
+  const showAside = selected !== null && inspectorOpen;
+  const desktopAside = showAside && !inspectorCompact;
+  const mobileSheet = showAside && inspectorCompact;
+
   return (
-    <section data-testid="run-detail" className="flex min-h-full flex-col">
-      <header className="border-b border-border px-5 pt-4 pb-3">
-        <div className="mb-3 flex flex-wrap items-center gap-3">
-          <Link
-            to="/"
-            className="rounded-md bg-muted px-2 py-1 font-mono text-[11px] text-muted-foreground hover:text-foreground"
-          >
-            ‹ runs
-          </Link>
-          <span className="font-mono text-base font-semibold">{runId}</span>
-          <StatusCell status={status} />
-          {active ? (
-            <span className="ml-auto flex items-center gap-1.5 font-mono text-[11px] text-muted-foreground">
-              <i className="status-dot status-pulse" data-status="running" aria-hidden="true" />
-              replay-then-tail · connected
-            </span>
-          ) : (
-            <span className="ml-auto font-mono text-[11px] text-muted-foreground">
-              stream closed · {events.length} events replayed
-            </span>
-          )}
-        </div>
-        <MetaTable
-          runId={runId}
-          workflowId={run?.workflowId ?? meta.workflowId}
-          status={status}
-          startedAt={startedAt}
-          finishedAt={finishedAt}
-          duration={duration}
-          dir={meta.dir ?? run?.dir}
-          input={meta.input}
-          output={meta.output}
-          note={status === "interrupted" ? "no terminal event — process died mid-run" : undefined}
-        />
-      </header>
-
-      <div className="sticky top-0 z-10 flex items-center gap-2 border-b border-border bg-background/90 px-5 py-2 backdrop-blur">
-        <div role="tablist" className="inline-flex gap-0.5 rounded-xl bg-muted p-1">
-          {(["steps", "events"] as const).map((value) => (
-            <button
-              key={value}
-              role="tab"
-              type="button"
-              aria-selected={tab === value}
-              onClick={() => setTab(value)}
-              className={cn(
-                "rounded-lg px-3 py-1 text-xs capitalize",
-                tab === value
-                  ? "bg-card text-foreground shadow-sm"
-                  : "text-muted-foreground hover:text-foreground",
-              )}
+    <section data-testid="run-detail" className="flex h-full overflow-hidden">
+      <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
+        <header className="border-b border-border px-5 pt-4 pb-3">
+          <div className="mb-3 flex flex-wrap items-center gap-3">
+            <Link
+              to="/"
+              className="rounded-md bg-muted px-2 py-1 font-mono text-[11px] text-muted-foreground hover:text-foreground"
             >
-              {value}
-            </button>
-          ))}
-        </div>
-        <span className="font-mono text-[11px] text-muted-foreground">
-          GET /api/runs/{runId}/events
-        </span>
-      </div>
+              ‹ runs
+            </Link>
+            <span className="font-mono text-base font-semibold">{runId}</span>
+            <StatusCell status={status} />
+            {active ? (
+              <span className="ml-auto flex items-center gap-1.5 font-mono text-[11px] text-muted-foreground">
+                <i className="status-dot status-pulse" data-status="running" aria-hidden="true" />
+                replay-then-tail · connected
+              </span>
+            ) : (
+              <span className="ml-auto font-mono text-[11px] text-muted-foreground">
+                stream closed · {events.length} events replayed
+              </span>
+            )}
+          </div>
+          <MetaTable
+            runId={runId}
+            workflowId={run?.workflowId ?? meta.workflowId}
+            status={status}
+            startedAt={startedAt}
+            finishedAt={finishedAt}
+            duration={duration}
+            dir={meta.dir ?? run?.dir}
+            input={meta.input}
+            output={meta.output}
+            note={status === "interrupted" ? "no terminal event — process died mid-run" : undefined}
+          />
+        </header>
 
-      <div className="grid min-h-0 flex-1 grid-cols-1 xl:grid-cols-[minmax(0,1fr)_22rem]">
-        <div className="min-w-0 p-4">
+        <div className="flex items-center gap-2 border-b border-border px-5 py-2">
+          <div role="tablist" className="inline-flex gap-0.5 rounded-xl bg-muted p-1">
+            {(["steps", "events"] as const).map((value) => (
+              <button
+                key={value}
+                role="tab"
+                type="button"
+                aria-selected={tab === value}
+                onClick={() => setTab(value)}
+                className={cn(
+                  "rounded-lg px-3 py-1 text-xs capitalize",
+                  tab === value
+                    ? "bg-card text-foreground shadow-sm"
+                    : "text-muted-foreground hover:text-foreground",
+                )}
+              >
+                {value}
+              </button>
+            ))}
+          </div>
+          <span className="font-mono text-[11px] text-muted-foreground">
+            GET /api/runs/{runId}/events
+          </span>
+          <Button
+            variant="ghost"
+            size="icon"
+            aria-label={inspectorOpen ? "Close inspector" : "Open inspector"}
+            aria-expanded={inspectorOpen}
+            disabled={selected === null}
+            onClick={() => setInspectorOpen((value) => !value)}
+            className="ml-auto"
+          >
+            <PanelRight />
+          </Button>
+        </div>
+
+        <div className="min-w-0 flex-1 overflow-y-auto p-4">
           {tab === "steps" ? (
             steps.length === 0 && !active ? (
               <p className="py-12 text-center text-sm text-muted-foreground">No steps recorded.</p>
@@ -535,7 +588,7 @@ function RunDetailView({ runId }: { readonly runId: string }) {
                 steps={steps}
                 now={now}
                 selectedKey={selectedKey}
-                onSelect={setSelectedKey}
+                onSelect={selectStep}
                 terminal={terminal}
               />
             )
@@ -543,38 +596,34 @@ function RunDetailView({ runId }: { readonly runId: string }) {
             <EventsTable events={events} />
           )}
         </div>
-
-        <aside className="min-w-0 border-t border-border p-4 xl:border-t-0 xl:border-l">
-          {selected !== null ? (
-            <StepDetails step={selected} />
-          ) : (
-            <div className="grid gap-2">
-              <span className="text-[11px] font-semibold tracking-wide text-muted-foreground uppercase">
-                Run overview
-              </span>
-              <p className="font-mono text-[11px] text-muted-foreground">
-                Select a step for its fields and payload disclosures. The transcript arrives in S4.
-              </p>
-              {meta.sessions.length > 0 ? (
-                <div className="mt-2 grid gap-1">
-                  <span className="text-[11px] font-semibold tracking-wide text-muted-foreground uppercase">
-                    Sessions · fresh per step (D10)
-                  </span>
-                  {meta.sessions.map((session) => (
-                    <div
-                      key={`${session.name}:${session.sessionId}`}
-                      className="flex gap-2 font-mono text-[11px]"
-                    >
-                      <span className="w-20 text-muted-foreground">{session.name}</span>
-                      <span>{session.sessionId}</span>
-                    </div>
-                  ))}
-                </div>
-              ) : null}
-            </div>
-          )}
-        </aside>
       </div>
+
+      {desktopAside && selected !== null ? (
+        <aside className="h-full w-[22rem] shrink-0 overflow-y-auto border-l border-border p-4">
+          <StepDetails step={selected} />
+        </aside>
+      ) : null}
+
+      {mobileSheet ? (
+        <div
+          className="fixed top-14 right-0 bottom-0 left-0 z-40 bg-black/40"
+          onClick={closeInspector}
+          aria-hidden="true"
+        />
+      ) : null}
+      {selected !== null && inspectorOpen && inspectorCompact ? (
+        <aside className="fixed top-14 right-0 bottom-0 z-50 w-full max-w-sm overflow-y-auto border-l border-border bg-card p-4 shadow-lg">
+          <div className="mb-3 flex items-center justify-between">
+            <span className="text-[11px] font-semibold tracking-wide text-muted-foreground uppercase">
+              Step detail
+            </span>
+            <Button variant="ghost" size="icon" aria-label="Close inspector" onClick={closeInspector}>
+              <X />
+            </Button>
+          </div>
+          <StepDetails step={selected} />
+        </aside>
+      ) : null}
     </section>
   );
 }

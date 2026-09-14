@@ -1,6 +1,6 @@
 # STATUS
 
-> **Phases 0–3 complete.** Phase 1's exit criterion is met on both legs: the
+> **Phases 0–3 complete; phase 4 (Web UI) in progress — S1–S3 of six landed.** Phase 1's exit criterion is met on both legs: the
 > `defineWorkflow`/`startRun` runtime ran a real implement → test → review workflow end-to-end
 > against opencode, opening
 > [factory-spike#4](https://github.com/FreshlyBrewedCode/factory-spike/pull/4)
@@ -15,7 +15,10 @@
 > [factory-spike#5](https://github.com/FreshlyBrewedCode/factory-spike/pull/5)
 > (`docs/findings/6-live-dispatch-run.md`). That live run also surfaced and fixed a genuine
 > stray-artifact bug in write-back (below). Phase 0's spike opened
-> [factory-spike#3](https://github.com/FreshlyBrewedCode/factory-spike/pull/3).
+> [factory-spike#3](https://github.com/FreshlyBrewedCode/factory-spike/pull/3). Phase 4's SPA now
+> renders the runs list, run-detail overview and step list from real typed events (S1–S3), green
+> under `bun test` and playwright through `nix develop`; the transcript (S4), the Workflows/Dispatch
+> pages (S5) and the exit criterion (S6) remain.
 
 Project pitch, stack and constraints live in `AGENTS.md`. This file tracks where we are, what
 we have decided, and what is still unknown.
@@ -34,7 +37,8 @@ server/dispatch (`src/server/`) are built and validated against fakes **and live
 live dispatch run (`docs/findings/6-live-dispatch-run.md`) closed the last gated leg. Phase 4's SPA
 is on screen and rendering real data: S2 scaffolded React + TanStack Router/Query + Tailwind/shadcn
 served by the same `Bun.serve` as the API, and S3 added the runs list, run-detail overview and
-step list, both legs validated by playwright through `nix develop`. The transcript is S4. A
+step list, both legs validated by playwright through `nix develop` (`bun test` is at 72 and the
+suite has 5 playwright specs). The transcript is S4. A
 throwaway visual mock exists for brainstorming and has had one refinement pass
 (`prototypes/phase4-ui/index.html`, `docs/findings/7-phase4-ui-prototype-refinement.md`).
 Phase 4 has an agreed step plan with per-step validation criteria and one decision (D26, live-data
@@ -53,14 +57,14 @@ transport) — see its section.
 | `src/replay/adapter.ts`, `adapter.test.ts`                        | Corpus-replay fake adapter (`createCorpusReplayAdapter`, `createSlowFakeAdapter`)                                                                                        | keep — the only opencode-free path through the runtime            |
 | `workflows/implement-issue.ts`, `implement-issue.test.ts`         | The one real workflow: implement → test → fix/review → test → PR metadata → write-back. Live-validated (factory-spike#4) and replay-validated                            | keep                                                              |
 | `test/corpus/`                                                    | The nine recorded NDJSON corpora, promoted out of gitignored `.factory/runs/` into committed fixtures (128 KB)                                                           | keep — tests and the replay adapter both read these               |
-| `test/fixtures/echo-workflow.ts`, `slow-workflow.ts`              | Minimal workflows for CLI-level tests — `echo-workflow` for one fast agent step, `slow-workflow` for a long-running `ctx.exec` to kill mid-flight                        | keep                                                              |
-| `src/server/http.ts`, `http.test.ts`                     | HTTP API + SSE replay-then-tail over the event log (D22, ADR 0004); `serve()` also mounts the phase 4 SPA under `/` and `/*`. viewerHtml is gone | keep — `serve()` is now the UI+API composition root |
+| `test/fixtures/echo-workflow.ts`, `slow-workflow.ts`, `live-workflow.ts` | Minimal workflows for tests — `echo-workflow` for one fast agent step, `slow-workflow` for a long-running `ctx.exec` to kill mid-flight, `live-workflow` (S3) for the playwright live leg | keep                                                              |
+| `src/server/http.ts`, `http.test.ts`                     | HTTP API + SSE replay-then-tail over the event log (D22, ADR 0004); `serve()` also mounts the phase 4 SPA under `/` and `/*` (S2); run summaries gained an `active` bit to tell a running run from an interrupted one (S3). `viewerHtml` deleted | keep — `serve()` is now the UI+API composition root |
 | `src/server/ready-source.ts`                                      | Pluggable `ReadySource` — `makeGitHubProjectsSource` + `makeFakeReadySource` (D23, ADR 0004)                                                                             | keep                                                              |
 | `src/server/dispatch.ts`, `dispatch.test.ts`                      | Reconciliation loop — WIP limit, event-log-derived backoff, `Effect.repeat` scheduling (D24, ADR 0004)                                                                   | keep                                                              |
 | `src/server/runs.ts`                                               | In-process active-run registry backing the WIP limit and cancel                                                                                                          | keep                                                              |
 | `src/server/pubsub.ts`                                             | Live event fan-out for SSE tailing                                                                                                                                       | keep                                                              |
 | `src/server/daemon.ts`                                             | `factory serve` wiring (`startDaemon`, dispatch opt-in via `--dispatch-*` flags)                                                                                          | keep                                                              |
-| `src/web/`                                                         | Phase 4 SPA: `index.html` + `main.tsx`/`router.tsx`/`app-shell.tsx`, shadcn primitives, Tailwind design tokens; S3 added the runs list, run detail and step list; bundled by Bun's fullstack bundler                     | keep — S4 adds the transcript                                |
+| `src/web/`                                                         | Phase 4 SPA: `index.html` + `main.tsx`/`router.tsx`/`app-shell.tsx`, shadcn primitives, Tailwind design tokens (S2); S3 added `api.ts`/`hooks.ts`, the `lib/run-events.ts` projection, `lib/status.ts`/`format.ts` and the `pages/` runs list + run detail; bundled by Bun's fullstack bundler | keep — S4 adds the transcript                                |
 | `e2e/`, `playwright.config.ts`                                     | Phase 4's playwright suite and its real-daemon webServer; runs through `nix develop`                                                                                      | keep — grows each step                                            |
 | `src/server/integration.test.ts`                                   | Phase 3's exit criterion, the fakes/replay-provable parts, end to end through `reconcileOnce` -> `startTrackedRun` -> the event log -> SSE                              | keep                                                              |
 | `src/index.ts`, `src/index.test.ts`                               | 0c smoke test, proving `bun test` runs. Its function happens to be named `slugify`, unrelated to the spike target — a coincidence, not a dependency                      | still unreplaced; harmless, low priority                          |
@@ -372,14 +376,15 @@ a status-colour bug: agent/write-back `"completed"` was missing from the `[data-
 #### What the API already covers, and the four gaps
 
 Read off the code, not off this file. The runs list, run overview and step list are **fully
-served today** by `GET /api/runs`, `/api/runs/:id` and `/api/runs/:id/events`. The gaps:
+served today** by `GET /api/runs`, `/api/runs/:id` and `/api/runs/:id/events`. S1 closed G1–G3;
+G4 is the one remaining gap, S5's job:
 
-| # | Gap | Closed by |
+| # | Gap | Status |
 | --- | --- | --- |
-| G1 | `listRuns` orders by `run_id ASC` (`store.ts:95`). Since `startTrackedRun` moved to `run-${crypto.randomUUID()}`, that ordering is effectively random — and the runs page is chronological. | S1 |
-| G2 | `listRuns` reads **every event of every run** (`summarizeRun` → `getRunEvents`) to build a summary. Fine at nine runs; wrong shape for a page that refreshes. | S1 |
-| G3 | SSE frames carry no `id:` (`http.ts:61`) and the handler ignores `Last-Event-ID`, so any reconnect replays the whole run. `seq` already makes resume trivially correct (D20). | S1 |
-| G4 | `POST /api/runs` demands `workflowPath` + `dir` as filesystem strings (`http.ts:117`); a browser cannot supply them. D5's registration surface was never built, and there is no `/api/workflows` or `/api/dispatch` at all. | S5 |
+| G1 | Run ordering: `listRuns` ordered by `run_id ASC`, effectively random once `startTrackedRun` moved to `run-${crypto.randomUUID()}` — and the runs page is chronological. | **closed (S1)** — now newest-first by start time, deterministic tiebreak |
+| G2 | Cheap summaries: `listRuns` read **every event of every run** (`summarizeRun` → `getRunEvents`) to build a summary; wrong shape for a page that refreshes. | **closed (S1)** — one SQL aggregate per run, field-equivalent to the old read-every-event logic |
+| G3 | Resumable SSE: frames carried no `id:` and the handler ignored `Last-Event-ID`, so any reconnect replayed the whole run. `seq` already makes resume trivially correct (D20). | **closed (S1)** — frames stamp `id: ${seq}`; reconnects resume instead of replaying |
+| G4 | `POST /api/runs` demands `workflowPath` + `dir` as filesystem strings (`http.ts:117`); a browser cannot supply them. D5's registration surface was never built, and there is no `/api/workflows` or `/api/dispatch` at all. | **open (S5)** |
 
 #### Plan
 
@@ -435,7 +440,9 @@ progressive fields → disclosures, transcript deferred to S4. Data flows from `
 `GET /api/runs/:id` and a replay-then-tail SSE subscription (`src/web/api.ts`, D26); `listRuns`
 gained an `active` bit at the HTTP layer, because the store cannot tell an in-flight run from an
 interrupted one (D12/D24). The shell's placeholder inspector is gone; run detail owns its own
-two-pane layout. No new endpoints.
+two-pane layout. No new endpoints. The pure projection carries its own unit tests
+(`run-events.test.ts`, `format.test.ts`), the HTTP layer gains a test for the `active` bit
+(`bun test` is now 72), and the playwright suite is 5 specs, green through `nix develop`.
 _Validated by:_ two legs. **Static** — a real daemon on a temp db, driven through
 `createCorpusReplayAdapter` so a committed corpus becomes a real event log with no AI in the loop;
 playwright then asserts list ordering and status, run-detail meta against `RunSummary`, and that the

@@ -1,20 +1,68 @@
-import { Link } from "@tanstack/react-router";
+import { Link, useNavigate } from "@tanstack/react-router";
 import { useRuns, useTickingNow } from "@/web/hooks";
 import type { RunSummary } from "@/web/api";
 import { formatAgo, formatClock, formatDuration, shortRunId } from "@/web/lib/format";
 import { runDisplayStatus, type RunDisplayStatus } from "@/web/lib/status";
 import { StatusCell } from "@/web/components/status-cell";
 
-function resultLabel(run: RunSummary, status: RunDisplayStatus): string {
-  if (status === "running") return "streaming";
-  if (status === "interrupted") return "no terminal event";
-  if (status === "cancelled") return "stopped mid-stream";
-  if (status === "failed") return "failed";
-  return `${run.eventCount} events`;
+function issueLabel(input: unknown): string | undefined {
+  if (typeof input !== "object" || input === null || !("issueNumber" in input)) return undefined;
+  const issueNumber = (input as { issueNumber?: unknown }).issueNumber;
+  return typeof issueNumber === "number" ? `#${issueNumber}` : undefined;
+}
+
+function prUrl(output: unknown): string | undefined {
+  if (typeof output !== "object" || output === null || !("prUrl" in output)) return undefined;
+  const url = (output as { prUrl?: unknown }).prUrl;
+  return typeof url === "string" ? url : undefined;
+}
+
+function TaskCell({ run }: { readonly run: RunSummary }) {
+  const issue = issueLabel(run.input);
+  return (
+    <div className="flex flex-col gap-0.5">
+      {issue !== undefined ? (
+        <span className="font-mono text-xs font-medium">{issue}</span>
+      ) : null}
+      <span className="font-mono text-[11px] text-muted-foreground">{run.workflowId ?? "—"}</span>
+    </div>
+  );
+}
+
+function ResultCell({
+  run,
+  status,
+}: {
+  readonly run: RunSummary;
+  readonly status: RunDisplayStatus;
+}) {
+  if (status === "running") return <span className="text-muted-foreground">streaming</span>;
+
+  const url = prUrl(run.output);
+  if (url !== undefined) {
+    const number = url.split("/").pop() ?? "";
+    return (
+      <a
+        className="font-mono underline"
+        href={url}
+        target="_blank"
+        rel="noreferrer"
+        onClick={(event) => event.stopPropagation()}
+      >
+        pr #{number}
+      </a>
+    );
+  }
+  if (status === "interrupted")
+    return <span className="text-muted-foreground">no terminal event</span>;
+  if (status === "cancelled") return <span className="text-muted-foreground">stopped mid-stream</span>;
+  if (status === "failed") return <span className="text-muted-foreground">failed</span>;
+  return <span className="text-muted-foreground">{run.eventCount} events</span>;
 }
 
 function RunRow({ run, now }: { readonly run: RunSummary; readonly now: number }) {
   const status = runDisplayStatus(run);
+  const navigate = useNavigate();
   const duration =
     run.active || run.finishedAt === undefined
       ? formatDuration(run.active ? now - run.startedAt : undefined)
@@ -24,6 +72,7 @@ function RunRow({ run, now }: { readonly run: RunSummary; readonly now: number }
     <tr
       data-testid={`run-row-${run.runId}`}
       data-status={status}
+      onClick={() => navigate({ to: "/runs/$runId", params: { runId: run.runId } })}
       className="cursor-pointer border-b border-border hover:bg-muted/40"
     >
       <td className="px-3 py-2">
@@ -33,12 +82,15 @@ function RunRow({ run, now }: { readonly run: RunSummary; readonly now: number }
         <Link
           to="/runs/$runId"
           params={{ runId: run.runId }}
+          onClick={(event) => event.stopPropagation()}
           className="font-mono text-xs font-medium hover:underline"
         >
           {shortRunId(run.runId)}
         </Link>
       </td>
-      <td className="px-3 py-2 font-mono text-xs text-muted-foreground">{run.workflowId ?? "—"}</td>
+      <td className="px-3 py-2">
+        <TaskCell run={run} />
+      </td>
       <td className="px-3 py-2 font-mono text-[11px] whitespace-nowrap text-muted-foreground">
         {formatClock(run.startedAt)}
         <span className="ml-2">{formatAgo(run.startedAt, now)}</span>
@@ -47,7 +99,7 @@ function RunRow({ run, now }: { readonly run: RunSummary; readonly now: number }
         {duration}
       </td>
       <td className="px-3 py-2 font-mono text-[11px]" data-testid="run-result">
-        {resultLabel(run, status)}
+        <ResultCell run={run} status={status} />
       </td>
     </tr>
   );
@@ -63,8 +115,8 @@ function RunTable({
   return (
     <table className="w-full border-collapse">
       <thead>
-        <tr className="border-b border-border text-left">
-          {["Status", "Run", "Workflow", "Started", "Duration", "Result"].map((heading) => (
+        <tr className="border-b-2 border-border-strong text-left">
+          {["Status", "Run", "Task", "Started", "Duration", "Result"].map((heading) => (
             <th
               key={heading}
               className="px-3 py-1.5 text-[11px] font-semibold tracking-wide text-muted-foreground uppercase"
