@@ -314,8 +314,8 @@ completion, SSE watchability, WIP-limit enforcement) and live (`docs/findings/6-
 — a real `factory serve --dispatch-*` run picked up a Ready issue unattended and opened a real
 PR, factory-spike#5). The write-back call path itself (`ctx.writeBack` → PR open) was already
 proven live in phase 1 (`docs/findings/3-live-e2e-run.md`); this run proved the dispatcher
-driving that call unattended. **Open item, not exit-blocking:** PR #5 itself still carries the
-stray-artifact file the live run's D25 fix came too late to prevent — see "Start here."
+driving that call unattended. PR #5 itself carried the stray-artifact file the live run's D25
+fix came too late to prevent; it was closed with the user's confirmation rather than amended.
 
 ### Phase 4 — Web UI (column 2)
 
@@ -330,16 +330,15 @@ cancellation correctness.
 ## Start here
 
 Phases 0–3 are complete on every exit criterion, fakes and live (see each phase's section above,
-and ADR 0004 for D22–D24). Phase 4 (web UI, column 2) is the next phase proper.
+and ADR 0004 for D22–D24).
+[factory-spike#5](https://github.com/FreshlyBrewedCode/factory-spike/pull/5) — the PR the phase
+3 live run opened, which carried the stray-artifact file its own D25 fix came too late to
+prevent — was closed with the user's confirmation, not amended
+(`docs/findings/6-live-dispatch-run.md`).
 
-Before that: **[factory-spike#5](https://github.com/FreshlyBrewedCode/factory-spike/pull/5)**,
-the PR the phase 3 live run opened, still carries the stray-artifact file its own D25 fix came
-too late to prevent (`docs/findings/6-live-dispatch-run.md`). It is real, shared-visibility state
-on GitHub — decide with the user how to handle it (leave as-is as a POC artifact demonstrating
-the bug, push a follow-up commit removing the file, or close it) before touching it unilaterally.
-
-To start phase 4: read D6 (web UI deferred to phase 4, thin because the API predates it) and
-`src/server/http.ts`'s route surface — the SPA is a client of what already exists, not a
+Stopped here for review at the user's request, with phases 0–3 done. Phase 4 (web UI, column 2)
+is the next phase proper: read D6 (web UI deferred to phase 4, thin because the API predates it)
+and `src/server/http.ts`'s route surface — the SPA is a client of what already exists, not a
 redesign.
 
 Left over from earlier phases, not exit-blocking, worth doing opportunistically:
