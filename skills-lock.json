@@ -12,6 +12,12 @@
       "sourceType": "github",
       "skillPath": "skills/tanstack-ai-migration/SKILL.md",
       "computedHash": "651629b7af7b013606dbe7765afff3af30b9b7c69377db98d887539659428ef7"
+    },
+    "playwright-cli": {
+      "source": "microsoft/playwright-cli",
+      "sourceType": "github",
+      "skillPath": "skills/playwright-cli/SKILL.md",
+      "computedHash": "19b6942c9cbcf9b9e3000fc497f8f156b8251d66055de806017e4aaa651e0c7b"
     }
   }
 }

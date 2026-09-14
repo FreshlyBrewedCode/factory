@@ -18,6 +18,8 @@ factory
     - their workspaces cover clone + bootstrap only, git write-back (branch/commit/push/PR) is ours
   - Web UI, React SPA, tanstack router and query, shadcn, tailwind
 
+- Run playwright/browser automation through the Nix dev shell (`nix develop`), which pins bun and puts playwright's browser libs on `LD_LIBRARY_PATH` — see the playwright-cli skill
+
 - We build in iterrations, it is encouraged to first prototype -> validate -> harden architecture, stack should still be respected during prototyping unless good reasons come up
 
 - Read `STATUS.md` to understand the current status at the end of the session, consider updating `STATUS.md` using /handoff
