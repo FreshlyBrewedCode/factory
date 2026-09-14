@@ -82,15 +82,6 @@ export function AppShell() {
             <Outlet />
           </main>
         </div>
-
-        <aside className="hidden w-[26rem] shrink-0 border-l border-border p-4 xl:block">
-          <p className="text-[11px] font-semibold tracking-wide text-muted-foreground uppercase">
-            Inspector
-          </p>
-          <p className="mt-3 text-sm text-muted-foreground">
-            Select a run to inspect it. Run detail lands here in S3.
-          </p>
-        </aside>
       </div>
     </div>
   );
