@@ -29,6 +29,7 @@ export async function hostExec(
 ): Promise<ExecResult> {
   const proc = Bun.spawn([...command], {
     cwd: options.cwd,
+    env: process.env,
     stdout: "pipe",
     stderr: "pipe",
     signal: options.signal,
