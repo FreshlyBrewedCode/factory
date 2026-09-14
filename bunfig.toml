@@ -1,0 +1,5 @@
+# Bun's fullstack bundler needs the Tailwind plugin registered here (not in
+# package.json) so `Bun.serve`'s HTML-route bundling picks it up when it
+# processes `src/web/styles.css`.
+[serve.static]
+plugins = ["bun-plugin-tailwind"]

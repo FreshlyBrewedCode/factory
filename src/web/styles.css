@@ -1,0 +1,99 @@
+@import "tailwindcss";
+@import "@fontsource-variable/inter";
+@import "@fontsource-variable/jetbrains-mono";
+
+/*
+ * Phase 4's design language, ported from `docs/design/design.md`: an
+ * achromatic instrument panel (tier one) where the only saturated colour is
+ * the status of the work (tier two), plus an amber highlight for selection.
+ * Chrome follows shadcn's Tailwind v4 convention — semantic CSS variables in
+ * `:root`/`.dark`, exposed to utilities through `@theme inline`, so a future
+ * `shadcn add` lands on the same tokens.
+ */
+:root {
+  --background: oklch(0.96 0 0);
+  --card: oklch(1 0 0);
+  --foreground: oklch(0.21 0 0);
+  --muted: oklch(0.958 0 0);
+  --muted-foreground: oklch(0.52 0 0);
+  --accent: oklch(0.945 0 0);
+  --border: oklch(0.9 0 0);
+  --primary: oklch(0.86 0.176 89.2);
+  --primary-foreground: oklch(0.2 0 0);
+  --ring: oklch(0.86 0.176 89.2);
+  --status-complete: oklch(0.58 0.14 158);
+  --status-ready: oklch(0.58 0.13 70);
+  --status-pending: oklch(0.55 0.17 262);
+  --status-blocked: oklch(0.56 0.2 25);
+  --status-cancelled: oklch(0.6 0.02 258);
+  --radius: 0.75rem;
+  color-scheme: light;
+}
+
+.dark {
+  --background: oklch(0.16 0 0);
+  --card: oklch(0.23 0 0);
+  --foreground: oklch(0.93 0 0);
+  --muted: oklch(0.27 0 0);
+  --muted-foreground: oklch(0.71 0 0);
+  --accent: oklch(0.3 0 0);
+  --border: oklch(0.32 0 0);
+  --status-complete: oklch(0.81 0.16 163);
+  --status-ready: oklch(0.84 0.13 80);
+  --status-pending: oklch(0.75 0.13 265);
+  --status-blocked: oklch(0.73 0.15 22);
+  --status-cancelled: oklch(0.6 0.02 258);
+  color-scheme: dark;
+}
+
+@custom-variant dark (&:is(.dark *));
+
+@theme inline {
+  --color-background: var(--background);
+  --color-card: var(--card);
+  --color-foreground: var(--foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-border: var(--border);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-ring: var(--ring);
+  --color-status-complete: var(--status-complete);
+  --color-status-ready: var(--status-ready);
+  --color-status-pending: var(--status-pending);
+  --color-status-blocked: var(--status-blocked);
+  --color-status-cancelled: var(--status-cancelled);
+
+  --font-sans: "Inter Variable", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono Variable", ui-monospace, SFMono-Regular, Menlo, monospace;
+
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+}
+
+@layer base {
+  * {
+    border-color: var(--color-border);
+  }
+
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+
+  body {
+    margin: 0;
+    background-color: var(--color-background);
+    color: var(--color-foreground);
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+  }
+
+  ::selection {
+    background-color: color-mix(in oklab, var(--primary) 45%, transparent);
+  }
+}
