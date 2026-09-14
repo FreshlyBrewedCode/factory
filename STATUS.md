@@ -32,7 +32,9 @@ Phase 1's runtime (`defineWorkflow`, `startRun`, the CLI), phase 2's persistence
 (`src/persistence/store.ts`, the `factory runs`/`factory log` CLI surface), and phase 3's
 server/dispatch (`src/server/`) are built and validated against fakes **and live** — the phase 3
 live dispatch run (`docs/findings/6-live-dispatch-run.md`) closed the last gated leg. Still
-missing: the UI (phase 4).
+missing: the UI (phase 4) proper; a throwaway visual mock exists for brainstorming and has had one
+refinement pass (`prototypes/phase4-ui/index.html`,
+`docs/findings/7-phase4-ui-prototype-refinement.md`).
 
 ### On disk
 
@@ -321,6 +323,22 @@ fix came too late to prevent; it was closed with the user's confirmation rather 
 
 React SPA, TanStack Router + Query, shadcn, tailwind. Board view + live run detail over SSE.
 Thin, because the API predates it.
+
+A throwaway visual mockup exists at `prototypes/phase4-ui/index.html` — one self-contained
+HTML/CSS/JS file, no backend, with a simulated live run (streams a step, finishes, opens a PR,
+then the dispatcher claims the next issue). Purely for UI/UX brainstorming; it borrows wayful's
+design language, copied to `docs/design/design.md`, and is not the phase 4 SPA and carries none of
+the stack.
+
+**Prototype refinement (done).** One pass, section by section, to cut visual overload
+(`docs/findings/7-phase4-ui-prototype-refinement.md`): the live-info rail became a plain
+Workflows/Dispatch/Runs category menu with a page per category; the runs Kanban became a
+chronological table with running runs grouped on top (pulsing dot, live duration); the run detail
+dropped the pipeline strip, turned the header chips into a stacked meta table, kept Steps + Events,
+gave the step list an indexed spine (dotted/greyed for pending, live duration in its own column,
+third after the step type), and moved all step detail into collapsed-by-default disclosures in the
+inspector, with the transcript filling the panel from a click (original prompt at top). Also fixed
+a status-colour bug: agent/write-back `"completed"` was missing from the `[data-status]` mapping.
 
 ### Phase 5 — Harden
 

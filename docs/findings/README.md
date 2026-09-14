@@ -25,3 +25,29 @@ Conclusions → [`adr/0001-write-back-isolation-effect-boundary.md`](../adr/0001
 | [`2-sandbox-reuse-nonce-probe.md`](./2-sandbox-reuse-nonce-probe.md) | D10 in isolation: does the working tree survive a fresh-session boundary, independent of any workflow's own prompts? | Confirmed, live, three runs: a nonce written to disk by session 1 was read back correctly by session 2 (same `threadId`/`dir`, no shared transcript) — both from the read tool's own `TOOL_CALL_RESULT` and from the host filesystem directly. |
 
 Conclusions → [`adr/0003-run-event-type.md`](../adr/0003-run-event-type.md) (D10 itself is recorded in `STATUS.md`'s decision table; this probe adds confirming evidence, no new decision).
+
+## Phase 2 — persistence & lifecycle
+
+| Document | Subtask | Headline finding |
+|---|---|---|
+| [`4-crash-mid-run-recovery.md`](./4-crash-mid-run-recovery.md) | `SIGKILL` mid-`ctx.exec`, then reopen the same sqlite file | The partial history survives intact and reads back as `"interrupted"` — derived at read time, since nothing observes the crash as it happens. |
+
+Conclusions → D21 in `STATUS.md`; no ADR (plain synchronous sqlite, no Effect layer to bridge).
+
+## Phase 3 — server & dispatch
+
+| Document | Subtask | Headline finding |
+|---|---|---|
+| [`6-live-dispatch-run.md`](./6-live-dispatch-run.md) | A real `factory serve --dispatch-*` run against a real GitHub Project | The dispatcher claimed a Ready issue unattended and opened a real PR — and the run exposed a genuine stray-artifact bug (`git status --porcelain` collapsing a new directory), fixed by D25. |
+
+Conclusions → [`adr/0004-server-dispatch.md`](../adr/0004-server-dispatch.md) (D22–D25).
+
+## Phase 4 — web UI
+
+| Document | Subtask | Headline finding |
+|---|---|---|
+| [`7-phase4-ui-prototype-refinement.md`](./7-phase4-ui-prototype-refinement.md) | One refinement pass over the throwaway phase 4 mock, section by section | Presentation-only: nav became a category menu, runs a chronological table, run detail dropped the pipeline strip, the step list gained an indexed spine and a dedicated time column, and step detail moved into collapsed disclosures with a full-panel transcript. |
+
+No ADR — the mock is throwaway and carries none of the stack; decisions are listed in the finding
+and the phase 4 section of `STATUS.md`.
+

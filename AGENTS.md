@@ -29,5 +29,7 @@ factory
   - `docs/adr/NNNN-<slug>.md` — decision records (Status / Context / Decision / Consequences). Write one when a phase exits, or when a decision is made that later phases must not re-litigate
   - `docs/findings/` — evidence from spikes and experiments, one document per subtask, written for a reader who was not there. Kept separate from the decisions drawn from it, so a wrong conclusion can be revised without losing the measurements
   - `docs/research/` — reading notes on external sources, captured before we have run anything. Annotate rather than delete once a spike contradicts them
+  - `docs/design/design.md` — wayful's UI design guideline, copied verbatim with its reference screenshots. The rough design reference for the phase 4 UI (achromatic instrument panel, status-only colour, mono for CLI-typeable identifiers); wayful's repo stays canonical where the copy drifts
+  - `prototypes/` — throwaway single-file UI mockups for brainstorming, not part of the stack or the build. `prototypes/phase4-ui/index.html` is the phase 4 visual mock (self-contained HTML/CSS/JS, no backend, simulated live feed)
 
 - If significant changes/decisions have been made that go against the foundation established above, consider updating `AGENTS.md` in the same style. Always confirm these changes with the user.
