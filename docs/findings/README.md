@@ -47,7 +47,10 @@ Conclusions → [`adr/0004-server-dispatch.md`](../adr/0004-server-dispatch.md) 
 | Document | Subtask | Headline finding |
 |---|---|---|
 | [`7-phase4-ui-prototype-refinement.md`](./7-phase4-ui-prototype-refinement.md) | One refinement pass over the throwaway phase 4 mock, section by section | Presentation-only: nav became a category menu, runs a chronological table, run detail dropped the pipeline strip, the step list gained an indexed spine and a dedicated time column, and step detail moved into collapsed disclosures with a full-panel transcript. |
+| [`8-phase4-transcript-renderer.md`](./8-phase4-transcript-renderer.md) | S4: can `@tanstack/ai-event-client` render a replayed `AgentChunk` sequence? | **FAIL** — `0.11.3` is a devtools event bus with no renderer or reducer. But the already-installed `@tanstack/ai/client`'s `StreamProcessor` folds all nine real corpora (text, reasoning, tool calls, structured output) with zero errors, so Factory owns only a thin projection + presentation. The shadcn `message-scroller` is the recommended viewport. |
 
 No ADR — the mock is throwaway and carries none of the stack; decisions are listed in the finding
-and the phase 4 section of `STATUS.md`.
+and the phase 4 section of `STATUS.md`. Finding 8's consequence (reuse `StreamProcessor` rather
+than hand-writing the reducer) refines STATUS.md's "typed chunk accessors vs. a hand-written
+reducer" framing and D20's standing cost note.
 
