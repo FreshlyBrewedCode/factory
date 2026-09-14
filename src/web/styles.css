@@ -18,6 +18,7 @@
   --muted-foreground: oklch(0.52 0 0);
   --accent: oklch(0.945 0 0);
   --border: oklch(0.9 0 0);
+  --border-strong: oklch(0.78 0 0);
   --primary: oklch(0.86 0.176 89.2);
   --primary-foreground: oklch(0.2 0 0);
   --ring: oklch(0.86 0.176 89.2);
@@ -26,6 +27,8 @@
   --status-pending: oklch(0.55 0.17 262);
   --status-blocked: oklch(0.56 0.2 25);
   --status-cancelled: oklch(0.6 0.02 258);
+  --term-bg: oklch(0.19 0 0);
+  --term-fg: oklch(0.85 0 0);
   --radius: 0.75rem;
   color-scheme: light;
 }
@@ -38,11 +41,14 @@
   --muted-foreground: oklch(0.71 0 0);
   --accent: oklch(0.3 0 0);
   --border: oklch(0.32 0 0);
+  --border-strong: oklch(0.45 0 0);
   --status-complete: oklch(0.81 0.16 163);
   --status-ready: oklch(0.84 0.13 80);
   --status-pending: oklch(0.75 0.13 265);
   --status-blocked: oklch(0.73 0.15 22);
   --status-cancelled: oklch(0.6 0.02 258);
+  --term-bg: oklch(0.13 0 0);
+  --term-fg: oklch(0.85 0 0);
   color-scheme: dark;
 }
 
@@ -56,6 +62,7 @@
   --color-muted-foreground: var(--muted-foreground);
   --color-accent: var(--accent);
   --color-border: var(--border);
+  --color-border-strong: var(--border-strong);
   --color-primary: var(--primary);
   --color-primary-foreground: var(--primary-foreground);
   --color-ring: var(--ring);
@@ -96,4 +103,219 @@
   ::selection {
     background-color: color-mix(in oklab, var(--primary) 45%, transparent);
   }
+}
+
+/*
+ * Shared status language (finding 7): `data-status` maps the semantic value to
+ * a token; the dot and label read that token. Running is the only pulse.
+ */
+[data-status="finished"],
+[data-status="complete"],
+[data-status="completed"],
+[data-status="pass"] {
+  --status: var(--status-complete);
+}
+[data-status="running"] {
+  --status: var(--status-pending);
+}
+[data-status="failed"],
+[data-status="fail"] {
+  --status: var(--status-blocked);
+}
+[data-status="cancelled"] {
+  --status: var(--status-cancelled);
+}
+[data-status="interrupted"] {
+  --status: var(--status-ready);
+}
+[data-status="pending"],
+[data-status="neutral"] {
+  --status: var(--muted-foreground);
+}
+
+.status-cell {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.status-dot {
+  width: 7px;
+  height: 7px;
+  flex: none;
+  border-radius: 9999px;
+  background-color: var(--status, var(--muted-foreground));
+}
+
+.status-label {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: var(--status, var(--muted-foreground));
+  white-space: nowrap;
+}
+
+@keyframes status-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.25;
+  }
+}
+
+.status-pulse {
+  animation: status-pulse 1.6s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .status-pulse {
+    animation: none;
+  }
+}
+
+/* Indexed step spine (finding 7): numbered nodes connected by a hairline. */
+.step-item {
+  position: relative;
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr);
+  gap: 12px;
+}
+
+.step-index {
+  position: relative;
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+}
+
+.step-index .num {
+  z-index: 1;
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  margin-top: 10px;
+  border: 1px solid var(--status, var(--border-strong));
+  border-radius: 9999px;
+  background-color: var(--card);
+  color: var(--status, var(--muted-foreground));
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 500;
+}
+
+.step-index::after {
+  content: "";
+  position: absolute;
+  top: 32px;
+  bottom: -7px;
+  left: 50%;
+  width: 1px;
+  transform: translateX(-50%);
+  background-color: var(--border-strong);
+}
+
+.step-item:last-child .step-index::after {
+  display: none;
+}
+
+.step-index .num.dot {
+  width: 8px;
+  height: 8px;
+  margin-top: 18px;
+  border: none;
+  background-color: var(--border);
+}
+
+.step-row {
+  display: grid;
+  grid-template-columns: 112px 76px 64px minmax(0, 1fr) auto 18px;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  padding: 10px 14px;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--status, var(--border));
+  background-color: var(--card);
+  text-align: left;
+}
+
+button.step-row:hover {
+  border-color: var(--border);
+  border-left-color: var(--status, var(--border));
+}
+
+button.step-row[aria-current="true"] {
+  outline: 2px solid var(--ring);
+  outline-offset: 1px;
+}
+
+.step-kind {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.025em;
+  text-transform: uppercase;
+  color: var(--muted-foreground);
+}
+
+.step-time {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.step-name {
+  min-width: 0;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 500;
+  word-break: break-word;
+}
+
+.step-meta {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  text-align: right;
+  white-space: nowrap;
+  color: var(--muted-foreground);
+}
+
+/* Exec output (finding: terminal formatting): always dark, regardless of theme. */
+.term {
+  background-color: var(--term-bg);
+  color: var(--term-fg);
+  border: 1px solid var(--border);
+}
+
+.term-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-bottom: 1px solid oklch(1 0 0 / 12%);
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+.term-head .prompt {
+  color: var(--status-ready);
+  font-weight: 600;
+}
+
+.term pre {
+  margin: 0;
+  padding: 10px 12px;
+  max-height: 320px;
+  overflow-y: auto;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.term .stderr {
+  color: var(--status-blocked);
 }

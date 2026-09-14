@@ -33,6 +33,8 @@ function referenceSummary(runId: string, events: ReadonlyArray<RunEvent>): RunSu
     finishedAt: terminal?.ts,
     status: terminal !== undefined ? (terminal.payload._tag as RunStatus) : "interrupted",
     eventCount: events.length,
+    input: started?.payload._tag === "RunStarted" ? started.payload.input : undefined,
+    output: terminal?.payload._tag === "RunFinished" ? terminal.payload.output : undefined,
   };
 }
 
@@ -90,6 +92,31 @@ describe("persistence/store", () => {
     const [summary] = listRuns(db);
     expect(summary?.status).toBe("RunFinished");
     expect(summary?.finishedAt).toBe(1001);
+  });
+
+  test("listRuns surfaces RunStarted.input and RunFinished.output (the runs-table PR link)", () => {
+    const db = openStore(":memory:");
+    appendEvent(
+      db,
+      event("run-pr", 0, {
+        _tag: "RunStarted",
+        workflowId: "implement-issue",
+        dir: "/tmp/pr",
+        input: { issueNumber: 5 },
+      }),
+    );
+    appendEvent(
+      db,
+      event("run-pr", 1, {
+        _tag: "RunFinished",
+        durationMs: 5,
+        output: { prUrl: "https://github.com/example/repo/pull/5" },
+      }),
+    );
+
+    const [summary] = listRuns(db);
+    expect(summary?.input).toEqual({ issueNumber: 5 });
+    expect(summary?.output).toEqual({ prUrl: "https://github.com/example/repo/pull/5" });
   });
 
   test("listRuns reports every distinct run", () => {

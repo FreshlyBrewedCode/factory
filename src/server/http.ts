@@ -30,7 +30,7 @@ import type { Database } from "bun:sqlite";
 import { isTerminal, type RunEvent } from "../events";
 import { resetClone, type GitIdentity } from "../lib/clone";
 import { loadWorkflow } from "../lib/load-workflow";
-import { getRunEvents, listRuns } from "../persistence/store";
+import { getRunEvents, listRuns, type RunSummary } from "../persistence/store";
 import type { AgentAdapter } from "../runtime/agent-adapter";
 import index from "../web/index.html";
 import { subscribe } from "./pubsub";
@@ -39,6 +39,19 @@ import { getActiveHandle, isActive, startTrackedRun } from "./runs";
 export interface ServerOptions {
   readonly db: Database;
   readonly adapter: AgentAdapter;
+}
+
+/** `RunSummary` plus this process's live-registry bit — what the SPA reads. */
+export type RunSummaryResponse = RunSummary & { readonly active: boolean };
+
+/**
+ * A run with no terminal event is `"interrupted"` in the store, which cannot
+ * tell a crash apart from a run this process still holds. The runs page needs
+ * that bit to group live rows, so it is derived here from the in-memory
+ * registry (`server/runs.ts`) rather than stored (D24: active is process state).
+ */
+function listSummaries(db: Database): ReadonlyArray<RunSummaryResponse> {
+  return listRuns(db).map((run) => ({ ...run, active: isActive(run.runId) }));
 }
 
 interface StartRunBody {
@@ -122,7 +135,7 @@ export function createHandler(options: ServerOptions): (req: Request) => Promise
     const url = new URL(req.url);
 
     if (req.method === "GET" && url.pathname === "/api/runs") {
-      return json(listRuns(options.db));
+      return json(listSummaries(options.db));
     }
 
     if (req.method === "POST" && url.pathname === "/api/runs") {
@@ -170,7 +183,7 @@ export function createHandler(options: ServerOptions): (req: Request) => Promise
     const eventsMatch = /^\/api\/runs\/([^/]+)\/events$/.exec(url.pathname);
     if (req.method === "GET" && eventsMatch) {
       const runId = eventsMatch[1] as string;
-      const exists = listRuns(options.db).some((r) => r.runId === runId);
+      const exists = listSummaries(options.db).some((r) => r.runId === runId);
       if (!exists) return json({ error: "not found" }, { status: 404 });
       return new Response(sseStream(options.db, runId, parseLastEventId(req)), {
         headers: {
@@ -184,7 +197,7 @@ export function createHandler(options: ServerOptions): (req: Request) => Promise
     const runMatch = /^\/api\/runs\/([^/]+)$/.exec(url.pathname);
     if (req.method === "GET" && runMatch) {
       const runId = runMatch[1] as string;
-      const run = listRuns(options.db).find((r) => r.runId === runId);
+      const run = listSummaries(options.db).find((r) => r.runId === runId);
       if (run === undefined) return json({ error: "not found" }, { status: 404 });
       return json(run);
     }

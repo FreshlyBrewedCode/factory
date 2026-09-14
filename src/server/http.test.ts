@@ -179,6 +179,44 @@ describe("phase 3 HTTP API + SSE", () => {
     }
   });
 
+  test("an in-flight run is flagged active; a terminal run is not", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "factory-http-active-test-"));
+    const db = openStore(join(dir, "factory.db"));
+    const adapter = createSlowFakeAdapter(
+      [
+        { type: "TEXT_MESSAGE_START" },
+        { type: "TEXT_MESSAGE_CONTENT", delta: "hi" },
+        { type: "TEXT_MESSAGE_END" },
+      ],
+      400,
+    );
+    const server = serve({ db, adapter, port: 0 });
+    const base = `http://localhost:${server.port}`;
+
+    try {
+      const startRes = await fetch(`${base}/api/runs`, {
+        method: "POST",
+        body: JSON.stringify({ workflowPath: ECHO_WORKFLOW, input: {}, dir }),
+      });
+      const { runId } = (await startRes.json()) as { runId: string };
+
+      const listRes = await fetch(`${base}/api/runs`);
+      const runs = (await listRes.json()) as ReadonlyArray<{ runId: string; active: boolean }>;
+      expect(runs.find((r) => r.runId === runId)?.active).toBe(true);
+
+      await readSseUntilTerminal(`${base}/api/runs/${runId}/events`);
+
+      const getRes = await fetch(`${base}/api/runs/${runId}`);
+      const run = (await getRes.json()) as { active: boolean; status: string };
+      expect(run.active).toBe(false);
+      expect(run.status).toBe("RunFinished");
+    } finally {
+      await server.stop(true);
+      db.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test("SSE frames carry id: <seq>, and a Last-Event-ID reconnect resumes past that seq", async () => {
     const dir = mkdtempSync(join(tmpdir(), "factory-http-resume-test-"));
     const db = openStore(join(dir, "factory.db"));

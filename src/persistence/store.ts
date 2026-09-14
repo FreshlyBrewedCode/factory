@@ -88,6 +88,10 @@ export interface RunSummary {
   readonly finishedAt: number | undefined;
   readonly status: RunStatus | "interrupted";
   readonly eventCount: number;
+  /** Decoded from `RunStarted.input` (D5) — arbitrary, per-workflow. */
+  readonly input: unknown;
+  /** Decoded from `RunFinished.output` when the run reached that tag — arbitrary, per-workflow. */
+  readonly output: unknown;
 }
 
 interface RunSummaryRow {
@@ -97,6 +101,7 @@ interface RunSummaryRow {
   readonly started_payload: string | null;
   readonly finished_at: number | null;
   readonly status: string | null;
+  readonly terminal_payload: string | null;
 }
 
 /**
@@ -118,7 +123,8 @@ export function listRuns(db: Database): ReadonlyArray<RunSummary> {
         first_evt.ts AS started_at,
         started.payload AS started_payload,
         term.ts AS finished_at,
-        term.tag AS status
+        term.tag AS status,
+        term.payload AS terminal_payload
       FROM (SELECT run_id, COUNT(*) AS event_count FROM events GROUP BY run_id) AS agg
       JOIN events AS first_evt
         ON first_evt.run_id = agg.run_id
@@ -145,6 +151,10 @@ export function listRuns(db: Database): ReadonlyArray<RunSummary> {
       row.started_payload === null
         ? undefined
         : (JSON.parse(row.started_payload) as RunEventPayload);
+    const terminal =
+      row.terminal_payload === null
+        ? undefined
+        : (JSON.parse(row.terminal_payload) as RunEventPayload);
 
     return {
       runId: row.run_id,
@@ -154,6 +164,8 @@ export function listRuns(db: Database): ReadonlyArray<RunSummary> {
       finishedAt: row.finished_at ?? undefined,
       status: row.status === null ? "interrupted" : (row.status as RunStatus),
       eventCount: row.event_count,
+      input: started?._tag === "RunStarted" ? started.input : undefined,
+      output: terminal?._tag === "RunFinished" ? terminal.output : undefined,
     };
   });
 }
