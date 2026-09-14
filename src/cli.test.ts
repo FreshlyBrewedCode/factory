@@ -2,6 +2,7 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, test } from "bun:test";
+import { getRunEvents, listRuns, openStore } from "./persistence/store";
 import { createSlowFakeAdapter } from "./replay/adapter";
 import { runCli } from "./cli";
 
@@ -17,6 +18,7 @@ describe("runCli", () => {
       input: {},
       dir,
       outPath,
+      dbPath: join(dir, "factory.db"),
       adapter: createSlowFakeAdapter(
         [{ type: "TEXT_MESSAGE_START" }, { type: "TEXT_MESSAGE_CONTENT", delta: "hi" }, { type: "TEXT_MESSAGE_END" }],
         1,
@@ -35,6 +37,14 @@ describe("runCli", () => {
     expect(tags).toContain("AgentStepFinished");
     expect(tags).toContain("RunFinished");
 
+    const db = openStore(join(dir, "factory.db"));
+    const runs = listRuns(db);
+    expect(runs).toHaveLength(1);
+    expect(runs[0]?.status).toBe("RunFinished");
+    const persistedTags: string[] = getRunEvents(db, runs[0]?.runId ?? "").map((e) => e.payload._tag);
+    expect(persistedTags).toEqual(tags);
+    db.close();
+
     rmSync(dir, { recursive: true, force: true });
   });
 
@@ -49,6 +59,7 @@ describe("runCli", () => {
         input: {},
         dir,
         outPath,
+        dbPath: join(dir, "factory.db"),
         adapter: createSlowFakeAdapter([], 1),
       });
     } catch (err) {
