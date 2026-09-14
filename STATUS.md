@@ -1,8 +1,10 @@
 # STATUS
 
-> **Phase 0 complete. Phase 1 (workflow runtime) in progress — the authoring surface is
-> settled (ADR 0002, D19) and D3's event type now exists (ADR 0003, D20).**
-> The spike ran the full round trip unattended against a real repository and opened
+> **Phase 0 and phase 1 complete.** Phase 1's exit criterion is met on both legs: the
+> `defineWorkflow`/`startRun` runtime ran a real implement → test → review workflow end-to-end
+> against opencode, opening [factory-spike#4](https://github.com/FreshlyBrewedCode/factory-spike/pull/4)
+> (`docs/findings/3-live-e2e-run.md`), and the same workflow runs green under the corpus-replay
+> adapter in `bun test` (`workflows/implement-issue.test.ts`). Phase 0's spike opened
 > [factory-spike#3](https://github.com/FreshlyBrewedCode/factory-spike/pull/3).
 
 Project pitch, stack and constraints live in `AGENTS.md`. This file tracks where we are, what
@@ -16,25 +18,31 @@ we have decided, and what is still unknown.
 
 ## Where we are
 
-A starved scaffold, a **throwaway** spike that ran end to end, and the first production-shaped
-piece: D3's event type. Still missing: `defineWorkflow`, the run engine, persistence, the
-server, the UI.
+Phase 1's runtime (`defineWorkflow`, `startRun`, the CLI) is built and validated both live and
+under replay. Still missing: persistence, the server, dispatch, the UI.
 
 ### On disk
 
 | Path | What it is | Fate |
 |---|---|---|
-| `src/events.ts`, `src/events.test.ts` | **D3's event type** (ADR 0003) and its corpus-validation suite. 22 tests, green | keep — the spine |
+| `src/events.ts`, `src/events.test.ts` | **D3's event type** (ADR 0003) and its corpus-validation suite | keep — the spine |
+| `src/workflow.ts` | `defineWorkflow` + the six-member `ctx` (ADR 0002, D19) | keep |
+| `src/runtime/run.ts`, `run.test.ts` | `startRun` — `seq`/`stepId`/`execId` allocation, structured-output extraction, `RunEvent` emission, cancellation | keep — phase 2 persists this, doesn't replace it |
+| `src/cli.ts`, `cli.test.ts` | `factory run <workflow.ts>` — phase 1's entry point | keep — phase 3's server wraps this, doesn't replace it |
+| `src/lib/exec.ts`, `writeback.ts`, `tree-snapshot.ts`, `clone.ts` | Harvested from the 0a/0b spike (ADR 0001 §5): host exec, deterministic write-back, tree-survival assertions, clone/reset | keep |
+| `src/replay/adapter.ts`, `adapter.test.ts` | Corpus-replay fake adapter (`createCorpusReplayAdapter`, `createSlowFakeAdapter`) | keep — the only opencode-free path through the runtime |
+| `workflows/implement-issue.ts`, `implement-issue.test.ts` | The one real workflow: implement → test → fix/review → test → PR metadata → write-back. Live-validated (factory-spike#4) and replay-validated | keep |
 | `test/corpus/` | The nine recorded NDJSON corpora, promoted out of gitignored `.factory/runs/` into committed fixtures (128 KB) | keep — tests and the replay adapter both read these |
-| `src/index.ts`, `src/index.test.ts` | 0c smoke test, proving `bun test` runs. Its function happens to be named `slugify`, unrelated to the spike target — a coincidence, not a dependency | replace in phase 1 |
-| `src/spike/` | The 0a/0b spike: workflow script → lib utilities → runtime (the D13 seam) | harvest the four proven pieces, then delete — see ADR 0001 §5 |
+| `src/index.ts`, `src/index.test.ts` | 0c smoke test, proving `bun test` runs. Its function happens to be named `slugify`, unrelated to the spike target — a coincidence, not a dependency | still unreplaced; harmless, low priority |
 | `docs/adr/`, `docs/findings/`, `docs/research/` | Decisions, evidence, reading notes | keep |
 | `.factory/` | gitignored: the host-side clone and the raw run dumps | keep (regenerable) |
 
 Toolchain: bun 1.4.2, oxfmt, oxlint (type-aware, `@effect/tsgo` rules active and verified
 firing). Scripts: `test`, `typecheck`, `lint`, `format`. **`format` is deliberately scoped to
-explicit paths** — a bare `oxfmt .` reformats Markdown, including this file. `src/events.ts` is
-lint-clean; the remaining warnings are all in `src/spike/`, which gets deleted.
+explicit paths** — a bare `oxfmt .` reformats Markdown, including this file. `lint` exits 0
+across the repo; the remaining output is all `effecttsgo` advisory warnings (async functions,
+`Date.now()`, `console.*`, `process.env`) that flag idiomatic-Effect alternatives rather than
+defects — none currently block the exit code.
 
 Dependencies (verified against `node_modules` 2026-09-14, not just the manifest):
 `@tanstack/ai` `0.54.0`, `-opencode` `0.4.5`, `-sandbox` `0.5.7`, `-sandbox-local-process`
@@ -147,13 +155,10 @@ What remains genuinely open:
 as an Effect `Stream` and verified fiber-interrupt cancellation by PID. Four library/doc
 contradictions were found and root-caused to source. See the ADR and `docs/findings/`.
 
-### Phase 1 — Workflow runtime (column 1) ← **we are here**
+### Phase 1 — Workflow runtime (column 1) — **complete**
 
 The `defineWorkflow` surface, the run engine, run context, and D3's event type. In-memory;
 no server, no sqlite. CLI: `factory run <workflow.ts>`.
-
-Both design decisions are now settled: the authoring surface in ADR 0002 (D19) and the event
-type in ADR 0003 (D20). What remains is the run engine and the CLI.
 
 **Done:**
 
@@ -191,18 +196,25 @@ type in ADR 0003 (D20). What remains is the run engine and the CLI.
   `FileSink`, and maps `SIGINT` to the runtime's own `cancel()` rather than a process kill.
   `src/cli.test.ts` exercises the real logic (import, dir/clone handling, NDJSON writing,
   exit-code mapping) against `createSlowFakeAdapter`, no live opencode calls.
+- ~~Run the phase-1 exit criterion's live leg.~~ Confirmed with the user first (the one
+  hard-to-revert, shared-state action in this phase), then run for real: `run-1789368882906`
+  via `src/cli.ts` against real opencode, opened
+  [factory-spike#4](https://github.com/FreshlyBrewedCode/factory-spike/pull/4). The fix step
+  found and fixed a real bug unprompted (dropped, not transliterated, accented characters) —
+  `docs/findings/3-live-e2e-run.md`.
+- ~~Run the same workflow green under corpus replay in `bun test`.~~
+  `workflows/implement-issue.test.ts` — `implement-issue.ts` through `startRun`, replayed
+  against `test/corpus/run-1789308170212.ndjson`, against a local bare-repo `origin` fixture and
+  a faked `gh`. Along the way, fixed `hostExec` (`src/lib/exec.ts`): `Bun.spawn` snapshots the
+  environment at process startup unless an explicit `env` is passed, so it wasn't actually
+  inheriting a live-mutated `process.env` as its docstring claimed.
 
-**Next:**
+**Exit — met:** a real implement → test → review workflow ran end-to-end against opencode
+(factory-spike#4), **and** the same workflow runs green under the corpus-replay adapter in
+`bun test`.
 
-- Cheap and worth doing here: run the same workflow under `claudeCodeText` to see what a
-  journal would have bought us, before D12 hardens into an assumption. D20 also wants this as
-  the first real test of the opaque-passthrough bet.
-- The phase-1 exit criterion's live leg (a real implement → test → review workflow against
-  opencode, pushing a branch and opening a real PR) needs explicit user confirmation before it
-  runs — it is the one hard-to-revert, shared-state action in this phase.
-
-**Exit:** a real implement → test → review workflow runs end-to-end against opencode, **and**
-the same workflow runs green under the corpus-replay adapter in `bun test`.
+**Deferred out of phase 1** (not exit-blocking, still open — see "Still unknown" and "Start
+here"): the `claudeCodeText` comparison, filing the two root-caused library bugs upstream.
 
 ### Phase 2 — Persistence & lifecycle
 
@@ -238,19 +250,23 @@ cancellation correctness.
 
 ## Start here
 
-1. Read `src/events.ts` and ADR 0003. It is the spine everything else in phase 1 hangs off,
-   and its comments carry the corpus evidence for each non-obvious field.
-2. Read ADR 0001 §5 ("What phase 1 inherits and must not rediscover") — `src/spike/` itself is
-   now deleted; the ADR is the record of what it proved.
-3. ~~Build the corpus-replay fake adapter over `test/corpus/`, then `defineWorkflow` + the run
-   context against it, lifting the spike per ADR 0002.~~ Done — `src/replay/adapter.ts`,
-   `src/workflow.ts`, `src/runtime/run.ts`, `workflows/implement-issue.ts`.
-4. ~~Run the sandbox-reuse nonce probe and record the answer in `docs/findings/`.~~ Done —
-   `docs/findings/2-sandbox-reuse-nonce-probe.md`.
-5. ~~Build the CLI (`factory run <workflow.ts>`).~~ Done — `src/cli.ts`, `src/cli.test.ts`,
-   `test/fixtures/echo-workflow.ts`. Confirm with the user before running
-   `workflows/implement-issue.ts` live against opencode for the phase-1 exit criterion (pushes
-   a branch, opens a real PR — the one hard-to-revert action in this phase).
-6. File the two root-caused library bugs upstream, so D16's workaround can eventually go. The
-   marker-path one now has a second symptom worth citing: it pollutes the `sandbox.file` event
-   stream with `/workspace` + host-absolute paths (finding 8).
+Phase 1 is complete (both exit-criterion legs met — see its section above). Phase 2
+(persistence & lifecycle: Effect layers, sqlite, run/step/artifact tables) is next.
+
+1. Read `docs/adr/0002-workflow-authoring-surface.md` (D19) and `docs/adr/0003-run-event-type.md`
+   (D20) for the authoring surface and event type phase 2 persists as-is — D3 says the event
+   log is the spine sqlite stores, not a new shape to design.
+2. Read `src/runtime/run.ts` (`startRun`) to see what currently only lives in memory: `seq`
+   allocation, the `RunEvent` stream via `onEvent`, `RunOutcome`. Phase 2's job is to make this
+   durable and queryable without changing what it emits.
+3. Read D12 (crash recovery deprioritized — "mark interrupted runs and keep history queryable")
+   before scoping phase 2's crash-recovery surface; it is intentionally small.
+
+Left over from phase 1, not exit-blocking, worth doing opportunistically:
+
+- Run `workflows/implement-issue.ts` under `claudeCodeText` to see what a journal would have
+  bought us, before D12 hardens into an assumption (D20 also wants this as the first real test
+  of the opaque-passthrough bet).
+- File the two root-caused library bugs upstream, so D16's workaround can eventually go. The
+  marker-path one now has a second symptom worth citing: it pollutes the `sandbox.file` event
+  stream with `/workspace` + host-absolute paths (finding 8).
