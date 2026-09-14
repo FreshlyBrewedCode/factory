@@ -1,0 +1,25 @@
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.4.2"
+
+      - run: bun install --frozen-lockfile
+
+      - run: bun run check
+
+      # Stages the npm package with a placeholder version, so a staging
+      # failure is caught here rather than in the release job.
+      - name: Stage the release package
+        run: bun scripts/build-release.ts 0.0.0-development

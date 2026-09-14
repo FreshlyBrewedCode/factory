@@ -54,3 +54,11 @@ and the phase 4 section of `STATUS.md`. Finding 8's consequence (reuse `StreamPr
 than hand-writing the reducer) refines STATUS.md's "typed chunk accessors vs. a hand-written
 reducer" framing and D20's standing cost note.
 
+## Distribution
+
+| Document | Subtask | Headline finding |
+|---|---|---|
+| [`8-raw-ts-npm-shim-spike.md`](./8-raw-ts-npm-shim-spike.md) | How to publish a Bun-only, raw-TypeScript CLI to npm | `bunx`/`npx` honor a bin's shebang, so the launcher must declare `#!/usr/bin/env bun`; a `node` shebang makes `bunx` run Node and the Bun branch unreachable. |
+
+Conclusions → [`adr/0005-raw-typescript-distribution.md`](../adr/0005-raw-typescript-distribution.md).
+

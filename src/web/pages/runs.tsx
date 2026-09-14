@@ -21,9 +21,7 @@ function TaskCell({ run }: { readonly run: RunSummary }) {
   const issue = issueLabel(run.input);
   return (
     <div className="flex flex-col gap-0.5">
-      {issue !== undefined ? (
-        <span className="font-mono text-xs font-medium">{issue}</span>
-      ) : null}
+      {issue !== undefined ? <span className="font-mono text-xs font-medium">{issue}</span> : null}
       <span className="font-mono text-[11px] text-muted-foreground">{run.workflowId ?? "—"}</span>
     </div>
   );
@@ -55,7 +53,8 @@ function ResultCell({
   }
   if (status === "interrupted")
     return <span className="text-muted-foreground">no terminal event</span>;
-  if (status === "cancelled") return <span className="text-muted-foreground">stopped mid-stream</span>;
+  if (status === "cancelled")
+    return <span className="text-muted-foreground">stopped mid-stream</span>;
   if (status === "failed") return <span className="text-muted-foreground">failed</span>;
   return <span className="text-muted-foreground">{run.eventCount} events</span>;
 }

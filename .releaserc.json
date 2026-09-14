@@ -1,0 +1,23 @@
+{
+  "branches": ["stable", { "name": "main", "channel": "next", "prerelease": "next" }],
+  "tagFormat": "v${version}",
+  "plugins": [
+    [
+      "@semantic-release/commit-analyzer",
+      {
+        "preset": "conventionalcommits",
+        "releaseRules": [{ "breaking": true, "release": "minor" }]
+      }
+    ],
+    "@semantic-release/release-notes-generator",
+    [
+      "@semantic-release/exec",
+      {
+        "verifyConditionsCmd": "bun scripts/build-release.ts 0.0.0-development",
+        "prepareCmd": "bun scripts/build-release.ts ${nextRelease.version} --smoke-test"
+      }
+    ],
+    ["@semantic-release/npm", { "pkgRoot": "dist/npm/factory" }],
+    "@semantic-release/github"
+  ]
+}
