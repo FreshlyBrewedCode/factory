@@ -36,7 +36,9 @@ describe("cleanStrayArtifacts", () => {
       const exec = (argv: ReadonlyArray<string>) => hostExec(argv, { cwd: dir });
       const cleaned = await cleanStrayArtifacts(dir, exec);
 
-      expect(cleaned).toEqual(["tmp/factory-live-dispatch/work/issue-1/.tanstack-projected-abc123"]);
+      expect(cleaned).toEqual([
+        "tmp/factory-live-dispatch/work/issue-1/.tanstack-projected-abc123",
+      ]);
       expect(existsSync(join(strayDir, ".tanstack-projected-abc123"))).toBe(false);
 
       const status = await exec(["git", "status", "--porcelain", "--untracked-files=all"]);
