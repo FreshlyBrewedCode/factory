@@ -51,3 +51,11 @@ Conclusions → [`adr/0004-server-dispatch.md`](../adr/0004-server-dispatch.md) 
 No ADR — the mock is throwaway and carries none of the stack; decisions are listed in the finding
 and the phase 4 section of `STATUS.md`.
 
+## Distribution
+
+| Document | Subtask | Headline finding |
+|---|---|---|
+| [`8-raw-ts-npm-shim-spike.md`](./8-raw-ts-npm-shim-spike.md) | How to publish a Bun-only, raw-TypeScript CLI to npm | `bunx`/`npx` honor a bin's shebang, so the launcher must declare `#!/usr/bin/env bun`; a `node` shebang makes `bunx` run Node and the Bun branch unreachable. |
+
+Conclusions → [`adr/0005-raw-typescript-distribution.md`](../adr/0005-raw-typescript-distribution.md).
+

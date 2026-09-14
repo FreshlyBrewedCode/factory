@@ -1,0 +1,72 @@
+name: release
+
+# This filename is load-bearing: npm's trusted-publisher configuration pins
+# the exact org/repo/workflow-filename triple it will mint an OIDC token for.
+# Renaming this file silently breaks publishing.
+#
+# Two modes, sharing one job:
+#   - push to main      -> publish a pre-release (`X.Y.Z-next.N`) on the npm
+#                          `next` dist-tag and a GitHub pre-release.
+#   - workflow_dispatch -> publish a stable release on the npm `latest` dist-tag.
+#                          `--branches main` makes semantic-release treat main as
+#                          a plain release branch; stable runs ignore pre-release
+#                          tags, so it recomputes the final `X.Y.Z` from the last
+#                          stable tag rather than promoting an existing version.
+#
+# .releaserc.json must keep a non-pre-release "release" branch configured (here
+# `stable`, which is never pushed to or published from) because semantic-release
+# rejects a config whose only branch is a pre-release branch.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  id-token: write
+
+# Cancel superseded runs of the same mode: rapid merges to main cancel the older
+# pre-release run, while a manual stable release is tracked separately so a later
+# merge can't cancel it mid-publish.
+concurrency:
+  group: release-${{ github.event_name }}
+  cancel-in-progress: true
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    environment: release
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.4.2"
+
+      # semantic-release shells out to `npm publish`; @semantic-release/npm
+      # needs npm >= 11.5.1 for trusted-publishing (OIDC) support, or it
+      # falls back to token auth and fails with an error that never mentions
+      # OIDC. actions/setup-node's bundled npm is not guaranteed to clear
+      # that bar, so it's upgraded explicitly.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - run: npm install -g npm@latest
+
+      - run: bun install --frozen-lockfile
+
+      - name: Publish pre-release
+        if: github.event_name == 'push'
+        run: npx semantic-release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Publish stable release
+        if: github.event_name == 'workflow_dispatch'
+        run: npx semantic-release --branches main
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
