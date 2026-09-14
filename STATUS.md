@@ -32,10 +32,11 @@ Phase 1's runtime (`defineWorkflow`, `startRun`, the CLI), phase 2's persistence
 (`src/persistence/store.ts`, the `factory runs`/`factory log` CLI surface), and phase 3's
 server/dispatch (`src/server/`) are built and validated against fakes **and live** — the phase 3
 live dispatch run (`docs/findings/6-live-dispatch-run.md`) closed the last gated leg. Phase 4's SPA
-scaffold is on screen (S2): React + TanStack Router/Query + Tailwind/shadcn served by the same
-`Bun.serve` as the API, with the first playwright smoke test wired through `nix develop`; the runs
-pages proper are S3. A throwaway visual mock exists for brainstorming and has had one refinement
-pass (`prototypes/phase4-ui/index.html`, `docs/findings/7-phase4-ui-prototype-refinement.md`).
+is on screen and rendering real data: S2 scaffolded React + TanStack Router/Query + Tailwind/shadcn
+served by the same `Bun.serve` as the API, and S3 added the runs list, run-detail overview and
+step list, both legs validated by playwright through `nix develop`. The transcript is S4. A
+throwaway visual mock exists for brainstorming and has had one refinement pass
+(`prototypes/phase4-ui/index.html`, `docs/findings/7-phase4-ui-prototype-refinement.md`).
 Phase 4 has an agreed step plan with per-step validation criteria and one decision (D26, live-data
 transport) — see its section.
 
@@ -59,13 +60,13 @@ transport) — see its section.
 | `src/server/runs.ts`                                               | In-process active-run registry backing the WIP limit and cancel                                                                                                          | keep                                                              |
 | `src/server/pubsub.ts`                                             | Live event fan-out for SSE tailing                                                                                                                                       | keep                                                              |
 | `src/server/daemon.ts`                                             | `factory serve` wiring (`startDaemon`, dispatch opt-in via `--dispatch-*` flags)                                                                                          | keep                                                              |
-| `src/web/`                                                         | Phase 4 SPA: `index.html` + `main.tsx`/`router.tsx`/`app-shell.tsx`, shadcn primitives, Tailwind design tokens; bundled by Bun's fullstack bundler                     | keep — S3 fills in the runs pages                                 |
+| `src/web/`                                                         | Phase 4 SPA: `index.html` + `main.tsx`/`router.tsx`/`app-shell.tsx`, shadcn primitives, Tailwind design tokens; S3 added the runs list, run detail and step list; bundled by Bun's fullstack bundler                     | keep — S4 adds the transcript                                |
 | `e2e/`, `playwright.config.ts`                                     | Phase 4's playwright suite and its real-daemon webServer; runs through `nix develop`                                                                                      | keep — grows each step                                            |
 | `src/server/integration.test.ts`                                   | Phase 3's exit criterion, the fakes/replay-provable parts, end to end through `reconcileOnce` -> `startTrackedRun` -> the event log -> SSE                              | keep                                                              |
 | `src/index.ts`, `src/index.test.ts`                               | 0c smoke test, proving `bun test` runs. Its function happens to be named `slugify`, unrelated to the spike target — a coincidence, not a dependency                      | still unreplaced; harmless, low priority                          |
 | `docs/adr/`, `docs/findings/`, `docs/research/`                   | Decisions, evidence, reading notes                                                                                                                                       | keep                                                              |
 | `docs/design/`                                                    | wayful's UI design guideline + reference screenshots, copied verbatim. Phase 4's rough visual reference; wayful's repo stays canonical                                   | keep                                                              |
-| `prototypes/phase4-ui/index.html`                                 | The throwaway phase 4 visual mock — self-contained HTML/CSS/JS, no backend, simulated feed. Not the SPA, carries none of the stack                                       | throwaway — delete once phase 4's S3 renders real data            |
+| `prototypes/phase4-ui/index.html`                                 | The throwaway phase 4 visual mock — self-contained HTML/CSS/JS, no backend, simulated feed. Not the SPA, carries none of the stack                                       | throwaway — S3 supersedes it on real data; delete on next cleanup            |
 | `flake.nix`, `flake.lock`                                         | Nix dev shell: pins bun 1.4.2 and puts playwright's browser libs on `LD_LIBRARY_PATH`. Required for anything that drives a browser                                       | keep — phase 4 tests run through `nix develop`                    |
 | `.factory/`                                                       | gitignored: the host-side clone, the raw run dumps, and (new in phase 2) `factory.db`                                                                                    | keep (regenerable)                                                |
 
@@ -426,6 +427,15 @@ real `factory serve` CLI on a temp sqlite db through `nix develop`: the shell mo
 
 **S3 — Runs list, run overview, step list.** Factory-owned typed payloads only — no transcript, no
 AG-UI. Ports finding 7's refined layout onto real data.
+**Done** — `/` is the chronological runs table: live runs grouped above terminal ones, newest-first
+from S1's `listRuns`, with the shared dot+label status language and a live duration. `/runs/:runId`
+leads with a stacked meta table, then Steps/Events tabs; the steps list is the indexed spine
+(numbered nodes, solid connectors, a terminal run row with a plain dot) and step detail is
+progressive fields → disclosures, transcript deferred to S4. Data flows from `GET /api/runs`,
+`GET /api/runs/:id` and a replay-then-tail SSE subscription (`src/web/api.ts`, D26); `listRuns`
+gained an `active` bit at the HTTP layer, because the store cannot tell an in-flight run from an
+interrupted one (D12/D24). The shell's placeholder inspector is gone; run detail owns its own
+two-pane layout. No new endpoints.
 _Validated by:_ two legs. **Static** — a real daemon on a temp db, driven through
 `createCorpusReplayAdapter` so a committed corpus becomes a real event log with no AI in the loop;
 playwright then asserts list ordering and status, run-detail meta against `RunSummary`, and that the
@@ -476,13 +486,16 @@ and ADR 0004 for D22–D24).
 prevent — was closed with the user's confirmation, not amended
 (`docs/findings/6-live-dispatch-run.md`).
 
-**Next: phase 4, step S3** — the runs list, run overview and step list on real data. S2 put the SPA
-on screen: React + TanStack Router/Query + tailwind + shadcn, bundled by Bun and served from the
-same `Bun.serve` as the API (`/` and `/*`), with the first playwright smoke test wired through
-`nix develop`. S1 closed the three server-side gaps — run ordering, cheap summaries, resumable
-SSE — and needs no UI. The full step plan, the four API gaps and the validation criteria for every
-step are in the phase 4 section above. Read D6 and D26 first, then `src/server/http.ts`'s route
-surface and `src/web/api.ts` — the SPA is a client of what already exists, not a redesign.
+**Next: phase 4, step S4** — the transcript. S3 put the runs list, run-detail overview and step list
+on screen against real data, both legs validated by playwright through `nix develop`; S1 had closed
+the three server-side gaps (run ordering, cheap summaries, resumable SSE) and S2 the SPA scaffold.
+S4 is the `@tanstack/ai-event-client` spike, moved to the end of the phase because "Still unknown"
+narrowed it to types + devtools middleware — no React renderer — so its real question is "typed
+chunk accessors vs. a hand-written reducer over `AgentChunk`", and it touches only the transcript
+(`AgentStepFinished.finalText` and the step rows are already rendered). The full step plan, the four
+API gaps and the validation criteria for every step are in the phase 4 section above. Read D6 and
+D26 first, then `src/server/http.ts`'s route surface and `src/web/api.ts` — the SPA is a client of
+what already exists, not a redesign.
 
 Left over from earlier phases, not exit-blocking, worth doing opportunistically:
 
