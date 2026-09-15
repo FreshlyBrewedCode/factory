@@ -17,6 +17,7 @@
 import { mkdir } from "node:fs/promises";
 import { dirname } from "node:path";
 import type { RunEvent } from "./events";
+import { loadFactoryConfig } from "./config";
 import { resetClone, type GitIdentity } from "./lib/clone";
 import { loadWorkflow } from "./lib/load-workflow";
 import { appendEvent, getRunEvents, listRuns, openStore } from "./persistence/store";
@@ -131,7 +132,7 @@ function usageError(message: string): never {
       "  factory run <workflow.ts> --input <json> --dir <path> [--clone <sshUrl> --git-name <name> --git-email <email>] [--out <path>] [--db <path>]",
       "  factory runs [--db <path>]",
       "  factory log <runId> [--db <path>]",
-      "  factory serve [--port <n>] [--db <path>]",
+      "  factory serve [--port <n>] [--db <path>] [--config <path>]",
       "    [--dispatch-workflow <path> --dispatch-owner <login> --dispatch-project-number <n>",
       "     --dispatch-project-id <id> --dispatch-status-field-id <id> --dispatch-in-progress-option-id <id>",
       "     --dispatch-repo <owner/repo> --dispatch-base-branch <branch> --dispatch-clone <sshUrl>",
@@ -206,14 +207,23 @@ const DISPATCH_FLAG_NAMES = [
   "dispatch-work-dir",
 ] as const;
 
-function parseServeArgs(argv: ReadonlyArray<string>): DaemonOptions {
+async function parseServeArgs(argv: ReadonlyArray<string>): Promise<DaemonOptions> {
   const flags = parseFlags(argv, 1);
   const dbPath = flags.get("db") ?? DEFAULT_DB_PATH;
   const portRaw = flags.get("port");
   const port = portRaw !== undefined ? Number(portRaw) : undefined;
+  const configPath = flags.get("config");
+  const configLoaded =
+    configPath !== undefined ? loadFactoryConfig(configPath) : Promise.resolve(undefined);
+
+  const build = async (): Promise<DaemonOptions> => ({
+    dbPath,
+    port,
+    ...(configPath !== undefined ? { config: await configLoaded } : {}),
+  });
 
   const present = DISPATCH_FLAG_NAMES.filter((name) => flags.has(name));
-  if (present.length === 0) return { dbPath, port };
+  if (present.length === 0) return build();
 
   const missing = DISPATCH_FLAG_NAMES.filter((name) => !flags.has(name));
   if (missing.length > 0) {
@@ -222,9 +232,12 @@ function parseServeArgs(argv: ReadonlyArray<string>): DaemonOptions {
 
   const get = (name: (typeof DISPATCH_FLAG_NAMES)[number]): string => flags.get(name) as string;
 
+  const config = await configLoaded;
+
   return {
     dbPath,
     port,
+    ...(config !== undefined ? { config } : {}),
     dispatch: {
       workflowPath: get("dispatch-workflow"),
       repoSlug: get("dispatch-repo"),
@@ -253,7 +266,7 @@ if (import.meta.main) {
     if (runId === undefined) usageError("expected: factory log <runId> ...");
     logRunCli(parseFlags(argv, 2).get("db") ?? DEFAULT_DB_PATH, runId);
   } else if (argv[0] === "serve") {
-    const daemonOptions = parseServeArgs(argv);
+    const daemonOptions = await parseServeArgs(argv);
     const { server, dispatchFiber } = await startDaemon(daemonOptions);
     console.log(`factory serve: listening on http://localhost:${server.port}`);
     console.log(

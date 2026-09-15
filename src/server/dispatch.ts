@@ -17,10 +17,12 @@
  * ... scheduling" actually applies — a genuine long-running, repeating
  * process, not a one-shot request handler.
  *
- * WIP limit is 1 concurrent run, enforced via `hasActiveRun` (checked against
- * the *current process's* live registry, `src/server/runs.ts` — a run whose
- * process died is "interrupted" (D12), not active, so it doesn't block new
- * dispatch after a restart). This is deliberately simpler than the wayful
+ * Concurrency is capped by `maxConcurrentRuns`, enforced through the single
+ * admission function (`src/server/admission.ts`, D29) shared with
+ * `POST /api/runs` — the same ceiling manual starts are subject to, checked
+ * against the *current process's* live registry (`src/server/runs.ts`; a run
+ * whose process died is "interrupted" (D12), not active, so it doesn't block
+ * new dispatch after a restart). This is deliberately simpler than the wayful
  * script's global pause-on-any-failed-thread: Factory has no resumable
  * "continue this thread" concept (workflows are one-shot `async` functions,
  * D19), so a retry is a fresh run, and pausing *all* dispatch for one
@@ -31,6 +33,7 @@
 import type { Database } from "bun:sqlite";
 import { Effect, Schedule, Schema } from "effect";
 import { getRunEvents, listRuns, type RunStatus } from "../persistence/store";
+import { admitRun } from "./admission";
 import type { ReadyItem, ReadySource } from "./ready-source";
 
 export class ReconcileError extends Schema.TaggedError<ReconcileError>()("ReconcileError", {
@@ -58,7 +61,9 @@ export interface ReconcileDeps {
   readonly db: Database;
   readonly source: ReadySource;
   readonly config: DispatchConfig;
-  readonly hasActiveRun: () => boolean;
+  /** D29: the ceiling consulted through `admitRun`. */
+  readonly maxConcurrentRuns: number;
+  readonly activeRunCount: () => number;
   /** Starts the run for a claimed item and returns its `runId`. */
   readonly dispatch: (item: ReadyItem) => Promise<string>;
   /** Injectable for tests; defaults to `Date.now`. */
@@ -109,12 +114,16 @@ function backoffElapsed(history: IssueHistory, config: DispatchConfig, now: numb
 }
 
 /**
- * One reconciliation pass: at most one item claimed and dispatched (the WIP
- * limit is 1), in the source's own ordering. Hard-blocked items and items
- * still inside their backoff window are skipped without consuming the claim.
+ * One reconciliation pass: at most one item claimed and dispatched per pass,
+ * subject to the shared admission limit (D29), in the source's own ordering.
+ * Hard-blocked items and items still inside their backoff window are skipped
+ * without consuming the claim.
  */
 export async function reconcileOnce(deps: ReconcileDeps): Promise<ReconcileResult> {
-  if (deps.hasActiveRun()) return { action: "skipped-wip-limit" };
+  const activeRunCount = deps.activeRunCount();
+  if (!admitRun(deps.maxConcurrentRuns, activeRunCount)) {
+    return { action: "skipped-wip-limit" };
+  }
 
   const now = deps.now?.() ?? Date.now();
   const items = await deps.source.listReady();

@@ -1,6 +1,6 @@
 # STATUS
 
-> **Phases 0–4 complete; phase 5 (usable POC) is next and not started.** Phase 4 was rescoped on
+> **Phases 0–4 complete; phase 5 (usable POC) is in progress — P1 done, P2 next.** Phase 4 was rescoped on
 > 2026-09-15: S1–S4 landed, and S5/S6 dissolved into the new phase 5 — the Workflows/Dispatch pages
 > are dropped, the workflow registry became phase 5's P2, and the live leg moved to phase 5's exit
 > where concurrency makes it worth watching. Every completed phase met its exit criterion on both
@@ -10,7 +10,7 @@
 >
 > **Phase 5 is the first end state a person can use** — start a run from the browser or
 > `factory start`, watch it, cancel it, several at once. Decided 2026-09-15 as D27–D33 / ADR 0005;
-> **nothing of it is built yet.**
+> **P1 (config, per-run trees, admission) is built; D30–D33 remain.**
 
 Project pitch, stack and constraints live in `AGENTS.md`. This file tracks where we are, what
 we have decided, and what is still unknown.
@@ -27,12 +27,13 @@ we have decided, and what is still unknown.
 
 **All three columns exist and are validated, fakes and live.** The workflow runtime (phase 1), the
 durable event log (phase 2), the server and dispatcher (phase 3) and the SPA (phase 4) are built;
-`bun test` is 83 green and the playwright suite is 7 specs through `nix develop`.
+`bun test` is 96 green and the playwright suite is 7 specs through `nix develop`.
 
-**What does not exist is a way to start a run from the UI.** `POST /api/runs` still demands
-filesystem paths a browser cannot supply (G4), there is no workflow registry, and the concurrency
-limit is a boolean only the dispatcher consults. That gap is the whole of phase 5, which is
-decided (D27–D33, ADR 0005) and **not started**.
+**What does not exist yet is the browser-facing start surface.** `POST /api/runs` still demands
+a filesystem path a browser cannot supply (G4 — G4 closes in P3) and there is no workflow
+registry (P2). The concurrency groundwork is no longer part of that gap: P1 landed the config
+module (D27), per-run working trees (D28) and the shared admission limit (D29), so manual starts
+and the dispatcher now share one ceiling. The remainder of phase 5 is D30–D33.
 
 Everything up to here is history; it lives in [`docs/phases-completed.md`](docs/phases-completed.md).
 The live state is the four sections below: what is on disk, what is still unknown, what is deferred,
@@ -264,17 +265,28 @@ phase: **multi-run is required, not deferred.** Tracing it found the deferral's 
 one worktree each" framing was pessimistic — D10 already gives one sandbox per run, so the only
 shared resource is the working directory (D28).
 
-**P1 — Per-run working trees and concurrency.** `factory.config.ts` (D27); a working tree per run
-allocated from a local bare mirror, last-N retention (D28); one `maxConcurrentRuns` behind a single
-admission function shared by the API and the dispatcher, replacing `hasActiveRun`'s boolean (D29).
-_Validated by:_ an integration test running 2+ concurrent runs through the real server against the
-replay and slow-fake adapters, asserting the event logs stay disjoint and both trees are
-independently intact; plus a playwright leg with two live runs on screen at once. The admission
-function gets its own test at the limit boundary — 409, and the dispatcher skipping the same pass.
+**P1 — Per-run working trees and concurrency — done (2026-09-15).** `factory.config.ts` (D27):
+`src/config.ts` (`defineConfig`, `loadFactoryConfig`, `toRunEnvironment`) — repo/identity/base
+branch/slug, the workflow array *as* the registry, workspace root (default
+`.factory/workspaces`), `maxConcurrentRuns` (default 3), `retainedWorkspaces` (default 10); loaded
+by `factory serve --config <path>`. Working tree per run (D28): `src/lib/workspace.ts` allocates
+`<workspaceRoot>/<runId>/` from a bare mirror `<workspaceRoot>/.mirror.git` refreshed (mutex
+serialized) from the configured `sshUrl` before each allocation, last-N evicted-oldest-first; the
+start path `startTrackedRun` (`src/server/runs.ts`) is now async and allocates when no explicit
+`dir` is given. One admission function (D29): `src/server/admission.ts`'s `admitRun` over a single
+`maxConcurrentRuns`, consulted by `POST /api/runs` (409 over the limit) and `dispatch.ts` (skips
+the pass), replacing `hasActiveRun`'s boolean. Backward compatibility kept: the path-based
+`POST /api/runs {workflowPath, dir, clone}` works unchanged with no config (the dispatcher keeps
+supplying real filesystem paths per D31), and `DaemonOptions` carries the legacy wiring or a full
+`config`. _Validated by:_ `src/server/concurrency.test.ts` — two concurrent runs through the real
+server against slow-fake adapters over real sqlite, trees independently intact, RunStarted dirs
+disjoint — plus the admission boundary tests (409 once the limit binds, dispatcher skipping at the
+boundary) in `admission.test.ts` and `dispatch.test.ts`. _Not covered here:_ the phase-5
+plan also named a playwright leg with two live runs on screen; it rides with the exit criterion
+(P6) rather than the fakes-provable P-step.
 
 **P2 — `GET /api/workflows`** from the config's array, input schemas as JSON Schema (D30). Closes
 the registry half of G4. _Validated by:_ `http.test.ts` against a fixture config.
-
 **P3 — `POST /api/runs {workflowId, input}` + `factory start`** (D31). Closes the rest of G4.
 _Validated by:_ `http.test.ts` for decode failures (400) and the limit (409); a CLI test against a
 real daemon for `factory start` and `--watch`.
@@ -316,23 +328,23 @@ Phases 0–4 are complete on every exit criterion — fakes and live for 0–3, 
 rescope. Bullets per phase are above; the full record is
 [`docs/phases-completed.md`](docs/phases-completed.md).
 
-**Next: phase 5, step P1** — per-run working trees and concurrency. Nothing of phase 5 is built yet;
-it is a plan and an ADR, both written 2026-09-15 before any code.
+**Next: phase 5, step P2** — `GET /api/workflows` from the config's array (D30). P1 (per-run
+working trees, the config module and the admission limit) landed 2026-09-15; D30–D33 are the
+remaining unbuilt decisions.
 
 Read **ADR 0005** first — it carries D27–D33 and, more usefully, the reasoning for the two things
 that look like bigger jobs than they are. The short version:
 
-- **Concurrency is a directory allocation, not a sandbox redesign.** The Deferred table had parked
-  "N sandboxes with one worktree each" on this phase; D10 already gives one sandbox per run via
-  `threadId` (`run.ts:159`), so the only shared resource is the tree `resetClone` wipes
-  (`clone.ts:27`). D28's table lists what was checked.
-- **There is no concurrency limit today.** `daemon.ts:94` injects a *boolean* (`hasActiveRun`) that
-  only the dispatcher consumes; `POST /api/runs` checks nothing, so manual starts have always
-  bypassed D24's WIP limit. D29 replaces it with one number and one admission function.
+- **Concurrency was a directory allocation, not a sandbox redesign — and P1 proved it.** D10
+  already gives one sandbox per run via `threadId` (`run.ts:159`), so P1 only had to stop
+  `resetClone`'s single shared `dir` being the last shared resource: `src/lib/workspace.ts`
+  allocates a tree per runId from a refreshed local mirror.
+- **There was no concurrency limit before P1.** One number in the config and one
+  admission function (`src/server/admission.ts`) now cover both `POST /api/runs` (409) and
+  the dispatcher (skip) — see `src/server/concurrency.test.ts`.
 
-Then `src/server/http.ts`'s route surface, `src/server/runs.ts` and `src/lib/clone.ts` — P1 touches
-all three. Phase 5 is mostly a client of what phases 1–4 built; the genuinely new code is the
-config module, the workspace allocator and the admission function.
+For P2, read `src/config.ts` (the workflow array is the registry `GET /api/workflows` serves)
+and D31's schema-to-JSON-Schema reuse from `ctx.agent`'s boundary (`run.ts:146`).
 
 Left over from earlier phases, not exit-blocking, worth doing opportunistically:
 

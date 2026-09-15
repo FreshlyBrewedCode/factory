@@ -61,7 +61,8 @@ describe("phase 3 exit criterion (fakes): unattended pickup -> run -> SSE watch"
       db,
       source,
       config: CONFIG,
-      hasActiveRun: () => activeRunIds().length > 0,
+      maxConcurrentRuns: 2,
+      activeRunCount: () => activeRunIds().length,
       dispatch: (claimedItem) =>
         Promise.resolve(
           startTrackedRun(db, workflow, {
@@ -157,7 +158,8 @@ describe("phase 3 exit criterion (fakes): unattended pickup -> run -> SSE watch"
       db,
       source,
       config: CONFIG,
-      hasActiveRun: () => activeRunIds().length > 0,
+      maxConcurrentRuns: 1,
+      activeRunCount: () => activeRunIds().length,
       dispatch: (claimedItem) => {
         dispatchedIssueNumbers.push(claimedItem.issueNumber);
         return Promise.resolve(

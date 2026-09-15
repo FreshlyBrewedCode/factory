@@ -28,17 +28,25 @@
 
 import type { Database } from "bun:sqlite";
 import { isTerminal, type RunEvent } from "../events";
+import type { RunEnvironment } from "../config";
 import { resetClone, type GitIdentity } from "../lib/clone";
 import { loadWorkflow } from "../lib/load-workflow";
 import { getRunEvents, listRuns, type RunSummary } from "../persistence/store";
 import type { AgentAdapter } from "../runtime/agent-adapter";
 import index from "../web/index.html";
+import { admitRun } from "./admission";
 import { subscribe } from "./pubsub";
-import { getActiveHandle, isActive, startTrackedRun } from "./runs";
+import { activeRunIds, getActiveHandle, isActive, startTrackedRun } from "./runs";
 
 export interface ServerOptions {
   readonly db: Database;
   readonly adapter: AgentAdapter;
+  /**
+   * The run environment from `factory.config.ts` (D27). Absent = the phase 3
+   * path-based API behaves exactly as before (no limit, explicit dir+clone)
+   * — the dispatcher legitimately keeps supplying filesystem paths (D31).
+   */
+  readonly runEnv?: RunEnvironment;
 }
 
 /** `RunSummary` plus this process's live-registry bit — what the SPA reads. */
@@ -57,7 +65,7 @@ function listSummaries(db: Database): ReadonlyArray<RunSummaryResponse> {
 interface StartRunBody {
   readonly workflowPath?: unknown;
   readonly input?: unknown;
-  readonly dir?: unknown;
+  readonly dir?: string;
   readonly clone?: { readonly sshUrl: string; readonly identity: GitIdentity };
 }
 
@@ -139,17 +147,27 @@ export function createHandler(options: ServerOptions): (req: Request) => Promise
     }
 
     if (req.method === "POST" && url.pathname === "/api/runs") {
+      // D29: the one admission function, consulted here and on the dispatch
+      // path alike. Without config there is no limit to enforce.
+      const maxConcurrentRuns = options.runEnv?.maxConcurrentRuns;
+      if (maxConcurrentRuns !== undefined && !admitRun(maxConcurrentRuns, activeRunIds().length)) {
+        return json(
+          { error: `concurrency limit reached (max ${maxConcurrentRuns} concurrent runs)` },
+          { status: 409 },
+        );
+      }
+
       let body: StartRunBody;
       try {
         body = (await req.json()) as StartRunBody;
       } catch {
         return json({ error: "invalid JSON body" }, { status: 400 });
       }
-      if (typeof body.workflowPath !== "string" || typeof body.dir !== "string") {
-        return json(
-          { error: "workflowPath (string) and dir (string) are required" },
-          { status: 400 },
-        );
+      if (typeof body.workflowPath !== "string") {
+        return json({ error: "workflowPath (string) is required" }, { status: 400 });
+      }
+      if (typeof body.dir !== "string" && options.runEnv === undefined) {
+        return json({ error: "dir (string) is required" }, { status: 400 });
       }
 
       let workflow;
@@ -159,12 +177,21 @@ export function createHandler(options: ServerOptions): (req: Request) => Promise
         return json({ error: err instanceof Error ? err.message : String(err) }, { status: 400 });
       }
 
-      if (body.clone !== undefined) {
+      if (body.clone !== undefined && typeof body.dir === "string") {
         await resetClone(body.dir, body.clone.sshUrl, body.clone.identity);
       }
 
-      const runId = startTrackedRun(options.db, workflow, {
+      const runId = await startTrackedRun(options.db, workflow, {
         dir: body.dir,
+        workspace:
+          options.runEnv === undefined
+            ? undefined
+            : {
+                workspaceRoot: options.runEnv.workspaceRoot,
+                sshUrl: options.runEnv.repo.sshUrl,
+                identity: options.runEnv.repo.identity,
+                retainedWorkspaces: options.runEnv.retainedWorkspaces,
+              },
         input: body.input,
         adapter: options.adapter,
       });
