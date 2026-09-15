@@ -175,7 +175,14 @@ async function watchSse(baseUrl: string, runId: string): Promise<number> {
         ?.slice("data:".length)
         .trimStart();
       if (dataLine !== undefined) {
-        const event = JSON.parse(dataLine) as RunEvent;
+        let event: RunEvent;
+        try {
+          event = JSON.parse(dataLine) as RunEvent;
+        } catch {
+          console.error(`factory start: skipping malformed frame for ${runId}`);
+          idx = buffer.indexOf("\n\n");
+          continue;
+        }
         console.log(formatEvent(event));
         const tag = event.payload._tag;
         if (tag === "RunFinished") return 0;
@@ -186,6 +193,8 @@ async function watchSse(baseUrl: string, runId: string): Promise<number> {
     }
   }
 }
+
+export { watchSse };
 
 export async function startCli(options: StartCliOptions): Promise<number> {
   let res: Response;

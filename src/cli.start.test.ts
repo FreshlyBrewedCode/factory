@@ -153,4 +153,40 @@ describe("factory start (D31): thin HTTP client against a real daemon", () => {
       rmSync(root, { recursive: true, force: true });
     }
   }, 15_000);
+
+  test("watchSse skips malformed frames (L2) and still exits 0 on the terminal event", async () => {
+    // A raw Bun.serve emitting exactly one malformed data frame, then a valid
+    // terminal frame — what the CLI must survive rather than crash on.
+    const server = Bun.serve({
+      port: 0,
+      fetch: () =>
+        new Response(
+          [
+            "data: not-json-at-all\n\n",
+            `data: ${JSON.stringify({
+              runId: "run-x",
+              seq: 0,
+              ts: 1,
+              payload: { _tag: "RunFinished", durationMs: 1 },
+            })}\n\n`,
+          ].join(""),
+          { headers: { "content-type": "text/event-stream" } },
+        ),
+    });
+    const base = `http://localhost:${server.port}`;
+
+    try {
+      const { watchSse } = await import("./cli");
+      const stderr: Array<string> = [];
+      const originalError = console.error;
+      console.error = (line: string) => stderr.push(line);
+      const exit = await watchSse(base, "run-x");
+      console.error = originalError;
+
+      expect(exit).toBe(0);
+      expect(stderr.join("\n")).toContain("skipping malformed frame");
+    } finally {
+      await server.stop(true);
+    }
+  });
 });

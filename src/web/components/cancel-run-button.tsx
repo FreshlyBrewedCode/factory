@@ -36,26 +36,40 @@ export function CancelRunButton({
   }, [armed]);
 
   return (
-    <Button
-      variant={armed ? "default" : "outline"}
-      size="sm"
-      data-testid={armed ? "confirm-cancel" : "cancel-run"}
-      aria-pressed={armed}
-      disabled={cancelMutation.isPending}
-      onClick={(event) => {
-        event.stopPropagation();
-        if (!armed) {
-          setArmed(true);
-          return;
-        }
-        clearTimeout(timer.current);
-        setArmed(false);
-        cancelMutation.mutate(runId, { onSettled: () => setArmed(false) });
-      }}
-      className={cn("font-mono text-[11px]", className)}
-    >
-      <Square className={cn(armed && "fill-current")} />
-      {armed ? "confirm cancel" : "cancel"}
-    </Button>
+    <span className={cn("inline-flex flex-col items-start gap-1", className)}>
+      <Button
+        variant={armed ? "default" : "outline"}
+        size="sm"
+        data-testid={armed ? "confirm-cancel" : "cancel-run"}
+        aria-pressed={armed}
+        disabled={cancelMutation.isPending}
+        onClick={(event) => {
+          event.stopPropagation();
+          if (!armed) {
+            setArmed(true);
+            return;
+          }
+          clearTimeout(timer.current);
+          setArmed(false);
+          cancelMutation.mutate(runId, { onSettled: () => setArmed(false) });
+        }}
+        className="font-mono text-[11px]"
+      >
+        <Square className={cn(armed && "fill-current")} />
+        {armed ? "confirm cancel" : "cancel"}
+      </Button>
+      {cancelMutation.isError ? (
+        <span
+          data-testid="cancel-error"
+          role="alert"
+          className="font-mono text-[11px] break-words text-status-blocked"
+        >
+          cancel failed:{" "}
+          {cancelMutation.error instanceof Error
+            ? cancelMutation.error.message
+            : String(cancelMutation.error)}
+        </span>
+      ) : null}
+    </span>
   );
 }
