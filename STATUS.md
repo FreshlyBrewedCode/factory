@@ -1,6 +1,6 @@
 # STATUS
 
-> **Phases 0–4 complete; phase 5 (usable POC) is in progress — P1–P2 done, P3 next.** Phase 4 was rescoped on
+> **Phases 0–4 complete; phase 5 (usable POC) is in progress — P1–P3 done, P4 next.** Phase 4 was rescoped on
 > 2026-09-15: S1–S4 landed, and S5/S6 dissolved into the new phase 5 — the Workflows/Dispatch pages
 > are dropped, the workflow registry became phase 5's P2, and the live leg moved to phase 5's exit
 > where concurrency makes it worth watching. Every completed phase met its exit criterion on both
@@ -10,7 +10,7 @@
 >
 > **Phase 5 is the first end state a person can use** — start a run from the browser or
 > `factory start`, watch it, cancel it, several at once. Decided 2026-09-15 as D27–D33 / ADR 0005;
-> **P1–P2 (config, per-run trees, admission, the workflow registry) are built; D31–D33 remain.**
+> **P1–P3 (config, per-run trees, admission, the workflow registry, `POST /api/runs {workflowId, input}` and `factory start`) are built; D32–D33 remain.**
 
 Project pitch, stack and constraints live in `AGENTS.md`. This file tracks where we are, what
 we have decided, and what is still unknown.
@@ -27,14 +27,12 @@ we have decided, and what is still unknown.
 
 **All three columns exist and are validated, fakes and live.** The workflow runtime (phase 1), the
 durable event log (phase 2), the server and dispatcher (phase 3) and the SPA (phase 4) are built;
-`bun test` is 96 green and the playwright suite is 7 specs through `nix develop`.
+`bun test` is 106 green and the playwright suite is 7 specs through `nix develop`.
 
-**What does not exist yet is the browser-facing start surface.** `POST /api/runs` still demands
-a filesystem path a browser cannot supply (G4 — G4 closes in P3). The registry half of that gap
-closed in P2: `GET /api/workflows` serves the config's workflow array with each input schema as
-JSON Schema (D30), and the server consumes the loaded config directly. P1 landed the config
-module (D27), per-run working trees (D28) and the shared admission limit (D29), so manual starts
-and the dispatcher now share one ceiling. The remainder of phase 5 is D31–D33.
+**Start and cancel are CLI-only so far.** `POST /api/runs` now accepts
+`{workflowId, input}` against the config's registry (D31, landed with `factory start`), so the
+G4 filesystem-string gap is closed at the API and CLI level; only the browser-facing start
+surface is missing, and that is P4.
 
 Everything up to here is history; it lives in [`docs/phases-completed.md`](docs/phases-completed.md).
 The live state is the four sections below: what is on disk, what is still unknown, what is deferred,
@@ -48,7 +46,7 @@ and phase 5.
 | `src/workflow.ts`                                                 | `defineWorkflow` + the six-member `ctx` (ADR 0002, D19)                                                                                                                  | keep                                                              |
 | `src/runtime/run.ts`, `run.test.ts`                               | `startRun` — `seq`/`stepId`/`execId` allocation, structured-output extraction, `RunEvent` emission, cancellation                                                         | keep — phase 2 persists this, doesn't replace it                  |
 | `src/persistence/store.ts`, `store.test.ts`                       | The durable event log: `openStore`/`appendEvent`/`getRunEvents`/`listRuns` over `bun:sqlite`, one `events` table, `"interrupted"` status derived at read time (D12, D21) | keep — the durability layer phase 3's server reads/writes through |
-| `src/cli.ts`, `cli.test.ts`, `cli.crash.test.ts`                  | `factory run <workflow.ts>` (now also appends to sqlite), `factory runs`, `factory log <runId>`                                                                          | keep — phase 3's server wraps this, doesn't replace it            |
+| `src/cli.ts`, `cli.test.ts`, `cli.start.test.ts`, `cli.crash.test.ts`                  | `factory run <workflow.ts>` (now also appends to sqlite), `factory start <workflowId>` (D31's thin HTTP client: prints the runId, `--watch` tails SSE), `factory runs`, `factory log <runId>` | keep — phase 3's server wraps `run`, `start` is its explicit client |
 | `src/lib/exec.ts`, `writeback.ts`, `tree-snapshot.ts`, `clone.ts` | Harvested from the 0a/0b spike (ADR 0001 §5): host exec, deterministic write-back, tree-survival assertions, clone/reset                                                 | keep                                                              |
 | `src/replay/adapter.ts`, `adapter.test.ts`                        | Corpus-replay fake adapter (`createCorpusReplayAdapter`, `createSlowFakeAdapter`)                                                                                        | keep — the only opencode-free path through the runtime            |
 | `workflows/implement-issue.ts`, `implement-issue.test.ts`         | The one real workflow: implement → test → fix/review → test → PR metadata → write-back. Live-validated (factory-spike#4) and replay-validated                            | keep                                                              |
@@ -299,9 +297,27 @@ registry lists the fixture's id with a JSON-Schema `object` input carrying its f
 no-config path serves `[]`. Registering the config's array took
 `FactoryConfig.workflows` to `WorkflowDefinition<any, any>` — the variance-erased form; the
 concrete generics are unsound as array members since `run`'s input parameter is contravariant.
-**P3 — `POST /api/runs {workflowId, input}` + `factory start`** (D31). Closes the rest of G4.
-_Validated by:_ `http.test.ts` for decode failures (400) and the limit (409); a CLI test against a
-real daemon for `factory start` and `--watch`.
+**P3 — `POST /api/runs {workflowId, input}` + `factory start` — done (2026-09-15).** D31, closing
+the rest of G4. Resolving, decoding and starting live in `POST /api/runs`'s new `workflowId`
+branch (`src/server/http.ts`): the id resolves against `options.config.workflows` (unknown → 404
+with an `See GET /api/workflows` hint), `input` is decoded through the workflow's own Effect
+Schema *before* the run starts (`SchemaParser.decodeUnknownSync`, `run.ts`'s decode now belts and
+braces — failure → 400), admission runs first (409 over `maxConcurrentRuns`, D29), and the
+`dir`/clone/identity come solely from the config via D28's workspace allocation — nothing
+filesystem-shaped from the caller. The path-based body survives unchanged for the dispatcher
+(D31 retains it legitimately); a `workflowId` POST against a no-config daemon 404s (empty
+registry). `factory start <workflowId> --input <json>` (`src/cli.ts`) is a thin HTTP client:
+`--url` or `FACTORY_URL` (default `http://localhost:3000`), 201 → prints the `runId`;
+404/400/409 all map to a one-hint stderr line and a non-zero exit; `--watch` tails
+`GET /api/runs/:id/events` until a terminal event (exit 0 on RunFinished, 1 on RunFailed, 130 on
+RunCancelled). `factory run` is untouched as the no-daemon path. _Validated by:_
+`src/server/http.test.ts` — decode-failure 400, unknown id 404 (both against
+`test/fixtures/factory.config.ts`), the D29 limit (409, then 201 once a slot frees) and the
+success path (run allocated into a config workspace under a local seed repo, real sqlite events,
+SSE to terminal) — plus `src/cli.start.test.ts`, three subprocess runs of
+`bun src/cli.ts start` against a real `startDaemon` over real sqlite: runId printed, `--watch`
+streaming RunStarted → AgentStepFinished → RunFinished with exit 0, and a 404 mapped to a
+non-zero exit with the workflow id on stderr.
 
 **P4 — Start and cancel in the UI.** A New-run dialog in the top bar — no Workflows page — with
 D33's single-depth form and its JSON escape hatch. Cancel on run detail and on running rows;
@@ -340,8 +356,10 @@ Phases 0–4 are complete on every exit criterion — fakes and live for 0–3, 
 rescope. Bullets per phase are above; the full record is
 [`docs/phases-completed.md`](docs/phases-completed.md).
 
-**Next: phase 5, step P3** — `POST /api/runs {workflowId, input}` + `factory start` (D31), closing
-the rest of G4. P1–P2 landed 2026-09-15; D31–D33 are the remaining unbuilt decisions.
+**Next: phase 5, step P4** — start and cancel in the UI: a New-run dialog in the top bar
+posting to the now-live `{workflowId, input}` endpoint (D33's single-depth form plus the
+raw-JSON escape hatch), and cancel buttons wired to the phase 3 `POST /api/runs/:id/cancel`.
+P1–P3 landed 2026-09-15; D32–D33 are the remaining unbuilt decisions.
 
 Read **ADR 0005** first — it carries D27–D33 and, more usefully, the reasoning for the two things
 that look like bigger jobs than they are. The short version:
@@ -354,11 +372,11 @@ that look like bigger jobs than they are. The short version:
   admission function (`src/server/admission.ts`) now cover both `POST /api/runs` (409) and
   the dispatcher (skip) — see `src/server/concurrency.test.ts`.
 
-For P3, read **ADR 0005** (D31 is the whole spec: decode through the workflow's own Effect Schema,
-400 on decode failure, 409 over the limit — the decode already runs at `run.ts:324`), then
-`src/server/http.ts` (the handler now holds the loaded `FactoryConfig`, so `workflowId` resolves
-against `options.config.workflows` — the same array `GET /api/workflows` serves) and
-`src/server/admission.ts` (already wired; the 409 branch persists as-is).
+For P4, read **ADR 0005** (D33 is the form's whole spec: `string`/`number`/`boolean` fields one
+level deep off the workflow's input schema, anything else falling back to a raw-JSON textarea
+validated by the same D31 decode) and the endpoint it posts to: the `workflowId` branch in
+`src/server/http.ts` (same `POST /api/runs`, 201 → `{runId}`), plus `src/web/`'s dialogs and
+`POST /api/runs/:id/cancel` which has existed since phase 3 and is wired to nothing.
 
 Left over from earlier phases, not exit-blocking, worth doing opportunistically:
 

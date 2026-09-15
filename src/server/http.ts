@@ -30,7 +30,7 @@
 import type { Database } from "bun:sqlite";
 import { isTerminal, type RunEvent } from "../events";
 import type { FactoryConfig } from "../config";
-import { Schema } from "effect";
+import { Schema, SchemaParser } from "effect";
 import { resetClone, type GitIdentity } from "../lib/clone";
 import { loadWorkflow } from "../lib/load-workflow";
 import { getRunEvents, listRuns, type RunSummary } from "../persistence/store";
@@ -66,6 +66,7 @@ function listSummaries(db: Database): ReadonlyArray<RunSummaryResponse> {
 }
 
 interface StartRunBody {
+  readonly workflowId?: unknown;
   readonly workflowPath?: unknown;
   readonly input?: unknown;
   readonly dir?: string;
@@ -175,6 +176,44 @@ export function createHandler(options: ServerOptions): (req: Request) => Promise
       } catch {
         return json({ error: "invalid JSON body" }, { status: 400 });
       }
+      if (typeof body.workflowId === "string") {
+        const registry = options.config?.workflows ?? [];
+        const workflow = registry.find((w) => w.id === body.workflowId);
+        if (workflow === undefined) {
+          return json(
+            { error: `unknown workflow id: ${body.workflowId} (see GET /api/workflows)` },
+            { status: 404 },
+          );
+        }
+
+        let decodedInput: unknown;
+        try {
+          decodedInput = SchemaParser.decodeUnknownSync(workflow.input)(body.input);
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          return json(
+            { error: `input failed workflow "${workflow.id}" schema decode: ${message}` },
+            { status: 400 },
+          );
+        }
+
+        const runId = await startTrackedRun(options.db, workflow, {
+          ...(options.config !== undefined
+            ? {
+                workspace: {
+                  workspaceRoot: options.config.workspaceRoot,
+                  sshUrl: options.config.repo.sshUrl,
+                  identity: options.config.repo.identity,
+                  retainedWorkspaces: options.config.retainedWorkspaces,
+                },
+              }
+            : {}),
+          input: decodedInput,
+          adapter: options.adapter,
+        });
+        return json({ runId }, { status: 201 });
+      }
+
       if (typeof body.workflowPath !== "string") {
         return json({ error: "workflowPath (string) is required" }, { status: 400 });
       }

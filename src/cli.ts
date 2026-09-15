@@ -27,6 +27,7 @@ import { startRun } from "./runtime/run";
 import { startDaemon, type DaemonOptions } from "./server/daemon";
 
 const DEFAULT_DB_PATH = ".factory/factory.db";
+const DEFAULT_DAEMON_URL = "http://localhost:3000";
 
 export interface CliOptions {
   readonly workflowPath: string;
@@ -124,12 +125,99 @@ export function logRunCli(dbPath: string, runId: string): void {
   }
 }
 
+export interface StartCliOptions {
+  readonly baseUrl: string;
+  readonly workflowId: string;
+  readonly input: unknown;
+  readonly watch: boolean;
+}
+
+async function watchSse(baseUrl: string, runId: string): Promise<number> {
+  let res: Response;
+  try {
+    res = await fetch(`${baseUrl}/api/runs/${runId}/events`);
+  } catch (err) {
+    console.error(`factory start: cannot reach daemon at ${baseUrl}: ${String(err)}`);
+    return 1;
+  }
+  if (!res.ok) {
+    console.error(`factory start: ${res.status} while tailing ${runId}`);
+    return 1;
+  }
+
+  const reader = res.body!.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) {
+      console.error(`factory start: stream for ${runId} ended without a terminal event`);
+      return 1;
+    }
+    buffer += decoder.decode(value);
+    let idx = buffer.indexOf("\n\n");
+    while (idx !== -1) {
+      const raw = buffer.slice(0, idx);
+      buffer = buffer.slice(idx + 2);
+      const dataLine = raw
+        .split("\n")
+        .find((line) => line.startsWith("data:"))
+        ?.slice("data:".length)
+        .trimStart();
+      if (dataLine !== undefined) {
+        const event = JSON.parse(dataLine) as RunEvent;
+        console.log(formatEvent(event));
+        const tag = event.payload._tag;
+        if (tag === "RunFinished") return 0;
+        if (tag === "RunFailed") return 1;
+        if (tag === "RunCancelled") return 130;
+      }
+      idx = buffer.indexOf("\n\n");
+    }
+  }
+}
+
+export async function startCli(options: StartCliOptions): Promise<number> {
+  let res: Response;
+  try {
+    res = await fetch(`${options.baseUrl}/api/runs`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ workflowId: options.workflowId, input: options.input }),
+    });
+  } catch (err) {
+    console.error(
+      `factory start: cannot reach daemon at ${options.baseUrl} (${String(err)}) — is 'factory serve' running? (set --url or FACTORY_URL)`,
+    );
+    return 1;
+  }
+
+  const body = (await res.json().catch(() => ({}))) as { runId?: string; error?: string };
+
+  if (res.status !== 201 || body.runId === undefined) {
+    const hint =
+      res.status === 404
+        ? `no workflow with id "${options.workflowId}" — see GET /api/workflows on ${options.baseUrl}`
+        : res.status === 409
+          ? `the daemon is at its concurrency limit: ${body.error}`
+          : (body.error ?? res.statusText);
+    console.error(`factory start: failed (${res.status}): ${hint}`);
+    return 1;
+  }
+
+  console.log(body.runId);
+  if (!options.watch) return 0;
+  return watchSse(options.baseUrl, body.runId);
+}
+
 function usageError(message: string): never {
   console.error(`error: ${message}`);
   console.error(
     [
       "usage:",
       "  factory run <workflow.ts> --input <json> --dir <path> [--clone <sshUrl> --git-name <name> --git-email <email>] [--out <path>] [--db <path>]",
+      "  factory start <workflowId> --input <json> [--url <base-url>] [--watch]",
       "  factory runs [--db <path>]",
       "  factory log <runId> [--db <path>]",
       "  factory serve [--port <n>] [--db <path>] [--config <path>]",
@@ -190,6 +278,45 @@ function parseArgs(argv: ReadonlyArray<string>): CliOptions {
   }
 
   return { workflowPath, input, dir, clone, outPath: out, dbPath, adapter: opencodeAdapter };
+}
+
+function parseStartArgs(argv: ReadonlyArray<string>): StartCliOptions {
+  const workflowId = argv[1];
+  if (workflowId === undefined) usageError("expected: factory start <workflowId> ...");
+
+  let inputRaw: string | undefined;
+  let url: string | undefined;
+  let watch = false;
+  for (let i = 2; i < argv.length; i++) {
+    const flag = argv[i];
+    if (flag === "--input") {
+      inputRaw = argv[++i];
+      if (inputRaw === undefined) usageError("--input needs a JSON value");
+    } else if (flag === "--url") {
+      url = argv[++i];
+      if (url === undefined) usageError("--url needs a base URL");
+    } else if (flag === "--watch") {
+      watch = true;
+    } else {
+      usageError(`unknown flag: ${flag ?? "<missing>"}`);
+    }
+  }
+
+  if (inputRaw === undefined) usageError("--input <json> is required");
+
+  let input: unknown;
+  try {
+    input = JSON.parse(inputRaw);
+  } catch (err) {
+    usageError(`--input is not valid JSON: ${err instanceof Error ? err.message : String(err)}`);
+  }
+
+  return {
+    workflowId,
+    input,
+    watch,
+    baseUrl: url ?? process.env.FACTORY_URL ?? DEFAULT_DAEMON_URL,
+  };
 }
 
 const DISPATCH_FLAG_NAMES = [
@@ -265,6 +392,9 @@ if (import.meta.main) {
     const runId = argv[1];
     if (runId === undefined) usageError("expected: factory log <runId> ...");
     logRunCli(parseFlags(argv, 2).get("db") ?? DEFAULT_DB_PATH, runId);
+  } else if (argv[0] === "start") {
+    const exitCode = await startCli(parseStartArgs(argv));
+    process.exit(exitCode);
   } else if (argv[0] === "serve") {
     const daemonOptions = await parseServeArgs(argv);
     const { server, dispatchFiber } = await startDaemon(daemonOptions);

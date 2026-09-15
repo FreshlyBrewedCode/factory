@@ -3,12 +3,29 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, test } from "bun:test";
 import { createSlowFakeAdapter } from "../replay/adapter";
-import { openStore } from "../persistence/store";
-import { loadFactoryConfig } from "../config";
+import { getRunEvents, openStore } from "../persistence/store";
+import { defineConfig, loadFactoryConfig } from "../config";
+import registryWorkflow from "../../test/fixtures/registry-workflow";
 import { serve } from "./http";
 
 const ECHO_WORKFLOW = `${import.meta.dir}/../../test/fixtures/echo-workflow.ts`;
 const FIXTURE_CONFIG = `${import.meta.dir}/../../test/fixtures/factory.config.ts`;
+
+async function waitForTerminal(
+  db: ReturnType<typeof openStore>,
+  runId: string,
+  timeoutMs: number,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const done = getRunEvents(db, runId).some((e) =>
+      ["RunFinished", "RunFailed", "RunCancelled"].includes(e.payload._tag),
+    );
+    if (done) return;
+    await Bun.sleep(25);
+  }
+  throw new Error(`run ${runId} did not reach a terminal state within ${timeoutMs}ms`);
+}
 
 interface SseFrame {
   /** The frame's `id:` line, i.e. the event's `seq` — `undefined` today is the G3 bug. */
@@ -82,6 +99,26 @@ describe("GET /api/workflows (D30)", () => {
       expect(workflows.map((w) => w.id)).toEqual(["registry-test"]);
       expect(workflows[0]!.inputSchema.type).toBe("object");
       expect(workflows[0]!.inputSchema.properties).toHaveProperty("issueNumber");
+    } finally {
+      await server.stop(true);
+      db.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("404s for a POST to a legacy no-config server", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "factory-workflows-empty-test-"));
+    const db = openStore(join(dir, "factory.db"));
+    const adapter = createSlowFakeAdapter([], 1);
+    const server = serve({ db, adapter, port: 0 });
+    const base = `http://localhost:${server.port}`;
+
+    try {
+      const res = await fetch(`${base}/api/runs`, {
+        method: "POST",
+        body: JSON.stringify({ workflowId: "registry-test", input: {} }),
+      });
+      expect(res.status).toBe(404);
     } finally {
       await server.stop(true);
       db.close();
@@ -305,6 +342,187 @@ describe("phase 3 HTTP API + SSE", () => {
       await server.stop(true);
       db.close();
       rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("POST /api/runs {workflowId, input} (D31)", () => {
+  test("400 on input that fails the workflow's own schema", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "factory-d31-decode-"));
+    const db = openStore(join(dir, "factory.db"));
+    const adapter = createSlowFakeAdapter(
+      [
+        { type: "TEXT_MESSAGE_START" },
+        { type: "TEXT_MESSAGE_CONTENT", delta: "hi" },
+        { type: "TEXT_MESSAGE_END" },
+      ],
+      1,
+    );
+    const config = await loadFactoryConfig(FIXTURE_CONFIG);
+    const server = serve({ db, adapter, port: 0, config });
+    const base = `http://localhost:${server.port}`;
+
+    try {
+      const res = await fetch(`${base}/api/runs`, {
+        method: "POST",
+        body: JSON.stringify({ workflowId: "registry-test", input: { issueNumber: "seven" } }),
+      });
+      expect(res.status).toBe(400);
+      const body = (await res.json()) as { error: string };
+      expect(body.error).toContain("registry-test");
+      expect(body.error).toContain("decode");
+      const runs = (await fetch(`${base}/api/runs`).then((r) => r.json())) as Array<unknown>;
+      expect(runs).toEqual([]);
+    } finally {
+      await server.stop(true);
+      db.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("404 on an unknown workflow id", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "factory-d31-unknown-"));
+    const db = openStore(join(dir, "factory.db"));
+    const adapter = createSlowFakeAdapter([], 1);
+    const config = await loadFactoryConfig(FIXTURE_CONFIG);
+    const server = serve({ db, adapter, port: 0, config });
+    const base = `http://localhost:${server.port}`;
+
+    try {
+      const res = await fetch(`${base}/api/runs`, {
+        method: "POST",
+        body: JSON.stringify({ workflowId: "no-such-workflow", input: {} }),
+      });
+      expect(res.status).toBe(404);
+      const body = (await res.json()) as { error: string };
+      expect(body.error).toContain("no-such-workflow");
+    } finally {
+      await server.stop(true);
+      db.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("409 over the admission limit (D29), and 201 again once a slot frees", async () => {
+    const root = mkdtempSync(join(tmpdir(), "factory-d31-limit-"));
+    const seed = join(root, "seed-repo");
+    await Bun.$`git init -b main -q ${seed}`.quiet();
+    await Bun.$`git -C ${seed} -c user.name=seed -c user.email=seed@seed.local commit -q --allow-empty -m seed`.quiet();
+
+    const workspaceRoot = join(root, "workspaces");
+    const db = openStore(join(root, "factory.db"));
+    const adapter = createSlowFakeAdapter(
+      [
+        { type: "TEXT_MESSAGE_START" },
+        { type: "TEXT_MESSAGE_CONTENT", delta: "hi" },
+        { type: "TEXT_MESSAGE_END" },
+      ],
+      300,
+    );
+    const config = defineConfig({
+      repo: {
+        sshUrl: seed,
+        identity: { name: "Factory", email: "factory@factory.test" },
+        baseBranch: "main",
+        slug: "acme/widgets",
+      },
+      workflows: [registryWorkflow],
+      workspaceRoot,
+      maxConcurrentRuns: 1,
+      retainedWorkspaces: 10,
+    });
+    const server = serve({ db, adapter, port: 0, config });
+    const base = `http://localhost:${server.port}`;
+
+    try {
+      const first = await fetch(`${base}/api/runs`, {
+        method: "POST",
+        body: JSON.stringify({ workflowId: "registry-test", input: { issueNumber: 1 } }),
+      });
+      expect(first.status).toBe(201);
+      const { runId } = (await first.json()) as { runId: string };
+
+      const second = await fetch(`${base}/api/runs`, {
+        method: "POST",
+        body: JSON.stringify({ workflowId: "registry-test", input: { issueNumber: 2 } }),
+      });
+      expect(second.status).toBe(409);
+
+      await waitForTerminal(db, runId, 10_000);
+
+      const third = await fetch(`${base}/api/runs`, {
+        method: "POST",
+        body: JSON.stringify({ workflowId: "registry-test", input: { issueNumber: 3 } }),
+      });
+      expect(third.status).toBe(201);
+      await waitForTerminal(db, ((await third.json()) as { runId: string }).runId, 10_000);
+    } finally {
+      await server.stop(true);
+      db.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("success path: run starts in a config-supplied tree and streams over real sqlite", async () => {
+    const root = mkdtempSync(join(tmpdir(), "factory-d31-success-"));
+    const seed = join(root, "seed-repo");
+    await Bun.$`git init -b main -q ${seed}`.quiet();
+    await Bun.$`git -C ${seed} -c user.name=seed -c user.email=seed@seed.local commit -q --allow-empty -m seed`.quiet();
+
+    const workspaceRoot = join(root, "workspaces");
+    const db = openStore(join(root, "factory.db"));
+    const adapter = createSlowFakeAdapter(
+      [
+        { type: "TEXT_MESSAGE_START" },
+        { type: "TEXT_MESSAGE_CONTENT", delta: "hi" },
+        { type: "TEXT_MESSAGE_END" },
+      ],
+      1,
+    );
+    const config = defineConfig({
+      repo: {
+        sshUrl: seed,
+        identity: { name: "Factory", email: "factory@factory.test" },
+        baseBranch: "main",
+        slug: "acme/widgets",
+      },
+      workflows: [registryWorkflow],
+      workspaceRoot,
+      maxConcurrentRuns: 3,
+      retainedWorkspaces: 10,
+    });
+    const server = serve({ db, adapter, port: 0, config });
+    const base = `http://localhost:${server.port}`;
+
+    try {
+      const startRes = await fetch(`${base}/api/runs`, {
+        method: "POST",
+        body: JSON.stringify({ workflowId: "registry-test", input: { issueNumber: 42 } }),
+      });
+      expect(startRes.status).toBe(201);
+      const { runId } = (await startRes.json()) as { runId: string };
+
+      const frames = await readSseUntilTerminal(`${base}/api/runs/${runId}/events`);
+      const tags = frames.map((f) => f.tag);
+      expect(tags).toContain("RunStarted");
+      expect(tags).toContain("RunFinished");
+
+      const dbEvents = getRunEvents(db, runId);
+      const started = dbEvents.find((e) => e.payload._tag === "RunStarted") as
+        | { payload: { dir: string; input: { issueNumber: number } } }
+        | undefined;
+      expect(started).toBeDefined();
+      expect(started!.payload.dir.startsWith(workspaceRoot)).toBe(true);
+      expect(started!.payload.input.issueNumber).toBe(42);
+
+      const run = (await fetch(`${base}/api/runs/${runId}`).then((r) => r.json())) as {
+        status: string;
+      };
+      expect(run.status).toBe("RunFinished");
+    } finally {
+      await server.stop(true);
+      db.close();
+      rmSync(root, { recursive: true, force: true });
     }
   });
 });
