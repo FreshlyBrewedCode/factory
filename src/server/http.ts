@@ -38,7 +38,14 @@ import type { AgentAdapter } from "../runtime/agent-adapter";
 import index from "../web/index.html";
 import { admitRun } from "./admission";
 import { subscribe } from "./pubsub";
-import { activeRunIds, getActiveHandle, isActive, startTrackedRun } from "./runs";
+import {
+  ConcurrencyLimitError,
+  activeRunIds,
+  cancelRegisteredRun,
+  isActive,
+  startTrackedRun,
+  type StartTrackedRunOptions,
+} from "./runs";
 
 export interface ServerOptions {
   readonly db: Database;
@@ -186,8 +193,11 @@ export function createHandler(options: ServerOptions): (req: Request) => Promise
     }
 
     if (req.method === "POST" && url.pathname === "/api/runs") {
-      // D29: the one admission function, consulted here and on the dispatch
-      // path alike. Without config there is no limit to enforce.
+      // D29: the one admission function, consulted here (refused atomically
+      // inside `startTrackedRun` — the registry slot is reserved before any
+      // await, so concurrent starts cannot lose the race) and on the dispatch
+      // path alike. 409 over the limit; the limit is only consulted when a
+      // config is present (the no-config legacy path kept its old behaviour).
       const maxConcurrentRuns = options.config?.maxConcurrentRuns;
       if (maxConcurrentRuns !== undefined && !admitRun(maxConcurrentRuns, activeRunIds().length)) {
         return json(
@@ -223,7 +233,7 @@ export function createHandler(options: ServerOptions): (req: Request) => Promise
           );
         }
 
-        const runId = await startTrackedRun(options.db, workflow, {
+        const startOptions: StartTrackedRunOptions = {
           ...(options.config !== undefined
             ? {
                 workspace: {
@@ -236,11 +246,21 @@ export function createHandler(options: ServerOptions): (req: Request) => Promise
                   slug: options.config.repo.slug,
                   baseBranch: options.config.repo.baseBranch,
                 },
+                maxConcurrentRuns,
               }
             : {}),
           input: decodedInput,
           adapter: options.adapter,
-        });
+        };
+        let runId: string;
+        try {
+          runId = await startTrackedRun(options.db, workflow, startOptions);
+        } catch (err) {
+          if (err instanceof ConcurrencyLimitError) {
+            return json({ error: err.message }, { status: 409 });
+          }
+          throw err;
+        }
         return json({ runId }, { status: 201 });
       }
 
@@ -263,7 +283,7 @@ export function createHandler(options: ServerOptions): (req: Request) => Promise
       }
 
       const runEnv = options.config;
-      const runId = await startTrackedRun(options.db, workflow, {
+      const startOptions: StartTrackedRunOptions = {
         dir: body.dir,
         workspace:
           runEnv === undefined
@@ -278,18 +298,28 @@ export function createHandler(options: ServerOptions): (req: Request) => Promise
           runEnv === undefined
             ? undefined
             : { slug: runEnv.repo.slug, baseBranch: runEnv.repo.baseBranch },
+        ...(runEnv !== undefined ? { maxConcurrentRuns } : {}),
         input: body.input,
         adapter: options.adapter,
-      });
+      };
+      let runId: string;
+      try {
+        runId = await startTrackedRun(options.db, workflow, startOptions);
+      } catch (err) {
+        if (err instanceof ConcurrencyLimitError) {
+          return json({ error: err.message }, { status: 409 });
+        }
+        throw err;
+      }
       return json({ runId }, { status: 201 });
     }
 
     const cancelMatch = /^\/api\/runs\/([^/]+)\/cancel$/.exec(url.pathname);
     if (req.method === "POST" && cancelMatch) {
       const runId = cancelMatch[1] as string;
-      const handle = getActiveHandle(runId);
-      if (handle === undefined) return json({ error: "run not active" }, { status: 409 });
-      await handle.cancel();
+      const target = cancelRegisteredRun(runId);
+      if (target === undefined) return json({ error: "run not active" }, { status: 409 });
+      if (target.kind === "handle") await target.handle.cancel();
       return json({ runId, cancelled: true });
     }
 

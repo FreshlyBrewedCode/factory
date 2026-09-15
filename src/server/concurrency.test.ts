@@ -207,5 +207,59 @@ describe("phase 5 P1: per-run working trees (D28) over the real server", () => {
       db.close();
       rmSync(root, { recursive: true, force: true });
     }
+  }, 20_000);
+
+  test("two near-simultaneous POSTs at the limit yield exactly one 201 and one 409 (M1)", async () => {
+    const root = mkdtempSync(join(tmpdir(), "factory-p1-admission-race-"));
+    const seed = join(root, "seed-repo");
+    await Bun.$`git init -b main -q ${seed}`.quiet();
+    await Bun.$`git -C ${seed} -c user.name=seed -c user.email=seed@seed.local commit -q --allow-empty -m seed`.quiet();
+
+    const workspaceRoot = join(root, "workspaces");
+    const db = openStore(join(root, "factory.db"));
+    const server = serve({
+      db,
+      adapter: createSlowFakeAdapter(
+        [
+          { type: "TEXT_MESSAGE_START" },
+          { type: "TEXT_MESSAGE_CONTENT", delta: "hi" },
+          { type: "TEXT_MESSAGE_END" },
+        ],
+        1_000,
+      ),
+      port: 0,
+      config: defineConfig({
+        repo: {
+          sshUrl: seed,
+          identity: { name: "Factory", email: "factory@factory.test" },
+          baseBranch: "main",
+          slug: "acme/widgets",
+        },
+        workflows: [],
+        workspaceRoot,
+        maxConcurrentRuns: 1,
+        retainedWorkspaces: 10,
+      }),
+    });
+    const base = `http://localhost:${server.port}`;
+    const ECHO_WORKFLOW = `${import.meta.dir}/../../test/fixtures/echo-workflow.ts`;
+
+    try {
+      const [a, b] = await Promise.all([
+        startViaApi(base, ECHO_WORKFLOW, {}),
+        startViaApi(base, ECHO_WORKFLOW, {}),
+      ]);
+
+      const statuses = [a.status, b.status].sort();
+      expect(statuses).toEqual([201, 409]);
+      const started = [a, b].find((r) => r.status === 201);
+      expect(started?.runId).toMatch(/^run-/);
+
+      await waitForTerminal(db, started!.runId!, 15_000);
+    } finally {
+      await server.stop(true);
+      db.close();
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });

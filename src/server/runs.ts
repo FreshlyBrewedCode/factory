@@ -1,12 +1,20 @@
 /**
  * The server's in-memory run registry: which runs are currently live in
  * *this* process, so the HTTP API can cancel them and the dispatcher can
- * enforce a WIP limit (D24). Deliberately not derived from sqlite — a run
- * whose process died is "interrupted" (D12), not "active"; only a `RunHandle`
- * this process actually holds counts.
+ * enforce a WIP limit (D24, D29). Deliberately not derived from sqlite — a
+ * run whose process died is "interrupted" (D12), not "active"; only a
+ * `RunHandle` this process actually holds counts.
+ *
+ * A run is registered *before* it starts: `startTrackedRun` reserves the
+ * registry slot synchronously (check-then-set with no `await` between, so a
+ * concurrent HTTP start cannot lose the race) and only then allocates the
+ * workspace. A reserved slot is released if allocation/startup fails, and a
+ * `cancel` that arrives while a run is still reserving is deferred into run
+ * start rather than dropped.
  */
 
 import type { Database } from "bun:sqlite";
+import { admitRun } from "./admission";
 import { appendEvent } from "../persistence/store";
 import type { RunRepo } from "../runtime/run";
 import { startRun, type RunHandle } from "../runtime/run";
@@ -16,7 +24,22 @@ import type { AgentAdapter } from "../runtime/agent-adapter";
 import type { WorkflowDefinition } from "../workflow";
 import { publish } from "./pubsub";
 
-const active = new Map<string, RunHandle<unknown>>();
+interface ReservedSlot {
+  cancelled: boolean;
+}
+
+const active = new Map<string, RunHandle<unknown> | ReservedSlot>();
+
+function isReserved(entry: RunHandle<unknown> | ReservedSlot | undefined): boolean {
+  return entry !== undefined && !("result" in entry) && "cancelled" in entry;
+}
+
+export class ConcurrencyLimitError extends Error {
+  constructor(maxConcurrentRuns: number) {
+    super(`concurrency limit reached (max ${maxConcurrentRuns} concurrent runs)`);
+    this.name = "ConcurrencyLimitError";
+  }
+}
 
 export function isActive(runId: string): boolean {
   return active.has(runId);
@@ -27,7 +50,29 @@ export function activeRunIds(): ReadonlyArray<string> {
 }
 
 export function getActiveHandle(runId: string): RunHandle<unknown> | undefined {
-  return active.get(runId);
+  const entry = active.get(runId);
+  if (entry === undefined || isReserved(entry)) return undefined;
+  return entry as RunHandle<unknown>;
+}
+
+/**
+ * Cancellation for a run this process holds — whether it is already running
+ * (returns its handle), still reserving/allocation-bound (marks the slot so
+ * the run is cancelled the moment it starts), or unknown (`undefined`).
+ */
+export function cancelRegisteredRun(runId: string):
+  | { readonly kind: "handle"; readonly handle: RunHandle<unknown> }
+  | {
+      readonly kind: "reserved";
+    }
+  | undefined {
+  const entry = active.get(runId);
+  if (entry === undefined) return undefined;
+  if (isReserved(entry)) {
+    (entry as ReservedSlot).cancelled = true;
+    return { kind: "reserved" };
+  }
+  return { kind: "handle", handle: entry as RunHandle<unknown> };
 }
 
 export interface WorkspaceSpec {
@@ -46,6 +91,14 @@ export interface StartTrackedRunOptions {
   readonly input: unknown;
   readonly adapter: AgentAdapter;
   readonly runId?: string;
+  /**
+   * D29's ceiling, enforced atomically at reservation time — the reservation
+   * lands in the registry before any `await`, so two near-simultaneous
+   * start requests cannot both slip past it. Absent, no limit applies.
+   */
+  readonly maxConcurrentRuns?: number;
+  /** Injectable for tests: holds the reserved-but-not-started window open. */
+  readonly beforeStart?: () => Promise<void>;
 }
 
 /** Starts a run, persists+publishes every event, and tracks it until terminal. */
@@ -61,30 +114,64 @@ export async function startTrackedRun(
   // its own db while its real run is still writing to it.
   const runId = options.runId ?? `run-${crypto.randomUUID()}`;
 
-  const dir =
-    options.dir ??
-    (options.workspace === undefined
-      ? undefined
-      : await allocateWorkspace({
-          runId,
-          ...options.workspace,
-        }));
-  if (dir === undefined) throw new Error("startTrackedRun needs `dir` or `workspace`");
+  const existing = active.get(runId);
+  if (existing !== undefined && !isReserved(existing)) {
+    throw new Error(`run ${runId} is already active`);
+  }
+  if (existing === undefined && options.maxConcurrentRuns !== undefined) {
+    if (!admitRun(options.maxConcurrentRuns, active.size)) {
+      throw new ConcurrencyLimitError(options.maxConcurrentRuns);
+    }
+    active.set(runId, { cancelled: false });
+  }
 
-  const handle = startRun(workflow, {
-    runId,
-    dir,
-    ...(options.repo !== undefined ? { repo: options.repo } : {}),
-    input: options.input,
-    adapter: options.adapter,
-    onEvent: (event) => {
-      appendEvent(db, event);
-      publish(runId, event);
-    },
-  });
+  try {
+    if (options.beforeStart !== undefined) await options.beforeStart();
 
-  active.set(runId, handle);
-  void handle.result.finally(() => active.delete(runId));
+    const dir =
+      options.dir ??
+      (options.workspace === undefined
+        ? undefined
+        : await allocateWorkspace({
+            runId,
+            ...options.workspace,
+            protectedEntries: [runId, ...activeRunIds()],
+          }));
 
-  return runId;
+    if (dir === undefined) throw new Error("startTrackedRun needs `dir` or `workspace`");
+
+    const handle = startRun(workflow, {
+      runId,
+      dir,
+      ...(options.repo !== undefined ? { repo: options.repo } : {}),
+      input: options.input,
+      adapter: options.adapter,
+      onEvent: (event) => {
+        appendEvent(db, event);
+        publish(runId, event);
+      },
+    });
+
+    // A cancel that arrived while this run was only a reserved slot is
+    // deferred into run start (L1): the run starts, is cancelled immediately,
+    // and ends as a clean RunCancelled instead of orphaning the slot.
+    const beforeStartEntry = active.get(runId);
+    const reservedSlot = isReserved(beforeStartEntry)
+      ? (beforeStartEntry as ReservedSlot)
+      : undefined;
+    const cancelRequested = reservedSlot?.cancelled === true;
+    active.set(runId, handle);
+
+    void handle.result.finally(() => {
+      if (active.get(runId) === handle) active.delete(runId);
+    });
+
+    if (cancelRequested) void handle.cancel();
+
+    return runId;
+  } catch (err) {
+    const current = active.get(runId);
+    if (current === undefined || isReserved(current)) active.delete(runId);
+    throw err;
+  }
 }
