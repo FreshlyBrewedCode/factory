@@ -4,7 +4,12 @@
 
 Proposed, 2026-09-15. Pre-implementation, the same posture ADR 0002 took: every decision here is
 falsifiable by phase 5's own exit criterion. **Implemented so far: D27–D33 in full (phase 5
-P1–P5)** — the config module, the per-run workspace
+P1–P5), and P6's exit criterion has its fakes leg met (2026-09-15,
+`docs/findings/10-phase5-exit-fakes-leg.md`: the whole validation stack green in one pass —
+`bun test` 119, playwright 11, typecheck/lint exit 0 — with every fakes-provable clause named to
+its test).** The overall posture stays Proposed, now awaiting only the live leg — two concurrent
+browser-started real runs to real PRs — before it moves to Accepted. What was built spans
+the config module, the per-run workspace
 allocator, the single admission function, `GET /api/workflows`, `POST /api/runs {workflowId,
 input}`, the `factory start` thin HTTP client, the UI start/cancel surface (New-run dialog
 in the top bar with D33's single-depth form and raw-JSON escape hatch; cancel wired to
@@ -19,8 +24,8 @@ bare-repo fixture; note the collision path may only ever be exercised by these t
 updated corpus-replay test (`workflows/implement-issue.test.ts`). The P4 dialog legs also
 surfaced and fixed a phase-3 server bug — a disconnected SSE client
 stayed subscribed, and a later `publish` threw enqueue-after-closed-controller outside request
-context, killing the daemon (now guarded in `sseStream`). The overall posture stays
-Proposed until P6's exit criterion runs; nothing below has been falsified. Supersedes nothing;
+context, killing the daemon (now guarded in `sseStream`). Nothing below has been falsified; the
+live leg is what could falsify it. Supersedes nothing;
 widens D5 (workflow registration), D11 (agent-supplied PR metadata) and D24 (the WIP limit), and
 fires the "concurrency isolation" deferral that STATUS.md had parked on phase 5 with a trigger.
 

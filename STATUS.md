@@ -1,6 +1,7 @@
 # STATUS
 
-> **Phases 0–4 complete; phase 5 (usable POC) is in progress — P1–P5 done, P6 (exit) next.** Phase 4 was rescoped on
+> **Phases 0–4 complete; phase 5 (usable POC) is in progress — P1–P5 done, P6's fakes leg met,
+> its live leg pending the user's confirmation.** Phase 4 was rescoped on
 > 2026-09-15: S1–S4 landed, and S5/S6 dissolved into the new phase 5 — the Workflows/Dispatch pages
 > are dropped, the workflow registry became phase 5's P2, and the live leg moved to phase 5's exit
 > where concurrency makes it worth watching. Every completed phase met its exit criterion on both
@@ -10,14 +11,18 @@
 >
 > **Phase 5 is the first end state a person can use** — start a run from the browser or
 > `factory start`, watch it, cancel it, several at once. Decided 2026-09-15 as D27–D33 / ADR 0005;
-> **P1–P5 (config, per-run trees, admission, the workflow registry, `POST /api/runs {workflowId, input}`, `factory start`, the New-run dialog + cancel in the UI, and D32's reusable `implement-issue`) are built; the phase's exit criterion (P6) remains.**
+> **P1–P5 (config, per-run trees, admission, the workflow registry, `POST /api/runs {workflowId,
+> input}`, `factory start`, the New-run dialog + cancel in the UI, and D32's reusable
+> `implement-issue`) are built; the phase's exit criterion (P6) has its fakes leg met
+> (finding 10) — the live leg, two concurrent browser-started runs to real PRs, awaits the
+> user's go-ahead.**
 
 Project pitch, stack and constraints live in `AGENTS.md`. This file tracks where we are, what
 we have decided, and what is still unknown.
 
 |                   |                                                                                                                                                                                                                                                                                                              |
 | ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Conclusions       | `docs/adr/0001-write-back-isolation-effect-boundary.md` (phase 0) · `0002-workflow-authoring-surface.md` (authoring syntax) · `0003-run-event-type.md` (D3's event type) · `0004-server-dispatch.md` (D22–D24, phase 3) · `0005-poc-manual-runs.md` (D27–D33, phase 5 — **Proposed**; D27–D33 built) |
+| Conclusions       | `docs/adr/0001-write-back-isolation-effect-boundary.md` (phase 0) · `0002-workflow-authoring-surface.md` (authoring syntax) · `0003-run-event-type.md` (D3's event type) · `0004-server-dispatch.md` (D22–D24, phase 3) · `0005-poc-manual-runs.md` (D27–D33, phase 5 — **Proposed**; built, fakes leg met, live leg pending) |
 | Decisions         | [`docs/decisions.md`](docs/decisions.md) — the full register, D1–D33 with rationale. This file keeps only the index                                                                                                                                                                                          |
 | Completed phases  | [`docs/phases-completed.md`](docs/phases-completed.md) — phases 0–4 in full. This file keeps a few bullets each                                                                                                                                                                                              |
 | Evidence          | `docs/findings/` (one document per subtask)                                                                                                                                                                                                                                                                  |
@@ -371,11 +376,18 @@ un-collided with the branch it was given) — plus the corpus-replay test
 (`workflows/implement-issue.test.ts`) updated to the new shape and asserting the fallback
 `prBranch` end to end.
 
-**P6 — Exit criterion, both legs**, matching the precedent phases 1, 3 and 4 set. _Fakes:_ the
-whole playwright suite green in one pass through `nix develop`. _Live:_ confirmed with the user
-first, then **two concurrent** real runs started from the browser and watched to real PRs.
-Concurrency is this phase's novelty, so the live leg should exercise it rather than repeat phase
-1's single run. Output: a findings document, and ADR 0005 moved from Proposed to Accepted.
+**P6 — Exit criterion, both legs**, matching the precedent phases 1, 3 and 4 set. _Fakes leg —
+met (2026-09-15, finding 10):_ the whole validation stack green in one pass on HEAD — `bun test`
+119 green, `typecheck`/`lint` exit 0, and the full playwright suite (11 specs) through
+`nix develop` — with every fakes-provable clause of the exit criterion mapped to named tests and
+specs in `docs/findings/10-phase5-exit-fakes-leg.md` (browser: `e2e/new-run.e2e.ts` +
+`cancel.e2e.ts` + `transcript.e2e.ts`; script: `src/cli.start.test.ts`'s three real-subprocess
+legs, script-side cancel being the same HTTP endpoint the UI uses; concurrency:
+`src/server/concurrency.test.ts`). Nothing broke; the commit is docs-only. _Live leg — pending
+user confirmation:_ two concurrent real runs started from the browser and watched to real PRs,
+covering what fakes cannot prove — mirror staleness under real concurrent load, N concurrent real
+`localProcess` agent processes, and D32's collision path reached in reality. Output: a live
+findings document, and ADR 0005 moved from Proposed to Accepted.
 
 **Exit:** a person who has never seen the CLI can start a run from the browser, watch its
 transcript stream, and cancel it; a script can do the same through `factory start`; and two runs
@@ -394,11 +406,14 @@ Phases 0–4 are complete on every exit criterion — fakes and live for 0–3, 
 rescope. Bullets per phase are above; the full record is
 [`docs/phases-completed.md`](docs/phases-completed.md).
 
-**Next: phase 5's exit, P6** — the whole playwright suite green in one pass through
-`nix develop` (the fakes leg), then the live leg, **confirmed with the user first**: two
-concurrent real runs started from the browser and watched to real PRs, a findings document, and
-ADR 0005 moved from Proposed to Accepted. P1–P5 landed 2026-09-15; **every D27–D33 decision is
-built; nothing of phase 5's plan remains unbuilt.**
+**Next: phase 5's live leg (P6's second half) — gated on the user confirming.** The fakes leg is
+met: 2026-09-15's one-pass validation run is recorded in
+[`docs/findings/10-phase5-exit-fakes-leg.md`](docs/findings/10-phase5-exit-fakes-leg.md), which
+also maps each exit-criterion clause to the tests that prove it and names what stays
+unproven until the live leg. What remains for phase 5: **two concurrent real runs started from
+the browser and watched to real PRs**, then a live findings document and ADR 0005 moved from
+Proposed to Accepted — after which phase 5 closes. P1–P5 landed 2026-09-15; **every D27–D33
+decision is built.**
 
 Read **ADR 0005** first — it carries D27–D33 and, more usefully, the reasoning for the two things
 that look like bigger jobs than they are. The short version:
@@ -411,14 +426,12 @@ that look like bigger jobs than they are. The short version:
   admission function (`src/server/admission.ts`) now cover both `POST /api/runs` (409) and
   the dispatcher (skip) — see `src/server/concurrency.test.ts`.
 
-For P6, read **ADR 0005**'s exit-criterion shape and phase 1/3/4's precedent
-(`docs/phases-completed.md`): the fakes leg is the whole playwright suite in one pass
-(`nix develop` — `bun run test:e2e`); the live leg is two browser-started concurrent runs watched
-to real PRs, gated on the user confirming. The P4 legs are the models — `e2e/new-run.e2e.ts`
-drives the dialog against the real daemon, and `e2e/server.ts` shows the config/seed-repo
-stand-in a new leg can reuse. P5's residue worth carrying into the live leg: D32's collision
-retry has only ever been exercised by its test (`src/lib/writeback.test.ts`), so a live run that
-collides stays a genuine unknown.
+For the live leg, read **ADR 0005**'s exit-criterion shape and phase 1/3/4's precedent
+(`docs/phases-completed.md`): two concurrent browser-started runs watched to real PRs, the thing
+the fakes cannot attest. The P4 playwright legs (`e2e/new-run.e2e.ts`, `e2e/server.ts`) show the
+daemon/config wiring a human runs `factory serve` against. P5's residue worth carrying into the
+live leg: D32's collision retry has only ever been exercised by its test
+(`src/lib/writeback.test.ts`), so a live run that collides stays a genuine unknown.
 
 Left over from earlier phases, not exit-blocking, worth doing opportunistically:
 
