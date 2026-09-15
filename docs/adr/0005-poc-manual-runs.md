@@ -3,26 +3,32 @@
 ## Status
 
 Proposed, 2026-09-15. Pre-implementation, the same posture ADR 0002 took: every decision here is
-falsifiable by phase 5's own exit criterion. **Implemented so far: D27–D31 (phase 5 P1–P3)** — the config module, the per-run workspace
+falsifiable by phase 5's own exit criterion. **Implemented so far: D27–D31 + D33 (phase 5 P1–P4)** — the config module, the per-run workspace
 allocator, the single admission function, `GET /api/workflows`, `POST /api/runs {workflowId,
-input}` and the `factory start` thin HTTP client are built and validated
+input}`, the `factory start` thin HTTP client, and the UI start/cancel surface (New-run dialog
+in the top bar with D33's single-depth form and raw-JSON escape hatch; cancel wired to
+`POST /api/runs/:id/cancel` on run detail and running rows) are built and validated
 (`src/config.ts`, `src/lib/workspace.ts`, `src/server/admission.ts`,
-`src/server/concurrency.test.ts`, `src/server/http.test.ts`, `src/cli.start.test.ts`); D32–D33 are still code-only
-decisions. The overall posture stays
+`src/server/concurrency.test.ts`, `src/server/http.test.ts`, `src/cli.start.test.ts`,
+`src/web/lib/start-form.ts` + its projection test, `e2e/new-run.e2e.ts`, `e2e/cancel.e2e.ts`);
+**the P4 dialog legs also surfaced and fixed a phase-3 server bug** — a disconnected SSE client
+stayed subscribed, and a later `publish` threw enqueue-after-closed-controller outside request
+context, killing the daemon (now guarded in `sseStream`); D32 is still a code-only
+decision. The overall posture stays
 Proposed until P6's exit criterion runs; nothing below has been falsified. Supersedes nothing;
 widens D5 (workflow registration), D11 (agent-supplied PR metadata) and D24 (the WIP limit), and
 fires the "concurrency isolation" deferral that STATUS.md had parked on phase 5 with a trigger.
 
 ## Context
 
-Phase 4 put the SPA on screen against real data. What it does not do is let anyone *start*
+Phase 4 put the SPA on screen against real data. What it does not do is let anyone _start_
 anything: `POST /api/runs` demands `workflowPath` and `dir` as filesystem strings
 (`src/server/http.ts:141`), which a browser cannot supply, and D5's registration surface was
 never built. The only way to start a run today is `factory run` on the CLI or the dispatcher
 picking up a GitHub Project item unattended.
 
 The goal this ADR serves is deliberately narrower than phase 4's original plan: a POC that is
-*useful*, meaning a person can open the UI, start a run against a chosen workflow, watch it
+_useful_, meaning a person can open the UI, start a run against a chosen workflow, watch it
 stream, and cancel it — and can do the same from a script. Automatic dispatch is explicitly out
 of scope for the UI; it keeps working from `--dispatch-*` flags, so nothing built in phase 3 is
 discarded or paused.
@@ -58,7 +64,7 @@ Two things fall out of this that were previously awkward.
 **D5's hardest constraint disappears.** D5 says workflow modules export "`id` + input schema +
 the function — a registration surface, not a step graph", with the stated reason that "the daemon
 must enumerate and validate workflows without executing arbitrary files." That constraint only
-existed because the daemon was going to *scan a directory*. Importing a config module is the
+existed because the daemon was going to _scan a directory_. Importing a config module is the
 operator's own explicit act, so there is nothing to defend against: the config imports workflow
 definitions from their own files and lists them, and the registry is that array. Workflow modules
 keep the `defineWorkflow` shape they already have; what changes is who enumerates them.
@@ -84,14 +90,14 @@ moment a run failed.
 **Why this is the whole of concurrency.** Tracing what a second concurrent run would actually
 collide with found one thing, not the several the deferral anticipated:
 
-| Resource | Already per-run? | Where |
-| --- | --- | --- |
-| Sandbox / agent session | yes | `startRun` passes `threadId: options.runId` (`run.ts:159`), and D10 makes that one sandbox per run |
-| Exec working directory | yes | `hostExec(argv, { cwd: options.dir })` (`run.ts:119`) |
-| Run registry | yes | `active` is a `Map<string, RunHandle>` (`runs.ts:16`) |
-| SSE fan-out | yes | `publish`/`subscribe` keyed by `runId` |
-| sqlite | yes | WAL, one connection, synchronous appends serialized by the event loop (`store.ts:25`) |
-| **Working directory** | **no** | `resetClone` wipes and re-clones a single `dir` (`clone.ts:27`) |
+| Resource                | Already per-run? | Where                                                                                              |
+| ----------------------- | ---------------- | -------------------------------------------------------------------------------------------------- |
+| Sandbox / agent session | yes              | `startRun` passes `threadId: options.runId` (`run.ts:159`), and D10 makes that one sandbox per run |
+| Exec working directory  | yes              | `hostExec(argv, { cwd: options.dir })` (`run.ts:119`)                                              |
+| Run registry            | yes              | `active` is a `Map<string, RunHandle>` (`runs.ts:16`)                                              |
+| SSE fan-out             | yes              | `publish`/`subscribe` keyed by `runId`                                                             |
+| sqlite                  | yes              | WAL, one connection, synchronous appends serialized by the event loop (`store.ts:25`)              |
+| **Working directory**   | **no**           | `resetClone` wipes and re-clones a single `dir` (`clone.ts:27`)                                    |
 
 So the isolation work is a directory allocation, not N sandboxes with one worktree each. The
 Deferred entry's framing was written before D10's per-`threadId` sandbox was validated, and is
@@ -106,7 +112,7 @@ stale; refreshing the mirror on each allocation bounds that.
 ### D29 — One `maxConcurrentRuns`, enforced by a single admission function; 409 over the limit
 
 Today there is no limit as such. `daemon.ts:94` injects `hasActiveRun: () => activeRunIds().length > 0`
-— a *boolean* — which `dispatch.ts:117` consumes as D24's "WIP limit of 1", and **`POST /api/runs`
+— a _boolean_ — which `dispatch.ts:117` consumes as D24's "WIP limit of 1", and **`POST /api/runs`
 checks nothing at all.** A manual start has always bypassed the dispatcher's limit; nothing
 noticed because manual starts were CLI-only and rare.
 
@@ -150,7 +156,7 @@ D11 established that PR title and body come from an ordinary agent step returnin
 output, so that Factory stays out of the business of knowing what a PR should say. The same
 argument applies to the branch name, and stopping at title/body was arbitrary.
 
-Today `branch`, `repoSlug` and `baseBranch` are all *workflow input fields*
+Today `branch`, `repoSlug` and `baseBranch` are all _workflow input fields_
 (`workflows/implement-issue.ts:82`), passed straight through to `ctx.writeBack` (line 161). That
 is wrong in two different ways at once: two of them are deployment config (D27), and the third is
 a per-task decision that a workflow should not have to hardcode. Hardcoding it is what forces a
@@ -161,7 +167,7 @@ shrinks:
 
 ```ts
 const { prUrl, branch } = await ctx.writeBack({
-  branch: prMetadata.branch,   // agent-supplied hint
+  branch: prMetadata.branch, // agent-supplied hint
   commitMessage,
   prTitle: prMetadata.title,
   prBody: prMetadata.body,
@@ -178,7 +184,7 @@ once. It returns the branch it actually used.
 
 Always-suffixing was the first proposal and is wrong: agent-generated branch names differ per task,
 so collisions are the rare case, and unconditionally appending a hex fragment would uglify every
-name to solve a problem that usually is not there. Pre-*checking* is wrong for a different reason:
+name to solve a problem that usually is not there. Pre-_checking_ is wrong for a different reason:
 two concurrent runs both ask "does `feat/x` exist?", both see no, and both push. The check races;
 the push does not. `writeBack` already inspects exit codes (`writeback.ts:135`), so reacting to
 the rejection is the contained change.
