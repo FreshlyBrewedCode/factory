@@ -16,8 +16,8 @@
     "test:e2e": "playwright test",
     "typecheck": "tsc --noEmit",
     "lint": "oxlint",
-    "format": "oxfmt src e2e bin scripts workflows playwright.config.ts components.json package.json tsconfig.json .oxlintrc.json bunfig.toml .releaserc.json",
-    "format:check": "oxfmt --check src e2e bin scripts workflows playwright.config.ts components.json package.json tsconfig.json .oxlintrc.json bunfig.toml .releaserc.json",
+    "format": "oxfmt src e2e bin scripts workflows sample playwright.config.ts components.json package.json tsconfig.json .oxlintrc.json bunfig.toml .releaserc.json",
+    "format:check": "oxfmt --check src e2e bin scripts workflows sample playwright.config.ts components.json package.json tsconfig.json .oxlintrc.json bunfig.toml .releaserc.json",
     "check": "bun run format:check && bun run lint && bun run typecheck && bun run test"
   },
   "dependencies": {

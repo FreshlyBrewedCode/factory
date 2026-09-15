@@ -142,56 +142,75 @@ export interface StartCliOptions {
 }
 
 async function watchSse(baseUrl: string, runId: string): Promise<number> {
-  let res: Response;
-  try {
-    res = await fetch(`${baseUrl}/api/runs/${runId}/events`);
-  } catch (err) {
-    console.error(`factory start: cannot reach daemon at ${baseUrl}: ${String(err)}`);
-    return 1;
-  }
-  if (!res.ok) {
-    console.error(`factory start: ${res.status} while tailing ${runId}`);
-    return 1;
-  }
-
-  const reader = res.body!.getReader();
-  const decoder = new TextDecoder();
-  let buffer = "";
-
-  while (true) {
-    const { value, done } = await reader.read();
-    if (done) {
-      console.error(`factory start: stream for ${runId} ended without a terminal event`);
+  // The run's own history lives in the daemon's event log and every tail
+  // reconnect replays it from seq 0, so a dropped connection (seen live in
+  // phase 5's P6 leg: mid-run ECONNRESET while the daemon was healthy) can
+  // simply re-open and continue — events print again, idempotently.
+  const maxReconnects = 3;
+  for (let attempt = 0; attempt <= maxReconnects; attempt++) {
+    let res: Response;
+    try {
+      res = await fetch(`${baseUrl}/api/runs/${runId}/events`);
+    } catch (err) {
+      console.error(`factory start: cannot reach daemon at ${baseUrl}: ${String(err)}`);
       return 1;
     }
-    buffer += decoder.decode(value);
-    let idx = buffer.indexOf("\n\n");
-    while (idx !== -1) {
-      const raw = buffer.slice(0, idx);
-      buffer = buffer.slice(idx + 2);
-      const dataLine = raw
-        .split("\n")
-        .find((line) => line.startsWith("data:"))
-        ?.slice("data:".length)
-        .trimStart();
-      if (dataLine !== undefined) {
-        let event: RunEvent;
-        try {
-          event = JSON.parse(dataLine) as RunEvent;
-        } catch {
-          console.error(`factory start: skipping malformed frame for ${runId}`);
-          idx = buffer.indexOf("\n\n");
-          continue;
+    if (!res.ok) {
+      console.error(`factory start: ${res.status} while tailing ${runId}`);
+      return 1;
+    }
+
+    const reader = res.body!.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+
+    try {
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) {
+          console.error(`factory start: stream for ${runId} ended without a terminal event`);
+          return 1;
         }
-        console.log(formatEvent(event));
-        const tag = event.payload._tag;
-        if (tag === "RunFinished") return 0;
-        if (tag === "RunFailed") return 1;
-        if (tag === "RunCancelled") return 130;
+        buffer += decoder.decode(value);
+        let idx = buffer.indexOf("\n\n");
+        while (idx !== -1) {
+          const raw = buffer.slice(0, idx);
+          buffer = buffer.slice(idx + 2);
+          const dataLine = raw
+            .split("\n")
+            .find((line) => line.startsWith("data:"))
+            ?.slice("data:".length)
+            .trimStart();
+          if (dataLine !== undefined) {
+            let event: RunEvent;
+            try {
+              event = JSON.parse(dataLine) as RunEvent;
+            } catch {
+              console.error(`factory start: skipping malformed frame for ${runId}`);
+              idx = buffer.indexOf("\n\n");
+              continue;
+            }
+            console.log(formatEvent(event));
+            const tag = event.payload._tag;
+            if (tag === "RunFinished") return 0;
+            if (tag === "RunFailed") return 1;
+            if (tag === "RunCancelled") return 130;
+          }
+          idx = buffer.indexOf("\n\n");
+        }
       }
-      idx = buffer.indexOf("\n\n");
+    } catch (err) {
+      if (attempt >= maxReconnects) {
+        console.error(`factory start: connection lost tailing ${runId}: ${String(err)}`);
+        return 1;
+      }
+      console.error(
+        `factory start: connection lost, reconnecting (${attempt + 1}/${maxReconnects})...`,
+      );
+      await new Promise((resolve) => setTimeout(resolve, 1000));
     }
   }
+  return 1;
 }
 
 export { watchSse };

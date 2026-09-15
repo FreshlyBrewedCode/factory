@@ -310,3 +310,50 @@ cannot show. ADR 0005 was taken by phase 5's decisions; phase 4's ADR is **0006*
 **Exit:** the SPA renders the runs list, a live run detail and a step transcript from the real API,
 provable in `bun test`/playwright without network or AI. The live leg moves to phase 5.
 
+
+## Phase 5 — Usable POC: manual runs
+
+The first end state a person can use — start a run from the browser or `factory start`, watch it
+stream, cancel it, several at once. Decided 2026-09-15 as D27–D33 (ADR 0005); D34 (ADR 0007) was
+forced later the same day by the live leg. The full step-by-step record was written into
+STATUS.md while it ran and is consolidated here; the exit evidence lives in
+`docs/findings/10-phase5-exit-fakes-leg.md` (fakes) and `docs/findings/11-phase5-live-leg.md`
+(live).
+
+- **P1 — per-run working trees (D28), config entry point (D27), admission (D29).**
+  `src/config.ts`'s `defineConfig` (D27), `src/lib/workspace.ts`'s mirror-clone allocation
+  (`<workspaceRoot>/<runId>/`, retention ≥ concurrency enforced at load), and
+  `src/server/admission.ts`'s `admitRun` over a single `maxConcurrentRuns` — the slot reserved
+  in the registry before any await, so two near-simultaneous `POST /api/runs` yield exactly one
+  201 and one 409. Validated by `src/server/concurrency.test.ts`, `admission.test.ts`,
+  `dispatch.test.ts`, `runs.test.ts`.
+- **P2 — `GET /api/workflows` (D30)** served from the config's array, schemas as JSON Schema; no
+  filesystem scan.
+- **P3 — `POST /api/runs {workflowId, input}` (D31)** — id resolves against the registry, input
+  decodes through the workflow's own Effect Schema before the run starts, `dir`/clone/identity
+  come solely from the config; `factory start <workflowId> --input <json>` (`--watch` tails SSE
+  to a terminal exit code) and `factory run` retained as the no-daemon path.
+- **P4 — start and cancel in the UI.** The top-bar New-run dialog (D33's single-depth form from
+  the input schema, raw-JSON escape hatch) → `POST /api/runs` → navigation to run detail; cancel
+  on run detail and running rows via the phase 3 endpoint. The legs also found and fixed a
+  phase 3 server bug: a disconnected SSE client stayed subscribed, and a later publish threw
+  enqueue-after-closed outside request context, killing the whole `serve()` process;
+  `sseStream` now self-marks closed and guards the enqueue (regression test proven to fail
+  reverted).
+- **P5 — `implement-issue` becomes reusable (D32: agent-supplied branch; collisions suffix with
+  a short runId and retry once).** `repoSlug`/`baseBranch` left the workflow input and
+  `ctx.writeBack`'s signature; they flow from config through `StartRunOptions.repo`.
+- **P6 — exit criterion, both legs (2026-09-15).** Fakes: the full stack green in one pass
+  (finding 10). Live: the sample project (`sample/`) for factory-spike, five real runs, five
+  real PRs (#7/#8/#11/#12/#13) on `opencode-go/glm-5.3-flash` in 37–49 s round trips; two
+  concurrent runs captured streaming simultaneously in the UI through playwright. The leg's
+  substantive findings: the opencode adapter's fixed in-sandbox server port made concurrent
+  boots collide deterministically (fixed, D34/ADR 0007); `factory start --watch` died on
+  ECONNRESET mid-run while its run completed fine (fixed — reconnect with replay);
+  D32's collision retry fired live for the first time (PR #12's `usedBranch` suffix); the
+  round trips took 37–49 s (manual runs are watchable now); and a small UI defect list queued
+  to phase 6. Runs were started via the CLI and watched from the browser per the session's
+  remit; browser-started runs remain covered by the fakes leg.
+
+**Exit met on both legs** — the live leg recorded in finding 11; ADR 0005 moved Proposed →
+Accepted on the same day.

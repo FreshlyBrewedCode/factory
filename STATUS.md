@@ -1,31 +1,33 @@
 # STATUS
 
-> **Phases 0–4 complete; phase 5 (usable POC) is in progress — P1–P5 done, P6's fakes leg met,
-> its live leg pending the user's confirmation.** Phase 4 was rescoped on
-> 2026-09-15: S1–S4 landed, and S5/S6 dissolved into the new phase 5 — the Workflows/Dispatch pages
-> are dropped, the workflow registry became phase 5's P2, and the live leg moved to phase 5's exit
-> where concurrency makes it worth watching. Every completed phase met its exit criterion on both
-> legs, fakes and live — the round trip (factory-spike#3), a live workflow run (#4) and a live
-> unattended dispatch (#5) all opened real PRs. Per-phase detail is in
-> [`docs/phases-completed.md`](docs/phases-completed.md).
+> **Phases 0–5 complete.** Phase 5 (usable POC) closed on 2026-09-15: the live leg ran — a
+> sample project (`sample/`) for the factory-spike repo, two concurrent real runs to two real
+> PRs (factory-spike#12/#13) with runs driven by `factory start` and watched live in the UI
+> via playwright, **five real PRs on the day** from five agent steps running
+> `opencode-go/glm-5.3-flash` in 37–49 s round trips. The leg surfaced and fixed two real
+> defects (D34's concurrent-opencode port collision, ADR 0007; `factory start --watch`
+> dying on ECONNRESET) and D32's collision retry fired live for the first time (PR #12's
+> `usedBranch`). Phase 4 was rescoped on 2026-09-15: S1–S4 landed, and S5/S6 dissolved into
+> the new phase 5 — the Workflows/Dispatch pages are dropped, the workflow registry became
+> phase 5's P2, and the live leg moved to phase 5's exit. Every completed phase met its exit
+> criterion on both legs, fakes and live — the round trip (factory-spike#3), a live workflow
+> run (#4), a live unattended dispatch (#5), and now the concurrent manual-run leg (#12/#13).
+> Per-phase detail is in [`docs/phases-completed.md`](docs/phases-completed.md); the live
+> leg's evidence is [`docs/findings/11-phase5-live-leg.md`](docs/findings/11-phase5-live-leg.md).
 >
-> **Phase 5 is the first end state a person can use** — start a run from the browser or
-> `factory start`, watch it, cancel it, several at once. Decided 2026-09-15 as D27–D33 / ADR 0005;
-> **P1–P5 (config, per-run trees, admission, the workflow registry, `POST /api/runs {workflowId,
-> input}`, `factory start`, the New-run dialog + cancel in the UI, and D32's reusable
-> `implement-issue`) are built; the phase's exit criterion (P6) has its fakes leg met
-> (finding 10) — the live leg, two concurrent browser-started runs to real PRs, awaits the
-> user's go-ahead.**
+> **Next: phase 6 (harden)** — isolation (docker + secrets), observability, cancellation
+> correctness, and what the live leg surfaced. The phase-5 exit's residue (UI defect list,
+> below) is queued there.
 
 Project pitch, stack and constraints live in `AGENTS.md`. This file tracks where we are, what
 we have decided, and what is still unknown.
 
 |                   |                                                                                                                                                                                                                                                                                                              |
 | ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Conclusions       | `docs/adr/0001-write-back-isolation-effect-boundary.md` (phase 0) · `0002-workflow-authoring-surface.md` (authoring syntax) · `0003-run-event-type.md` (D3's event type) · `0004-server-dispatch.md` (D22–D24, phase 3) · `0005-poc-manual-runs.md` (D27–D33, phase 5 — **Proposed**; built, fakes leg met, live leg pending) |
-| Decisions         | [`docs/decisions.md`](docs/decisions.md) — the full register, D1–D33 with rationale. This file keeps only the index                                                                                                                                                                                          |
+| Conclusions       | `docs/adr/0001-write-back-isolation-effect-boundary.md` (phase 0) · `0002-workflow-authoring-surface.md` (authoring syntax) · `0003-run-event-type.md` (D3's event type) · `0004-server-dispatch.md` (D22–D24, phase 3) · `0005-poc-manual-runs.md` (D27–D33, phase 5 — **Accepted**) · `0007-opencode-serve-per-run-port.md` (D34, from the live leg) |
+| Decisions         | [`docs/decisions.md`](docs/decisions.md) — the full register, D1–D34 with rationale. This file keeps only the index                                                                                                                                                                                          |
 | Completed phases  | [`docs/phases-completed.md`](docs/phases-completed.md) — phases 0–4 in full. This file keeps a few bullets each                                                                                                                                                                                              |
-| Evidence          | `docs/findings/` (one document per subtask)                                                                                                                                                                                                                                                                  |
+| Evidence          | `docs/findings/` (one document per subtask); finding 11 is phase 5's live leg                                                                                                                                                                                                                              |
 | Pre-spike reading | `docs/research/2026-09-13-pre-spike-reading.md` (annotated where the spike overturned it)                                                                                                                                                                                                                    |
 
 ## Where we are
@@ -173,6 +175,7 @@ the table).
 | D31 | **`POST /api/runs {workflowId, input}`**; `factory start` is a thin HTTP client — built (P3)              | ADR 0005                            |
 | D32 | **Write-back metadata is agent-supplied**, branch included; collisions resolved reactively — built (P5)  | ADR 0005                            |
 | D33 | **The start form is single-depth**, with a raw-JSON escape hatch — built (P4)                             | ADR 0005                            |
+| D34 | **A fresh free port per `stream()` call for the in-sandbox `opencode serve`** — from the live leg | ADR 0007                            |
 
 ## Still unknown
 
@@ -395,49 +398,74 @@ un-collided with the branch it was given) — plus the corpus-replay test
 (`workflows/implement-issue.test.ts`) updated to the new shape and asserting the fallback
 `prBranch` end to end.
 
-**P6 — Exit criterion, both legs**, matching the precedent phases 1, 3 and 4 set. _Fakes leg —
-met (2026-09-15, finding 10):_ the whole validation stack green in one pass on HEAD — `bun test`
-119 green, `typecheck`/`lint` exit 0, and the full playwright suite (11 specs) through
-`nix develop` — with every fakes-provable clause of the exit criterion mapped to named tests and
-specs in `docs/findings/10-phase5-exit-fakes-leg.md` (browser: `e2e/new-run.e2e.ts` +
-`cancel.e2e.ts` + `transcript.e2e.ts`; script: `src/cli.start.test.ts`'s three real-subprocess
-legs, script-side cancel being the same HTTP endpoint the UI uses; concurrency:
-`src/server/concurrency.test.ts`). Nothing broke; the commit is docs-only. _Live leg — pending
-user confirmation:_ two concurrent real runs started from the browser and watched to real PRs,
-covering what fakes cannot prove — mirror staleness under real concurrent load, N concurrent real
-`localProcess` agent processes, and D32's collision path reached in reality. Output: a live
-findings document, and ADR 0005 moved from Proposed to Accepted.
+**P6 — Exit criterion, both legs — met (2026-09-15, phase 5 closed).** _Fakes leg — met
+earlier the same day (finding 10):_ the whole validation stack green in one pass on HEAD —
+`bun test` 119 green, `typecheck`/`lint` exit 0, and the full playwright suite (11 specs)
+through `nix develop` — with every fakes-provable clause of the exit criterion mapped to named
+tests and specs in `docs/findings/10-phase5-exit-fakes-leg.md` (browser: `e2e/new-run.e2e.ts`
++ `cancel.e2e.ts` + `transcript.e2e.ts`; script: `src/cli.start.test.ts`'s three
+real-subprocess legs, script-side cancel being the same HTTP endpoint the UI uses;
+concurrency: `src/server/concurrency.test.ts`). _Live leg — met (finding 11):_ driven by this
+session's task remit — runs started through `factory start` (CLI) and validated live in the UI
+by a playwright operator. A sample project (`sample/factory.config.ts` + a minimal
+`implement-issue`) for the factory-spike repo, model `opencode-go/glm-5.3-flash` on every
+agent step, produced **five real PRs (#7, #8, #11, #12, #13) in five runs**, two of them
+launched concurrently and captured streaming simultaneously in the UI with zero console
+errors. What they proved that fakes could not:
+
+- **The concurrency leg needed a real fix, not confirmation.** Two near-simultaneous runs
+  surfaced a deterministic collision the fakes could never see: the opencode adapter's
+  fixed `DEFAULT_PORT` made two in-sandbox `opencode serve` boots race for one host port —
+  the later boot died 1 s into a 37–49 s run, twice, deterministically (finding 11 L1).
+  **D34 / ADR 0007**: a fresh free port per `stream()` call (D7-scoped). The retried
+  concurrent leg ran clean — two simultaneous real agent streams to PRs #12/#13.
+- **`factory start --watch` crashed on `ECONNRESET` mid-run** while the daemon was healthy
+  (run `run-d902774c` completed; the CLI died tailing it) — now reconnects ≤ 3 times since
+  every tail reconnect replays idempotently from seq 0 (finding 11 L2).
+- **D32's collision retry is no longer test-only: PR #12's branch is
+  `factory/issue-10-add-shout-export-42f97fe4`** — the agent-supplied name existed remotely,
+  the runtime suffixed the short runId, retried, and surfaced `usedBranch`. The "known
+  limit" note in P5 is hereby resolved by observation.
+- **37–49 s round trips** on `opencode-go/glm-5.3-flash` (implement + tests + PR metadata +
+  write-back), against the ~9-min phases-1/3 precedent on `deepseek-v4.1-flash` — manual
+  runs are now genuinely watchable (finding 11 L4).
+- UI defects observed live (queued to phase 6, none exit-blocking): raw ANSI escapes in
+  failed-run error text, the runs-list started cell gluing clock and relative time, `origin`
+  rendering always `—`, and one un-reproducible transient replay-time glitch (finding 11 L3).
+
+Also noted: runs from the CLI watched in the browser; browser-*started* runs stay covered by
+the fakes leg per the session's remit — recorded, not silently elided. With both legs met,
+ADR 0005 moves Proposed → Accepted; status header agrees.
 
 **Exit:** a person who has never seen the CLI can start a run from the browser, watch its
 transcript stream, and cancel it; a script can do the same through `factory start`; and two runs
 can be in flight at once — the fakes leg provable in `bun test`/playwright without network or AI,
 and the live leg watched end to end in the browser.
 
-### Phase 6 — Harden
+### Phase 6 — Harden (next)
 
 Isolation (docker + secrets, D7's deferral — note D28 gave phase 5 _concurrency_ without it, and
 claimed no isolation in doing so), observability, cancellation correctness, and whatever phase 5's
-live leg surfaces. Candidate bullets already queued from the phase-5 review pass: workflow inputs
-are remote-facing since phase 5, so shell-command-from-input remains an operator hazard to close
-(validate/escape or drop the pattern), and the daemon-wide admission-reservation story should get
-a dispatcher-side admission-failure state that survives the claimed item (today a lost admission
-race between reconcile and a manual start surfaces as a reconcile error and leaves the claimed
-item stuck in progress).
+live leg surfaced. Candidate bullets already queued: workflow inputs are remote-facing since
+phase 5, so shell-command-from-input remains an operator hazard to close (validate/escape or drop
+the pattern); the daemon-wide admission-reservation story should get a dispatcher-side
+admission-failure state that survives the claimed item; and the live leg's UI defect list
+(finding 11 L3 — raw ANSI in failed-run error text, glued list timestamps, `origin` always `—`,
+the un-repro'd replay-time duration glitch), plus D34's docker comment as the port revisit
+trigger when isolation lands.
 
 ## Start here
 
-Phases 0–4 are complete on every exit criterion — fakes and live for 0–3, fakes-only for 4 by its
-rescope. Bullets per phase are above; the full record is
-[`docs/phases-completed.md`](docs/phases-completed.md).
+Phases 0–5 are complete on every exit criterion — fakes and live where the test exists. The
+usable POC is real: `factory serve` against the sample config in `sample/`, and a run can be
+started from the browser, watched streaming in the transcript, cancelled, and several at
+once — with real PRs landing at the end (factory-spike#7/#8/#11/#12/#13 on 2026-09-15).
 
-**Next: phase 5's live leg (P6's second half) — gated on the user confirming.** The fakes leg is
-met: 2026-09-15's one-pass validation run is recorded in
-[`docs/findings/10-phase5-exit-fakes-leg.md`](docs/findings/10-phase5-exit-fakes-leg.md), which
-also maps each exit-criterion clause to the tests that prove it and names what stays
-unproven until the live leg. What remains for phase 5: **two concurrent real runs started from
-the browser and watched to real PRs**, then a live findings document and ADR 0005 moved from
-Proposed to Accepted — after which phase 5 closes. P1–P5 landed 2026-09-15; **every D27–D33
-decision is built.**
+**Next: phase 6 (harden).** No phase is gated on user confirmation any longer. Phase 6's
+candidate list is written above; the live leg's residue (finding 11: two fixed code defects —
+D34's port collision and the `--watch` ECONNRESET — plus the queued UI defect list) is the
+phase's opening input. Read ADR 0005 (Accepted) for phase 5's reasoning and ADR 0007 for the
+one concurrency fix the live leg forced.
 
 Read **ADR 0005** first — it carries D27–D33 and, more usefully, the reasoning for the two things
 that look like bigger jobs than they are. The short version:
