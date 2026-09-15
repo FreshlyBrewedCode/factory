@@ -38,6 +38,8 @@ test("the runs list groups terminal runs newest-first with their derived status"
 
   const recent = page.getByTestId("runs-group-recent");
   await expect(recent).toBeVisible();
+  // The list polls; wait for the first row so the order read below sees data.
+  await expect(recent.locator('[data-testid^="run-row-"]').first()).toBeVisible();
 
   const rowIds = await recent
     .locator('[data-testid^="run-row-"]')

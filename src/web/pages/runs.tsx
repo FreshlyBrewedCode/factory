@@ -1,6 +1,7 @@
 import { Link, useNavigate } from "@tanstack/react-router";
 import { useRuns, useTickingNow } from "@/web/hooks";
 import type { RunSummary } from "@/web/api";
+import { CancelRunButton } from "@/web/components/cancel-run-button";
 import { formatAgo, formatClock, formatDuration, shortRunId } from "@/web/lib/format";
 import { runDisplayStatus, type RunDisplayStatus } from "@/web/lib/status";
 import { StatusCell } from "@/web/components/status-cell";
@@ -100,6 +101,9 @@ function RunRow({ run, now }: { readonly run: RunSummary; readonly now: number }
       <td className="px-3 py-2 font-mono text-[11px]" data-testid="run-result">
         <ResultCell run={run} status={status} />
       </td>
+      <td className="w-px px-3 py-2 text-right">
+        {run.active ? <CancelRunButton runId={run.runId} /> : null}
+      </td>
     </tr>
   );
 }
@@ -115,7 +119,7 @@ function RunTable({
     <table className="w-full border-collapse">
       <thead>
         <tr className="border-b-2 border-border-strong text-left">
-          {["Status", "Run", "Task", "Started", "Duration", "Result"].map((heading) => (
+          {["Status", "Run", "Task", "Started", "Duration", "Result", ""].map((heading) => (
             <th
               key={heading}
               className="px-3 py-1.5 text-[11px] font-semibold tracking-wide text-muted-foreground uppercase"

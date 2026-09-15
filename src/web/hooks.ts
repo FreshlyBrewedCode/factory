@@ -1,7 +1,7 @@
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 import type { RunEvent } from "../events";
-import { fetchRun, fetchRuns, subscribeToRun } from "./api";
+import { cancelRun, fetchRun, fetchRuns, fetchWorkflows, startRun, subscribeToRun } from "./api";
 
 /** The runs list; polls cheaply (S1 made summaries SQL aggregates) so new runs appear. */
 export function useRuns() {
@@ -10,6 +10,34 @@ export function useRuns() {
 
 export function useRun(runId: string) {
   return useQuery({ queryKey: ["run", runId], queryFn: () => fetchRun(runId) });
+}
+
+/** The workflow registry (D30), for the New-run dialog. */
+export function useWorkflows() {
+  return useQuery({ queryKey: ["workflows"], queryFn: fetchWorkflows });
+}
+
+/** Starts a run via D31's `{workflowId, input}` and refreshes the runs list. */
+export function useStartRun() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: startRun,
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["runs"] });
+    },
+  });
+}
+
+/** Cancels a live run via the phase 3 cancel endpoint and refreshes what reads it. */
+export function useCancelRun() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (runId: string) => cancelRun(runId),
+    onSuccess: (_result, runId) => {
+      void queryClient.invalidateQueries({ queryKey: ["runs"] });
+      void queryClient.invalidateQueries({ queryKey: ["run", runId] });
+    },
+  });
 }
 
 export interface RunEventsState {
