@@ -100,14 +100,25 @@ const SKIPPED = (reason: string): ExecResult => ({
   stderr: reason,
 });
 
+/**
+ * D32's collision signatures, matched concretely: a push the remote actually
+ * rejected (non-fast-forward — the branch already exists with different
+ * history), and `gh pr create`'s own "already exists" message. Anything else
+ * — an auth failure, a network error, a permission denial — must NOT trigger
+ * the rename-and-retry, or a credentials problem would turn into a spray of
+ * runId-suffixed branches.
+ */
 function isPushRejected(result: ExecResult): boolean {
-  return (
-    result.exitCode !== 0 && /rejected|already exists/.test(`${result.stdout}\n${result.stderr}`)
-  );
+  if (result.exitCode === 0) return false;
+  const output = `${result.stdout}\n${result.stderr}`;
+  return /! \[(?:remote )?rejected\]|non-fast-forward/.test(output);
 }
 
 function isPrAlreadyExists(result: ExecResult): boolean {
-  return result.exitCode !== 0 && /already exists/.test(`${result.stdout}\n${result.stderr}`);
+  return (
+    result.exitCode !== 0 &&
+    /pull request for branch .*already exists/.test(`${result.stdout}\n${result.stderr}`)
+  );
 }
 
 /**

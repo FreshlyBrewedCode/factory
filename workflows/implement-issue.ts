@@ -25,25 +25,33 @@ import {
 } from "../src/lib/tree-snapshot";
 import { defineWorkflow, Schema, type AgentResult } from "../src/workflow";
 
-const ISSUE_1_PROMPT = `You are working in a git checkout of a small bun/TypeScript package.
+const implementPrompt = (
+  issueNumber: number,
+) => `You are working in a git checkout of a small bun/TypeScript package.
 
-Implement GitHub issue #1: add a \`slugify(input: string): string\` export from src/index.ts, alongside the existing \`greet\` export. It should lowercase the input, trim it, replace runs of non-alphanumeric characters with a single hyphen, and strip leading/trailing hyphens (e.g. "Hello, World!" -> "hello-world").
+Implement GitHub issue #${issueNumber} in this repository. First read the issue itself: run \`gh issue view ${issueNumber}\` to fetch its title and body, then implement exactly what it asks for.
 
-Add a passing test for it in src/index.test.ts, in the same style as the existing test for \`greet\`. Do not remove or break the existing \`greet\` export or its test.
+When the implementation is in place, add or update tests in the existing test file, in the same style as the tests already there, so that \`bun test\` passes for the new behaviour. Do not remove or break unrelated existing exports or their tests.
 
 When you are done, stop — do not run git commands, do not commit, do not open a PR.`;
 
-const FIX_REPAIR_PROMPT_PREFIX = `You are working in the same git checkout as before, in a fresh session with no memory of the prior conversation. \`bun test\` is failing. Look at the current state of src/index.ts and src/index.test.ts, diagnose the failure from the output below, and fix it. Do not remove or break the existing \`greet\` export or its test.
+const fixRepairPromptPrefix = (
+  issueNumber: number,
+) => `You are working in the same git checkout as before, in a fresh session with no memory of the prior conversation. \`bun test\` is failing while implementing GitHub issue #${issueNumber}. Look at the current state of the tree, diagnose the failure from the output below, and fix it. Do not remove or break unrelated existing exports or their tests.
 
 Do not run git commands, do not commit, do not open a PR.`;
 
-const FIX_REVIEW_PROMPT = `You are working in the same git checkout as before, in a fresh session with no memory of the prior conversation. \`bun test\` is currently passing for the \`slugify\` implementation in src/index.ts and its test in src/index.test.ts. Review both for correctness and edge cases (empty string, already-slug input, unicode, repeated separators, leading/trailing punctuation). If you find a real bug, fix it and keep tests passing. If everything already looks correct, make no changes and say so.
+const fixReviewPrompt = (
+  issueNumber: number,
+) => `You are working in the same git checkout as before, in a fresh session with no memory of the prior conversation. \`bun test\` is currently passing for the implementation of GitHub issue #${issueNumber}. Review the implementation and its tests for correctness and edge cases. If you find a real bug, fix it and keep tests passing. If everything already looks correct, make no changes and say so.
 
 Do not run git commands, do not commit, do not open a PR.`;
 
-const PR_METADATA_PROMPT = `You are working in the same git checkout as before, in a fresh session. Read src/index.ts and src/index.test.ts to see the \`slugify\` implementation and its tests that close GitHub issue #1 ("Add a slugify(input: string): string export, with tests").
+const prMetadataPrompt = (
+  issueNumber: number,
+) => `You are working in the same git checkout as before, in a fresh session. Read GitHub issue #${issueNumber} via \`gh issue view ${issueNumber}\` and the working tree changes to see what was implemented to close it.
 
-Do not modify any files. Respond only with the requested JSON object: the git branch name this change should live on (lowercase words joined by hyphens, prefixed with factory/, e.g. factory/issue-1-slugify), a concise, accurate PR title, and a short PR body (a couple of sentences plus a bullet list of what changed).`;
+Do not modify any files and do not run mutating git commands. Respond only with the requested JSON object: the git branch name this change should live on (lowercase words joined by hyphens, prefixed with factory/issue-${issueNumber}-), a concise, accurate PR title, and a short PR body (a couple of sentences plus a bullet list of what changed).`;
 
 const PrMetadataOutput = Schema.Struct({
   title: Schema.String,
@@ -54,28 +62,35 @@ const PrMetadataOutput = Schema.Struct({
 export interface PrMetadata {
   readonly title: string;
   readonly body: string;
-  readonly branch: string;
+  /**
+   * D32: the branch hint is agent-supplied and genuinely optional — the
+   * recorded structured-output schema keeps it optional, and extraction
+   * failure (or an old corpus that predates the field) is handled by
+   * `resolvePrMetadata`'s domain fallback. Not typed required, because the
+   * runtime's `??` fallback is the honest contract, not an implementation
+   * detail.
+   */
+  readonly branch?: string;
 }
 
-const TRACKED_FILES = ["src/index.ts", "src/index.test.ts"] as const;
-
 /**
- * Substrings that must still be present in each tracked file after the fix
- * step for "step 2's contribution survived" to be considered true, above and
- * beyond "the file wasn't literally reverted to the seed". Chosen from the
- * actual 0a-1/0a-2 implement-step output, not guessed.
+ * The tier-3 domain fallback (extraction failure) remains the only place this
+ * workflow hardcodes anything task-specific: the branch hint and the PR copy
+ * below are for the case where the agent step failed to produce structured
+ * output. On the happy path the agent supplies branch/title/body itself, so
+ * this workflow stays generic across issues — REQUIRED_MARKERS (and any other
+ * slugify-specific assertion) has no place here.
  */
-const REQUIRED_MARKERS: Readonly<Record<string, ReadonlyArray<string>>> = {
-  "src/index.ts": ["function slugify", "function greet"],
-  "src/index.test.ts": ["slugify", "greet"],
-};
-
 export type PrMetadataMechanism = "extracted" | "hardcoded-fallback";
+
+const TRACKED_FILES = ["src/index.ts", "src/index.test.ts"] as const;
 
 function resolvePrMetadata(
   step: AgentResult<PrMetadata>,
   issueNumber: number,
-): PrMetadata & { readonly mechanism: PrMetadataMechanism } {
+): { readonly title: string; readonly body: string; readonly branch: string } & {
+  readonly mechanism: PrMetadataMechanism;
+} {
   if (step.output !== undefined) {
     return {
       title: step.output.title,
@@ -111,7 +126,7 @@ export default defineWorkflow("implement-issue", {
   output: Output,
   run: async (ctx, input) => {
     // Step 2: implement.
-    await ctx.agent("implement", ISSUE_1_PROMPT);
+    await ctx.agent("implement", implementPrompt(input.issueNumber));
 
     // Snapshot immediately after the implement step, before anything else touches the tree.
     const snapshotAfterImplement = await snapshotFiles(ctx.dir, TRACKED_FILES);
@@ -137,8 +152,8 @@ export default defineWorkflow("implement-issue", {
     // the sandbox-reuse question genuinely).
     const fixPrompt =
       testAfterImplement.exitCode === 0
-        ? FIX_REVIEW_PROMPT
-        : `${FIX_REPAIR_PROMPT_PREFIX}\n\nSTDOUT:\n${testAfterImplement.stdout}\n\nSTDERR:\n${testAfterImplement.stderr}`;
+        ? fixReviewPrompt(input.issueNumber)
+        : `${fixRepairPromptPrefix(input.issueNumber)}\n\nSTDOUT:\n${testAfterImplement.stdout}\n\nSTDERR:\n${testAfterImplement.stderr}`;
     await ctx.agent("fix", fixPrompt);
 
     // Strong assertion: snapshot right after the fix step *completes*,
@@ -150,7 +165,7 @@ export default defineWorkflow("implement-issue", {
         before: snapshotAfterImplement,
         after: snapshotAfterFix,
         seed: seedSnapshot,
-        requiredMarkers: REQUIRED_MARKERS,
+        requiredMarkers: {},
       });
       return { pass: result.intact, details: { report: result.report, files: result.files } };
     });
@@ -159,15 +174,21 @@ export default defineWorkflow("implement-issue", {
     const testAfterFix = await ctx.exec(["bun", "test"]);
 
     // Step 6: PR metadata via structured output (D32: branch included).
-    const prMetadataStep = await ctx.agent<PrMetadata>("pr-metadata", PR_METADATA_PROMPT, {
-      output: PrMetadataOutput,
-    });
+    const prMetadataStep = await ctx.agent<PrMetadata>(
+      "pr-metadata",
+      prMetadataPrompt(input.issueNumber),
+      {
+        output: PrMetadataOutput,
+      },
+    );
     const prMetadata = resolvePrMetadata(prMetadataStep, input.issueNumber);
 
     // Step 7: deterministic write-back (D9) — host git + gh, not an agent instruction.
     // repoSlug/baseBranch come from the run environment (config), not the workflow (D27/D32);
     // a push or `gh pr create` collision gets runId-suffixed and retried once by the runtime.
-    const commitMessage = `Implement slugify per issue #${input.issueNumber}\n\nCloses #${input.issueNumber}.\n\nAutomated by the factory implement-issue workflow.`;
+    const commitMessage = `Implement issue #${input.issueNumber}
+
+Closes #${input.issueNumber}.\n\nCloses #${input.issueNumber}.\n\nAutomated by the factory implement-issue workflow.`;
     const writeBackResult = await ctx.writeBack({
       branch: prMetadata.branch,
       commitMessage,

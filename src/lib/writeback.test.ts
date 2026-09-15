@@ -16,7 +16,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, test } from "bun:test";
 import { hostExec } from "./exec";
-import { cleanStrayArtifacts, writeBack } from "./writeback";
+import { cleanStrayArtifacts, writeBack, type ExecFn } from "./writeback";
+import type { ExecResult } from "./exec";
 
 const FAKE_GH_URL = "https://github.com/local/fixture/pull/1";
 
@@ -94,6 +95,105 @@ describe("cleanStrayArtifacts", () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+describe("writeBack collision signatures (M4b)", () => {
+  function scriptedExec(push: ExecResult, pr: ExecResult): ExecFn {
+    let pushCalls = 0;
+    return (argv) => {
+      const cmd = argv[1] ?? "";
+      if (cmd === "status") {
+        return Promise.resolve({
+          command: argv.join(" "),
+          exitCode: 0,
+          stdout: " M work.ts\n",
+          stderr: "",
+        });
+      }
+      if (cmd === "add" || cmd === "commit" || cmd === "checkout") {
+        return Promise.resolve({ command: argv.join(" "), exitCode: 0, stdout: "", stderr: "" });
+      }
+      if (cmd === "push") {
+        pushCalls++;
+        return Promise.resolve(pushCalls === 1 ? push : { ...push, exitCode: 0, stderr: "" });
+      }
+      if (cmd === "pr") return Promise.resolve(pr);
+      throw new Error(`unexpected command in test: ${argv.join(" ")}`);
+    };
+  }
+
+  async function runWriteback(push: ExecResult, pr: ExecResult) {
+    return writeBack(
+      {
+        dir: "/nowhere",
+        branch: "factory/hint",
+        baseBranch: "main",
+        repoSlug: "local/fixture",
+        commitMessage: "m",
+        prTitle: "t",
+        prBody: "b",
+        runId: "run-a1b2c3d4",
+      },
+      scriptedExec(push, pr),
+    );
+  }
+
+  test("a non-fast-forward rejection is treated as a collision and retried once", async () => {
+    const rejected: ExecResult = {
+      command: "git push",
+      exitCode: 1,
+      stdout: "",
+      stderr:
+        "To git@github.com:acme/widgets.git\n ! [rejected]        factory/hint -> factory/hint (non-fast-forward)\nerror: failed to push some refs",
+    };
+    const ok: ExecResult = {
+      command: "gh pr create",
+      exitCode: 0,
+      stdout: "https://github.com/local/fixture/pull/9\n",
+      stderr: "",
+    };
+    const result = await runWriteback(rejected, ok);
+    expect(result.collided).toBe(true);
+    expect(result.branch).toBe("factory/hint-a1b2c3d4");
+  });
+
+  test("an auth-failure stderr does not collide and does not retry", async () => {
+    const authFailed: ExecResult = {
+      command: "git push",
+      exitCode: 1,
+      stdout: "",
+      stderr:
+        "git@github.com: Permission denied (publickey).\nfatal: Could not read from remote repository.\n\nPlease make sure you have the correct access rights",
+    };
+    const skippedPr: ExecResult = {
+      command: "(skipped)",
+      exitCode: -1,
+      stdout: "",
+      stderr: "push failed or skipped, pr create skipped",
+    };
+    const result = await runWriteback(authFailed, skippedPr);
+    expect(result.collided).toBe(false);
+    expect(result.branch).toBe("factory/hint");
+    expect(result.prResult.exitCode).toBe(-1);
+  });
+
+  test("a gh auth failure does not collide and does not retry", async () => {
+    const pushed: ExecResult = {
+      command: "git push",
+      exitCode: 0,
+      stdout: "",
+      stderr: "",
+    };
+    const ghAuthFailed: ExecResult = {
+      command: "gh pr create",
+      exitCode: 1,
+      stdout: "",
+      stderr: "gh: HTTP 401: Bad credentials (https://api.github.com/graphql)",
+    };
+    const result = await runWriteback(pushed, ghAuthFailed);
+    expect(result.collided).toBe(false);
+    expect(result.branch).toBe("factory/hint");
   });
 });
 
