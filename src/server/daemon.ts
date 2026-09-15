@@ -93,6 +93,7 @@ export async function startDaemon(options: DaemonOptions): Promise<DaemonHandle>
             baseBranch: options.config.repo.baseBranch,
           },
           adapter,
+          maxConcurrentRuns,
           workspace: {
             workspaceRoot: options.config.workspaceRoot,
             sshUrl: options.config.repo.sshUrl,
@@ -103,9 +104,22 @@ export async function startDaemon(options: DaemonOptions): Promise<DaemonHandle>
       }
       const dir = `${wiring.workDirRoot}/issue-${item.issueNumber}`;
       await resetClone(dir, wiring.cloneSshUrl, wiring.gitIdentity);
+      // No-config legacy dispatch (the pre-D27 `--dispatch-*` shape): phase 3's
+      // input contract supplied the branch and the repo environment in the
+      // input, so the dispatcher keeps supplying exactly that. D32 moved the
+      // write-back environment into the runtime, but a phase-3-era workflow
+      // loaded by path still reads these fields, so they are restored rather
+      // than silently dropped. `repo` is additionally passed so a D32-era
+      // workflow routed through the legacy wiring still gets a working
+      // `ctx.writeBack`.
       return startTrackedRun(db, workflow, {
         dir,
-        input: { issueNumber: item.issueNumber },
+        input: {
+          issueNumber: item.issueNumber,
+          branch: `factory/issue-${item.issueNumber}`,
+          repoSlug: wiring.repoSlug,
+          baseBranch: wiring.baseBranch,
+        },
         repo: { slug: wiring.repoSlug, baseBranch: wiring.baseBranch },
         adapter,
       });
