@@ -10,7 +10,7 @@ import { mkdir } from "node:fs/promises";
 import { dirname } from "node:path";
 import { Effect, type Fiber } from "effect";
 type AnyFiber = Fiber.Fiber<unknown, unknown>;
-import type { FactoryConfig, RunEnvironment } from "../config";
+import type { FactoryConfig } from "../config";
 import { resetClone, type GitIdentity } from "../lib/clone";
 import { hostExec } from "../lib/exec";
 import { loadWorkflow } from "../lib/load-workflow";
@@ -53,15 +53,6 @@ export interface DaemonOptions {
   readonly config?: FactoryConfig;
 }
 
-export function toRunEnvironment(config: FactoryConfig): RunEnvironment {
-  return {
-    repo: config.repo,
-    workspaceRoot: config.workspaceRoot,
-    maxConcurrentRuns: config.maxConcurrentRuns,
-    retainedWorkspaces: config.retainedWorkspaces,
-  };
-}
-
 export interface DaemonHandle {
   readonly server: ReturnType<typeof serve>;
   readonly dispatchFiber: AnyFiber | undefined;
@@ -76,7 +67,7 @@ export async function startDaemon(options: DaemonOptions): Promise<DaemonHandle>
     db,
     adapter,
     port: options.port,
-    ...(options.config !== undefined ? { runEnv: toRunEnvironment(options.config) } : {}),
+    ...(options.config !== undefined ? { config: options.config } : {}),
   });
 
   let dispatchFiber: AnyFiber | undefined;

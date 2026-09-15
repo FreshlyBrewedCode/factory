@@ -23,7 +23,7 @@ export interface RepoConfig {
 
 export interface FactoryConfig {
   readonly repo: RepoConfig;
-  readonly workflows: ReadonlyArray<WorkflowDefinition>;
+  readonly workflows: ReadonlyArray<WorkflowDefinition<any, any>>;
   readonly workspaceRoot: string;
   readonly maxConcurrentRuns: number;
   readonly retainedWorkspaces: number;
@@ -31,7 +31,7 @@ export interface FactoryConfig {
 
 export interface FactoryConfigInput {
   readonly repo: RepoConfig;
-  readonly workflows: ReadonlyArray<WorkflowDefinition>;
+  readonly workflows: ReadonlyArray<WorkflowDefinition<any, any>>;
   readonly workspaceRoot?: string;
   readonly maxConcurrentRuns?: number;
   readonly retainedWorkspaces?: number;
@@ -48,8 +48,9 @@ export function defineConfig(config: FactoryConfigInput): FactoryConfig {
 }
 
 /**
- * What the running daemon actually consumes from a `FactoryConfig`: the run
- * environment minus the workflow list (P2's registry serves that).
+ * A projection of `FactoryConfig` for consumers that run workflows but do not
+ * serve the registry (e.g. the dispatcher's wiring). The HTTP layer takes the
+ * full config directly.
  */
 export interface RunEnvironment {
   readonly repo: RepoConfig;

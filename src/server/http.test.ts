@@ -4,9 +4,11 @@ import { join } from "node:path";
 import { describe, expect, test } from "bun:test";
 import { createSlowFakeAdapter } from "../replay/adapter";
 import { openStore } from "../persistence/store";
+import { loadFactoryConfig } from "../config";
 import { serve } from "./http";
 
 const ECHO_WORKFLOW = `${import.meta.dir}/../../test/fixtures/echo-workflow.ts`;
+const FIXTURE_CONFIG = `${import.meta.dir}/../../test/fixtures/factory.config.ts`;
 
 interface SseFrame {
   /** The frame's `id:` line, i.e. the event's `seq` — `undefined` today is the G3 bug. */
@@ -59,6 +61,52 @@ async function readSseUntilTerminal(
   }
   return frames;
 }
+
+describe("GET /api/workflows (D30)", () => {
+  test("lists the config's workflows with id and JSON Schema input", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "factory-workflows-test-"));
+    const db = openStore(join(dir, "factory.db"));
+    const adapter = createSlowFakeAdapter([], 1);
+    const config = await loadFactoryConfig(FIXTURE_CONFIG);
+    const server = serve({ db, adapter, port: 0, config });
+    const base = `http://localhost:${server.port}`;
+
+    try {
+      const res = await fetch(`${base}/api/workflows`);
+      expect(res.status).toBe(200);
+      expect(res.headers.get("content-type")).toContain("application/json");
+      const workflows = (await res.json()) as Array<{
+        id: string;
+        inputSchema: { type: string; properties: Record<string, unknown> };
+      }>;
+      expect(workflows.map((w) => w.id)).toEqual(["registry-test"]);
+      expect(workflows[0]!.inputSchema.type).toBe("object");
+      expect(workflows[0]!.inputSchema.properties).toHaveProperty("issueNumber");
+    } finally {
+      await server.stop(true);
+      db.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("serves an empty list with no config (legacy path)", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "factory-workflows-empty-test-"));
+    const db = openStore(join(dir, "factory.db"));
+    const adapter = createSlowFakeAdapter([], 1);
+    const server = serve({ db, adapter, port: 0 });
+    const base = `http://localhost:${server.port}`;
+
+    try {
+      const res = await fetch(`${base}/api/workflows`);
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual([]);
+    } finally {
+      await server.stop(true);
+      db.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
 
 describe("phase 4 SPA serving", () => {
   test("serves the bundled SPA at / and deep links, and /api/* same-origin", async () => {

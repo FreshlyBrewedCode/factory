@@ -1,6 +1,6 @@
 # STATUS
 
-> **Phases 0–4 complete; phase 5 (usable POC) is in progress — P1 done, P2 next.** Phase 4 was rescoped on
+> **Phases 0–4 complete; phase 5 (usable POC) is in progress — P1–P2 done, P3 next.** Phase 4 was rescoped on
 > 2026-09-15: S1–S4 landed, and S5/S6 dissolved into the new phase 5 — the Workflows/Dispatch pages
 > are dropped, the workflow registry became phase 5's P2, and the live leg moved to phase 5's exit
 > where concurrency makes it worth watching. Every completed phase met its exit criterion on both
@@ -10,7 +10,7 @@
 >
 > **Phase 5 is the first end state a person can use** — start a run from the browser or
 > `factory start`, watch it, cancel it, several at once. Decided 2026-09-15 as D27–D33 / ADR 0005;
-> **P1 (config, per-run trees, admission) is built; D30–D33 remain.**
+> **P1–P2 (config, per-run trees, admission, the workflow registry) are built; D31–D33 remain.**
 
 Project pitch, stack and constraints live in `AGENTS.md`. This file tracks where we are, what
 we have decided, and what is still unknown.
@@ -30,10 +30,11 @@ durable event log (phase 2), the server and dispatcher (phase 3) and the SPA (ph
 `bun test` is 96 green and the playwright suite is 7 specs through `nix develop`.
 
 **What does not exist yet is the browser-facing start surface.** `POST /api/runs` still demands
-a filesystem path a browser cannot supply (G4 — G4 closes in P3) and there is no workflow
-registry (P2). The concurrency groundwork is no longer part of that gap: P1 landed the config
+a filesystem path a browser cannot supply (G4 — G4 closes in P3). The registry half of that gap
+closed in P2: `GET /api/workflows` serves the config's workflow array with each input schema as
+JSON Schema (D30), and the server consumes the loaded config directly. P1 landed the config
 module (D27), per-run working trees (D28) and the shared admission limit (D29), so manual starts
-and the dispatcher now share one ceiling. The remainder of phase 5 is D30–D33.
+and the dispatcher now share one ceiling. The remainder of phase 5 is D31–D33.
 
 Everything up to here is history; it lives in [`docs/phases-completed.md`](docs/phases-completed.md).
 The live state is the four sections below: what is on disk, what is still unknown, what is deferred,
@@ -285,8 +286,19 @@ boundary) in `admission.test.ts` and `dispatch.test.ts`. _Not covered here:_ the
 plan also named a playwright leg with two live runs on screen; it rides with the exit criterion
 (P6) rather than the fakes-provable P-step.
 
-**P2 — `GET /api/workflows`** from the config's array, input schemas as JSON Schema (D30). Closes
-the registry half of G4. _Validated by:_ `http.test.ts` against a fixture config.
+**P2 — `GET /api/workflows`** from the config's array, input schemas as JSON Schema (D30) — **done
+(2026-09-15).** `src/server/http.ts` now takes the loaded `FactoryConfig` directly (the derived
+`runEnv` option is gone), and `GET /api/workflows` maps the config's workflow array to
+`{id, inputSchema}`, reusing the exact conversion `ctx.agent`'s `outputSchema` boundary performs
+(`Schema.toJsonSchemaDocument(...).schema`, `run.ts:146`). No filesystem scan (D27). With no
+config the endpoint serves an empty list, keeping the legacy path-based API unchanged; `daemon.ts`
+passes `options.config` through and dropped its duplicate `toRunEnvironment`. _Validated by:_
+`src/server/http.test.ts` — two TDD tests over the real server against
+`test/fixtures/factory.config.ts` (a fixture config with a typed-input fixture workflow): the
+registry lists the fixture's id with a JSON-Schema `object` input carrying its fields, and the
+no-config path serves `[]`. Registering the config's array took
+`FactoryConfig.workflows` to `WorkflowDefinition<any, any>` — the variance-erased form; the
+concrete generics are unsound as array members since `run`'s input parameter is contravariant.
 **P3 — `POST /api/runs {workflowId, input}` + `factory start`** (D31). Closes the rest of G4.
 _Validated by:_ `http.test.ts` for decode failures (400) and the limit (409); a CLI test against a
 real daemon for `factory start` and `--watch`.
@@ -328,9 +340,8 @@ Phases 0–4 are complete on every exit criterion — fakes and live for 0–3, 
 rescope. Bullets per phase are above; the full record is
 [`docs/phases-completed.md`](docs/phases-completed.md).
 
-**Next: phase 5, step P2** — `GET /api/workflows` from the config's array (D30). P1 (per-run
-working trees, the config module and the admission limit) landed 2026-09-15; D30–D33 are the
-remaining unbuilt decisions.
+**Next: phase 5, step P3** — `POST /api/runs {workflowId, input}` + `factory start` (D31), closing
+the rest of G4. P1–P2 landed 2026-09-15; D31–D33 are the remaining unbuilt decisions.
 
 Read **ADR 0005** first — it carries D27–D33 and, more usefully, the reasoning for the two things
 that look like bigger jobs than they are. The short version:
@@ -343,8 +354,11 @@ that look like bigger jobs than they are. The short version:
   admission function (`src/server/admission.ts`) now cover both `POST /api/runs` (409) and
   the dispatcher (skip) — see `src/server/concurrency.test.ts`.
 
-For P2, read `src/config.ts` (the workflow array is the registry `GET /api/workflows` serves)
-and D31's schema-to-JSON-Schema reuse from `ctx.agent`'s boundary (`run.ts:146`).
+For P3, read **ADR 0005** (D31 is the whole spec: decode through the workflow's own Effect Schema,
+400 on decode failure, 409 over the limit — the decode already runs at `run.ts:324`), then
+`src/server/http.ts` (the handler now holds the loaded `FactoryConfig`, so `workflowId` resolves
+against `options.config.workflows` — the same array `GET /api/workflows` serves) and
+`src/server/admission.ts` (already wired; the 409 branch persists as-is).
 
 Left over from earlier phases, not exit-blocking, worth doing opportunistically:
 

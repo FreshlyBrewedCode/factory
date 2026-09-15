@@ -16,6 +16,7 @@ import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, test } from "bun:test";
+import { defineConfig } from "../config";
 import { getRunEvents, openStore } from "../persistence/store";
 import { createSlowFakeAdapter } from "../replay/adapter";
 import { admitRun } from "./admission";
@@ -80,17 +81,18 @@ describe("phase 5 P1: per-run working trees (D28) over the real server", () => {
         30,
       ),
       port: 0,
-      runEnv: {
+      config: defineConfig({
         repo: {
           sshUrl: seed,
           identity: { name: "Factory", email: "factory@factory.test" },
           baseBranch: "main",
           slug: "acme/widgets",
         },
+        workflows: [],
         workspaceRoot,
         maxConcurrentRuns: 4,
         retainedWorkspaces: 10,
-      },
+      }),
     });
     const base = `http://localhost:${server.port}`;
 
@@ -166,17 +168,18 @@ describe("phase 5 P1: per-run working trees (D28) over the real server", () => {
         300,
       ),
       port: 0,
-      runEnv: {
+      config: defineConfig({
         repo: {
           sshUrl: seed,
           identity: { name: "Factory", email: "factory@factory.test" },
           baseBranch: "main",
           slug: "acme/widgets",
         },
+        workflows: [],
         workspaceRoot: join(root, "workspaces"),
         maxConcurrentRuns: 1,
         retainedWorkspaces: 10,
-      },
+      }),
     });
     const base = `http://localhost:${server.port}`;
     const ECHO_WORKFLOW = `${import.meta.dir}/../../test/fixtures/echo-workflow.ts`;

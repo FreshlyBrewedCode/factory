@@ -5,6 +5,7 @@
  * job in phase 3 is the dispatcher's scheduling loop, `src/server/dispatch.ts`).
  *
  * Routes:
+ *   GET  /api/workflows          -> [{id, inputSchema}] from the config (D30)
  *   GET  /api/runs              -> RunSummary[]              (`listRuns`)
  *   GET  /api/runs/:id          -> RunSummary | 404
  *   POST /api/runs              -> {runId}, starts a run      (`startTrackedRun`)
@@ -28,7 +29,8 @@
 
 import type { Database } from "bun:sqlite";
 import { isTerminal, type RunEvent } from "../events";
-import type { RunEnvironment } from "../config";
+import type { FactoryConfig } from "../config";
+import { Schema } from "effect";
 import { resetClone, type GitIdentity } from "../lib/clone";
 import { loadWorkflow } from "../lib/load-workflow";
 import { getRunEvents, listRuns, type RunSummary } from "../persistence/store";
@@ -42,11 +44,12 @@ export interface ServerOptions {
   readonly db: Database;
   readonly adapter: AgentAdapter;
   /**
-   * The run environment from `factory.config.ts` (D27). Absent = the phase 3
-   * path-based API behaves exactly as before (no limit, explicit dir+clone)
-   * — the dispatcher legitimately keeps supplying filesystem paths (D31).
+   * The loaded `factory.config.ts` (D27). Absent = the phase 3 path-based API
+   * behaves exactly as before (no limit, explicit dir+clone, `/api/workflows`
+   * serves an empty list) — the dispatcher legitimately keeps supplying
+   * filesystem paths (D31).
    */
-  readonly runEnv?: RunEnvironment;
+  readonly config?: FactoryConfig;
 }
 
 /** `RunSummary` plus this process's live-registry bit — what the SPA reads. */
@@ -146,10 +149,19 @@ export function createHandler(options: ServerOptions): (req: Request) => Promise
       return json(listSummaries(options.db));
     }
 
+    if (req.method === "GET" && url.pathname === "/api/workflows") {
+      return json(
+        (options.config?.workflows ?? []).map((workflow) => ({
+          id: workflow.id,
+          inputSchema: Schema.toJsonSchemaDocument(workflow.input).schema,
+        })),
+      );
+    }
+
     if (req.method === "POST" && url.pathname === "/api/runs") {
       // D29: the one admission function, consulted here and on the dispatch
       // path alike. Without config there is no limit to enforce.
-      const maxConcurrentRuns = options.runEnv?.maxConcurrentRuns;
+      const maxConcurrentRuns = options.config?.maxConcurrentRuns;
       if (maxConcurrentRuns !== undefined && !admitRun(maxConcurrentRuns, activeRunIds().length)) {
         return json(
           { error: `concurrency limit reached (max ${maxConcurrentRuns} concurrent runs)` },
@@ -166,7 +178,7 @@ export function createHandler(options: ServerOptions): (req: Request) => Promise
       if (typeof body.workflowPath !== "string") {
         return json({ error: "workflowPath (string) is required" }, { status: 400 });
       }
-      if (typeof body.dir !== "string" && options.runEnv === undefined) {
+      if (typeof body.dir !== "string" && options.config === undefined) {
         return json({ error: "dir (string) is required" }, { status: 400 });
       }
 
@@ -181,16 +193,17 @@ export function createHandler(options: ServerOptions): (req: Request) => Promise
         await resetClone(body.dir, body.clone.sshUrl, body.clone.identity);
       }
 
+      const runEnv = options.config;
       const runId = await startTrackedRun(options.db, workflow, {
         dir: body.dir,
         workspace:
-          options.runEnv === undefined
+          runEnv === undefined
             ? undefined
             : {
-                workspaceRoot: options.runEnv.workspaceRoot,
-                sshUrl: options.runEnv.repo.sshUrl,
-                identity: options.runEnv.repo.identity,
-                retainedWorkspaces: options.runEnv.retainedWorkspaces,
+                workspaceRoot: runEnv.workspaceRoot,
+                sshUrl: runEnv.repo.sshUrl,
+                identity: runEnv.repo.identity,
+                retainedWorkspaces: runEnv.retainedWorkspaces,
               },
         input: body.input,
         adapter: options.adapter,

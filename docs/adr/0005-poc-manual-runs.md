@@ -3,10 +3,11 @@
 ## Status
 
 Proposed, 2026-09-15. Pre-implementation, the same posture ADR 0002 took: every decision here is
-falsifiable by phase 5's own exit criterion. **Implemented so far: D27–D29 (phase 5 P1)** — the
-config module, the per-run workspace allocator and the single admission function are built and
-validated (`src/config.ts`, `src/lib/workspace.ts`, `src/server/admission.ts`,
-`src/server/concurrency.test.ts`); D30–D33 are still code-only decisions. The overall posture stays
+falsifiable by phase 5's own exit criterion. **Implemented so far: D27–D30 (phase 5 P1–P2)** — the config module, the per-run workspace
+allocator, the single admission function and `GET /api/workflows` are built and validated
+(`src/config.ts`, `src/lib/workspace.ts`, `src/server/admission.ts`,
+`src/server/concurrency.test.ts`, `src/server/http.test.ts`); D31–D33 are still code-only
+decisions. The overall posture stays
 Proposed until P6's exit criterion runs; nothing below has been falsified. Supersedes nothing;
 widens D5 (workflow registration), D11 (agent-supplied PR metadata) and D24 (the WIP limit), and
 fires the "concurrency isolation" deferral that STATUS.md had parked on phase 5 with a trigger.
