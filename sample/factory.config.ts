@@ -6,7 +6,8 @@
  * directory and swap the repo/identity for your own target repo.
  */
 
-import { defineConfig } from "../src/config";
+import { defineConfig } from "@frebreco/factory";
+
 import implementIssue from "./workflows/implement-issue.ts";
 
 export default defineConfig({

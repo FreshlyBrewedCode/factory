@@ -5,6 +5,16 @@ project config (`factory.config.ts`), one minimal workflow
 (`workflows/implement-issue.ts`), and nothing else — the runtime, server
 and UI are the factory repo's.
 
+Both files import from `@frebreco/factory`, exactly as a project that
+installed factory as a dev dependency would; in this repo that specifier
+resolves back to `src/index.ts` through the package's own `exports`.
+
+This sample predates `factory init` and keeps the **root-config layout**
+(`factory.config.ts` beside the workflows, rather than under `.factory/`).
+That is deliberate: it is the fallback path `findFactoryConfig` still
+supports, so the sample doubles as its regression. A project scaffolded
+today gets `.factory/factory.config.ts` instead — see the repo README.
+
 The config targets <https://github.com/FreshlyBrewedCode/factory-spike>
 (private). Clone this directory, swap the `repo` block for your own
 target repo, and it is yours.
