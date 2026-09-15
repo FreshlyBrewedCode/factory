@@ -81,6 +81,10 @@ export function buildStartInput(
   for (const field of fields) {
     const raw = values[field.name];
     if (field.type === "boolean") {
+      // A checkbox cannot express "unset", so an untouched optional boolean
+      // (unchecked) omits the key instead of sending an explicit `false`;
+      // raw-JSON mode covers explicit false.
+      if (!field.required && raw !== true) continue;
       input[field.name] = raw === true;
       continue;
     }
