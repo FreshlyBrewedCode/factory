@@ -25,7 +25,9 @@ factory
 - Read `STATUS.md` to understand the current status at the end of the session, consider updating `STATUS.md` using /handoff
 
 - documentation layout
-  - `STATUS.md` — where we are, what we decided, what is still unknown. Keep it current and free of stale claims; it is the entry point
+  - `STATUS.md` — where we are, what is still unknown, and the phase we are in. Keep it current and free of stale claims; it is the entry point. It indexes rather than contains: completed phases and the decision register live in their own files, so STATUS stays readable as *status*
+  - `docs/decisions.md` — the decision register, D1–DN with rationale. `STATUS.md` carries a one-line index of these; where a decision has an owning ADR, that ADR is the deeper record
+  - `docs/phases-completed.md` — completed phases in full, as written while they ran. `STATUS.md` keeps a few bullets each. Not current status; kept for the file pointers and the reasoning later phases inherit
   - `docs/adr/NNNN-<slug>.md` — decision records (Status / Context / Decision / Consequences). Write one when a phase exits, or when a decision is made that later phases must not re-litigate
   - `docs/findings/` — evidence from spikes and experiments, one document per subtask, written for a reader who was not there. Kept separate from the decisions drawn from it, so a wrong conclusion can be revised without losing the measurements
   - `docs/research/` — reading notes on external sources, captured before we have run anything. Annotate rather than delete once a spike contradicts them
