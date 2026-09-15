@@ -29,6 +29,39 @@ live leg is what could falsify it. Supersedes nothing;
 widens D5 (workflow registration), D11 (agent-supplied PR metadata) and D24 (the WIP limit), and
 fires the "concurrency isolation" deferral that STATUS.md had parked on phase 5 with a trigger.
 
+**Review corrections (2026-09-15, same day as the fakes leg).** A fix pass against the built
+phase 5 broke four masks that the fakes had papered over; none overturns a decision, but four
+behaviours deviate from the first implementation, recorded here so phase 6 does not re-litigate
+them:
+
+- **D28's workspace now pushes to the configured remote, not the mirror.** `allocateWorkspace`
+  clones from `<workspaceRoot>/.mirror.git` for speed, but `git clone <mirror>` points the
+  clone's `origin` at the mirror — so D9's `git push -u origin <branch>` would have landed in the
+  local cache and never reached the real remote in a live deployment. The allocation re-points
+  `origin` at the configured `sshUrl` (fetches stay on the mirror; write-back goes to the remote).
+  `src/lib/workspace.test.ts` now asserts the run tree's push target is the configured remote,
+  with a local bare repo as the remote and the mirror as cache.
+- **D29's admission is atomic at the registry.** The first cut checked `admitRun` in the HTTP
+  handler and only registered the run after workspace allocation — an await gap N concurrent
+  POSTs could all walk through, and the same window existed on the dispatch path. `startTrackedRun`
+  now reserves the registry slot before any `await` (check-then-set with nothing between), fails
+  atomically with a `ConcurrencyLimitError` over the limit, and releases the slot when
+  allocation/startup throws. `concurrency.test.ts` gained the regression: limit 1, two
+  near-simultaneous POSTs through the real server → exactly one 201 and one 409.
+- **Eviction can no longer evict a live run's tree.** `evictOldWorkspaces` takes the
+  protected entries (the trees of runs the process still holds, driven from the same registry
+  admission reserves into) and `defineConfig` refuses `retainedWorkspaces < maxConcurrentRuns` at
+  load.
+- **Cancelling a run that is still reserving is deferred into run start** rather than dropped or
+  orphaned: the cancel marks the reserved slot; the moment the run starts it is cancelled and
+  ends as a clean `RunCancelled` (`runs.test.ts`).
+
+One consequence of D32 also got restated rather than built past: the legacy (no-config)
+`--dispatch-*` path posts phase 3's original input shape and carries `repoSlug`/`baseBranch` in
+the input again, so phase-3-era workflow files loaded by path keep working; the shipped
+`implement-issue` is not shaped by them (its input is `{issueNumber}`), and STATUS.md's earlier
+"backward compatibility kept" claim was prose, not truth, until this fix.
+
 ## Context
 
 Phase 4 put the SPA on screen against real data. What it does not do is let anyone _start_

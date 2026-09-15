@@ -32,7 +32,7 @@ we have decided, and what is still unknown.
 
 **All three columns exist and are validated, fakes and live.** The workflow runtime (phase 1), the
 durable event log (phase 2), the server and dispatcher (phase 3) and the SPA (phase 4) are built;
-`bun test` is 119 green and the playwright suite is 11 specs through `nix develop`.
+`bun test` is 133 green and the playwright suite is 11 specs through `nix develop`.
 
 **The workflow registry is live end to end, and `implement-issue` is now reusable (D32).**
 `POST /api/runs` accepts
@@ -83,7 +83,12 @@ firing; the react plugin is now enabled for TSX — `rules-of-hooks`/`exhaustive
 reformats Markdown, including this file; the script now names `src`, `e2e`, and the root configs.
 `lint` exits 0 across the repo; the remaining output is all `effecttsgo` advisory warnings (async
 functions, `Date.now()`, `console.*`, `process.env`, `global-fetch`) that flag idiomatic-Effect
-alternatives rather than defects — none currently block the exit code.
+alternatives rather than defects — none currently block the exit code. **Convention worth stating
+out loud (recorded 2026-09-15, from the phase-5 review):** since phase 5, workflow inputs are
+remote-facing — a browser or script client supplies them over `POST /api/runs` — so any workflow
+impl (or fixture) that interpolates an input value into a shell command (`sh -c`, `ctx.exec`)
+accepts arbitrary shell commands from anyone who can start a run. That is an operator hazard to
+treat deliberately in phase 6, not an accident to keep quiet about.
 
 Dependencies (verified against `node_modules` 2026-09-14, not just the manifest):
 `@tanstack/ai` `0.54.0`, `-opencode` `0.4.5`, `-sandbox` `0.5.7`, `-sandbox-local-process`
@@ -276,20 +281,34 @@ shared resource is the working directory (D28).
 **P1 — Per-run working trees and concurrency — done (2026-09-15).** `factory.config.ts` (D27):
 `src/config.ts` (`defineConfig`, `loadFactoryConfig`, `toRunEnvironment`) — repo/identity/base
 branch/slug, the workflow array _as_ the registry, workspace root (default
-`.factory/workspaces`), `maxConcurrentRuns` (default 3), `retainedWorkspaces` (default 10); loaded
-by `factory serve --config <path>`. Working tree per run (D28): `src/lib/workspace.ts` allocates
+`.factory/workspaces`), `maxConcurrentRuns` (default 3), `retainedWorkspaces` (default 10, validated
+**>= maxConcurrentRuns** at load); loaded by `factory serve --config <path>`. Working tree per run
+(D28): `src/lib/workspace.ts` allocates
 `<workspaceRoot>/<runId>/` from a bare mirror `<workspaceRoot>/.mirror.git` refreshed (mutex
-serialized) from the configured `sshUrl` before each allocation, last-N evicted-oldest-first; the
+serialized) from the configured `sshUrl` before each allocation, last-N evicted-oldest-first
+(**except trees of runs this process still holds** — M2 review fix, and defineConfig refuses a
+retention below the concurrency limit); the
 start path `startTrackedRun` (`src/server/runs.ts`) is now async and allocates when no explicit
-`dir` is given. One admission function (D29): `src/server/admission.ts`'s `admitRun` over a single
-`maxConcurrentRuns`, consulted by `POST /api/runs` (409 over the limit) and `dispatch.ts` (skips
-the pass), replacing `hasActiveRun`'s boolean. Backward compatibility kept: the path-based
-`POST /api/runs {workflowPath, dir, clone}` works unchanged with no config (the dispatcher keeps
-supplying real filesystem paths per D31), and `DaemonOptions` carries the legacy wiring or a full
-`config`. _Validated by:_ `src/server/concurrency.test.ts` — two concurrent runs through the real
-server against slow-fake adapters over real sqlite, trees independently intact, RunStarted dirs
-disjoint — plus the admission boundary tests (409 once the limit binds, dispatcher skipping at the
-boundary) in `admission.test.ts` and `dispatch.test.ts`. _Not covered here:_ the phase-5
+`dir` is given, and the allocated tree's `origin` is re-pointed at the configured `sshUrl` so D9's
+push reaches the real remote rather than the mirror. One admission function (D29):
+`src/server/admission.ts`'s `admitRun` over a single
+`maxConcurrentRuns`; since the M1 review fix the slot is **reserved in the registry before any
+await** inside `startTrackedRun` (so two near-simultaneous `POST /api/runs` cannot both slip
+through — exactly one 201, one 409), consulted by `POST /api/runs` (409 over the limit) and
+`dispatch.ts` (skips the pass), replacing `hasActiveRun`'s boolean. Legacy dispatch honesty, restated
+after the M3 review: with no config, the `--dispatch-*` path posts phase 3's
+original input shape (`{issueNumber, branch, repoSlug, baseBranch}`) and supplies
+`repoSlug`/`baseBranch` from the `--dispatch-*` wiring, so phase-3-era workflow files loaded by
+path keep working; the shipped `implement-issue` workflow's own input is D32's `{issueNumber}`
+(and its extra legacy input fields are simply ignored on decode), and the
+dispatcher additionally passes `repo` from the wiring so a D32-era workflow routed through the
+legacy flags still gets a working `ctx.writeBack`. _Validated by:_ `src/server/concurrency.test.ts` —
+two concurrent runs through the real server against slow-fake adapters over real sqlite, trees
+independently intact, RunStarted dirs disjoint, plus a race regression: two near-simultaneous
+POSTs at limit 1 yield exactly one 201 and one 409 —
+plus the admission boundary tests (409 once the limit binds, dispatcher skipping at the
+boundary) in `admission.test.ts` and `dispatch.test.ts`, and the registry-level
+reservation/deferred-cancel tests in `runs.test.ts`. _Not covered here:_ the phase-5
 plan also named a playwright leg with two live runs on screen; it rides with the exit criterion
 (P6) rather than the fakes-provable P-step.
 
@@ -398,7 +417,12 @@ and the live leg watched end to end in the browser.
 
 Isolation (docker + secrets, D7's deferral — note D28 gave phase 5 _concurrency_ without it, and
 claimed no isolation in doing so), observability, cancellation correctness, and whatever phase 5's
-live leg surfaces.
+live leg surfaces. Candidate bullets already queued from the phase-5 review pass: workflow inputs
+are remote-facing since phase 5, so shell-command-from-input remains an operator hazard to close
+(validate/escape or drop the pattern), and the daemon-wide admission-reservation story should get
+a dispatcher-side admission-failure state that survives the claimed item (today a lost admission
+race between reconcile and a manual start surfaces as a reconcile error and leaves the claimed
+item stuck in progress).
 
 ## Start here
 
