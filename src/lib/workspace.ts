@@ -26,6 +26,12 @@ export interface WorkspaceAllocationInput {
   readonly sshUrl: string;
   readonly identity: GitIdentity;
   readonly retainedWorkspaces: number;
+  /**
+   * Directory names (runIds) eviction must never remove — the trees of runs
+   * this process still holds. Without this, retention could delete a running
+   * run's tree when retainedWorkspaces is near maxConcurrentRuns.
+   */
+  readonly protectedEntries?: ReadonlyArray<string>;
 }
 
 const refreshGates = new Map<string, Promise<void>>();
@@ -52,7 +58,7 @@ async function refreshMirror(mirrorPath: string, sshUrl: string): Promise<void> 
 }
 
 export async function allocateWorkspace(input: WorkspaceAllocationInput): Promise<string> {
-  const { runId, workspaceRoot, sshUrl, identity, retainedWorkspaces } = input;
+  const { runId, workspaceRoot, sshUrl, identity, retainedWorkspaces, protectedEntries } = input;
 
   await mkdir(workspaceRoot, { recursive: true });
   const mirrorPath = join(workspaceRoot, MIRROR_DIR);
@@ -69,6 +75,18 @@ export async function allocateWorkspace(input: WorkspaceAllocationInput): Promis
     throw new Error(`workspace clone failed (exit ${clone.exitCode}): ${clone.stderr.trim()}`);
   }
 
+  // `git clone <mirror> dir` points the clone's `origin` at the mirror, which
+  // would send D9's `git push -u origin <branch>` straight into the local
+  // cache and never onto the real remote. Re-point `origin` at the configured
+  // sshUrl: fetches still hit the mirror (refreshed at the step above), but
+  // write-back goes to the remote the config names (D27/D28).
+  const reorigin = await hostExec(["git", "remote", "set-url", "origin", sshUrl], { cwd: dir });
+  if (reorigin.exitCode !== 0) {
+    throw new Error(
+      `git remote set-url origin failed (exit ${reorigin.exitCode}): ${reorigin.stderr.trim()}`,
+    );
+  }
+
   for (const args of [
     ["git", "config", "user.name", identity.name] as const,
     ["git", "config", "user.email", identity.email] as const,
@@ -81,19 +99,25 @@ export async function allocateWorkspace(input: WorkspaceAllocationInput): Promis
     }
   }
 
-  await evictOldWorkspaces(workspaceRoot, retainedWorkspaces);
+  await evictOldWorkspaces(workspaceRoot, retainedWorkspaces, protectedEntries);
   return dir;
 }
 
 /**
  * Retain the last `retainedWorkspaces` trees, evicting oldest-first. The
- * mirror directory is never a candidate.
+ * mirror directory is never a candidate, and neither is anything named in
+ * `protectedEntries` — an active run's tree survives even when retention
+ * would otherwise pick it.
  */
 export async function evictOldWorkspaces(
   workspaceRoot: string,
   retainedWorkspaces: number,
+  protectedEntries: ReadonlyArray<string> = [],
 ): Promise<ReadonlyArray<string>> {
-  const entries = readdirSync(workspaceRoot).filter((entry) => entry !== MIRROR_DIR);
+  const protectedSet = new Set(protectedEntries);
+  const entries = readdirSync(workspaceRoot).filter(
+    (entry) => entry !== MIRROR_DIR && !protectedSet.has(entry),
+  );
   const evicted: Array<string> = [];
   if (entries.length <= retainedWorkspaces) return evicted;
 

@@ -38,12 +38,24 @@ export interface FactoryConfigInput {
 }
 
 export function defineConfig(config: FactoryConfigInput): FactoryConfig {
+  const maxConcurrentRuns = config.maxConcurrentRuns ?? DEFAULT_MAX_CONCURRENT_RUNS;
+  const retainedWorkspaces = config.retainedWorkspaces ?? DEFAULT_RETAINED_WORKSPACES;
+  if (!Number.isInteger(maxConcurrentRuns) || maxConcurrentRuns < 1) {
+    throw new Error(
+      `maxConcurrentRuns must be an integer >= 1 (got ${JSON.stringify(config.maxConcurrentRuns)})`,
+    );
+  }
+  if (!Number.isInteger(retainedWorkspaces) || retainedWorkspaces < maxConcurrentRuns) {
+    throw new Error(
+      `retainedWorkspaces (${retainedWorkspaces}) must be >= maxConcurrentRuns (${maxConcurrentRuns}) — retention below the concurrency limit can evict a running run's workspace`,
+    );
+  }
   return {
     repo: config.repo,
     workflows: config.workflows,
     workspaceRoot: config.workspaceRoot ?? DEFAULT_WORKSPACE_ROOT,
-    maxConcurrentRuns: config.maxConcurrentRuns ?? DEFAULT_MAX_CONCURRENT_RUNS,
-    retainedWorkspaces: config.retainedWorkspaces ?? DEFAULT_RETAINED_WORKSPACES,
+    maxConcurrentRuns,
+    retainedWorkspaces,
   };
 }
 
