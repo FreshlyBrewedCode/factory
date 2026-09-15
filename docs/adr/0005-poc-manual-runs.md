@@ -38,7 +38,8 @@ them:
   clones from `<workspaceRoot>/.mirror.git` for speed, but `git clone <mirror>` points the
   clone's `origin` at the mirror — so D9's `git push -u origin <branch>` would have landed in the
   local cache and never reached the real remote in a live deployment. The allocation re-points
-  `origin` at the configured `sshUrl` (fetches stay on the mirror; write-back goes to the remote).
+  `origin` at the configured `sshUrl`; after that the mirror is only the source of the initial
+  clone, and both fetches and write-back go straight to the remote the config names.
   `src/lib/workspace.test.ts` now asserts the run tree's push target is the configured remote,
   with a local bare repo as the remote and the mirror as cache.
 - **D29's admission is atomic at the registry.** The first cut checked `admitRun` in the HTTP

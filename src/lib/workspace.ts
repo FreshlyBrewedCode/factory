@@ -78,8 +78,11 @@ export async function allocateWorkspace(input: WorkspaceAllocationInput): Promis
   // `git clone <mirror> dir` points the clone's `origin` at the mirror, which
   // would send D9's `git push -u origin <branch>` straight into the local
   // cache and never onto the real remote. Re-point `origin` at the configured
-  // sshUrl: fetches still hit the mirror (refreshed at the step above), but
-  // write-back goes to the remote the config names (D27/D28).
+  // sshUrl: afterwards the mirror is only the source of the initial clone —
+  // both fetches and write-back go straight to the remote the config names
+  // (D27/D28). The mirror is refreshed before each allocation, so its content
+  // tracks the remote well enough that a post-clone fetch from it would be
+  // redundant.
   const reorigin = await hostExec(["git", "remote", "set-url", "origin", sshUrl], { cwd: dir });
   if (reorigin.exitCode !== 0) {
     throw new Error(
