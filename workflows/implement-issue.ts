@@ -188,7 +188,9 @@ export default defineWorkflow("implement-issue", {
     // a push or `gh pr create` collision gets runId-suffixed and retried once by the runtime.
     const commitMessage = `Implement issue #${input.issueNumber}
 
-Closes #${input.issueNumber}.\n\nCloses #${input.issueNumber}.\n\nAutomated by the factory implement-issue workflow.`;
+Closes #${input.issueNumber}.
+
+Automated by the factory implement-issue workflow.`;
     const writeBackResult = await ctx.writeBack({
       branch: prMetadata.branch,
       commitMessage,
