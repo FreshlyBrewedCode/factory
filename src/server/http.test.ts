@@ -264,6 +264,46 @@ describe("phase 3 HTTP API + SSE", () => {
     }
   });
 
+  test("an SSE client that disconnects mid-run does not take the daemon down", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "factory-http-sse-abandon-"));
+    const db = openStore(join(dir, "factory.db"));
+    const adapter = createSlowFakeAdapter(
+      [
+        { type: "TEXT_MESSAGE_START" },
+        { type: "TEXT_MESSAGE_CONTENT", delta: "one" },
+        { type: "TEXT_MESSAGE_CONTENT", delta: "two" },
+        { type: "TEXT_MESSAGE_END" },
+      ],
+      60,
+    );
+    const server = serve({ db, adapter, port: 0 });
+    const base = `http://localhost:${server.port}`;
+
+    try {
+      const startRes = await fetch(`${base}/api/runs`, {
+        method: "POST",
+        body: JSON.stringify({ workflowPath: ECHO_WORKFLOW, input: {}, dir }),
+      });
+      const { runId } = (await startRes.json()) as { runId: string };
+
+      // A run-detail page opens the tail and the browser navigates away
+      // before the run ends — the fetch is aborted, never drained.
+      const response = await fetch(`${base}/api/runs/${runId}/events`);
+      response.body!.cancel().catch(() => undefined);
+
+      // The run must keep streaming somewhere real: the db reaches terminal.
+      await waitForTerminal(db, runId, 10_000);
+
+      // And the same daemon must still answer requests.
+      const after = await fetch(`${base}/api/runs`);
+      expect(after.status).toBe(200);
+    } finally {
+      await server.stop(true);
+      db.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test("an in-flight run is flagged active; a terminal run is not", async () => {
     const dir = mkdtempSync(join(tmpdir(), "factory-http-active-test-"));
     const db = openStore(join(dir, "factory.db"));

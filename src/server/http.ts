@@ -94,6 +94,12 @@ function parseLastEventId(req: Request): number | undefined {
 function sseStream(db: Database, runId: string, lastEventId?: number): ReadableStream<Uint8Array> {
   const encoder = new TextEncoder();
 
+  // `closed`/`unsubscribe` live on the stream (not just `start`) so the
+  // `cancel()` hook below can also mark them when a client disconnects
+  // without anyone having sent a terminal event.
+  let closed = false;
+  let unsubscribe: () => void = () => undefined;
+
   return new ReadableStream({
     start(controller) {
       // `Last-Event-ID` makes this resume: seed `lastSeq` from it and the
@@ -104,21 +110,36 @@ function sseStream(db: Database, runId: string, lastEventId?: number): ReadableS
       const buffered: Array<RunEvent> = [];
 
       const send = (event: RunEvent): void => {
-        controller.enqueue(encoder.encode(`id: ${event.seq}\ndata: ${JSON.stringify(event)}\n\n`));
+        if (closed) return;
+        try {
+          controller.enqueue(
+            encoder.encode(`id: ${event.seq}\ndata: ${JSON.stringify(event)}\n\n`),
+          );
+        } catch {
+          // The client is gone (navigated away, fetch aborted) — Bun has
+          // already closed this controller. Stop pushing and leave the fan-out.
+          closed = true;
+          unsubscribe();
+          return;
+        }
         lastSeq = event.seq;
       };
 
-      const unsubscribe = subscribe(runId, (event) => {
+      const finish = (): void => {
+        if (closed) return;
+        closed = true;
+        unsubscribe();
+        controller.close();
+      };
+
+      unsubscribe = subscribe(runId, (event) => {
         if (!draining) {
           buffered.push(event);
           return;
         }
         if (event.seq <= lastSeq) return;
         send(event);
-        if (isTerminal(event.payload)) {
-          unsubscribe();
-          controller.close();
-        }
+        if (isTerminal(event.payload)) finish();
       });
 
       for (const event of getRunEvents(db, runId)) {
@@ -134,10 +155,15 @@ function sseStream(db: Database, runId: string, lastEventId?: number): ReadableS
         if (isTerminal(event.payload)) sawTerminal = true;
       }
 
-      if (sawTerminal || !isActive(runId)) {
-        unsubscribe();
-        controller.close();
-      }
+      if (sawTerminal || !isActive(runId)) finish();
+    },
+    cancel(): void {
+      // A navigating/aborted client must drop its pubsub subscription;
+      // otherwise a later event would enqueue into a controller Bun has
+      // already closed, throwing outside request context — which kills the
+      // whole serve() process.
+      closed = true;
+      unsubscribe();
     },
   });
 }
