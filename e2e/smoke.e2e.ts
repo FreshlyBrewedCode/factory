@@ -25,8 +25,4 @@ test("client-side nav reaches the other category pages through the router", asyn
   await page.getByRole("link", { name: "Dispatch" }).click();
   await expect(page).toHaveURL(/\/dispatch$/);
   await expect(page.getByRole("heading", { name: "Dispatch" })).toBeVisible();
-
-  await page.getByRole("link", { name: "Workflows" }).click();
-  await expect(page).toHaveURL(/\/workflows$/);
-  await expect(page.getByRole("heading", { name: "Workflows" })).toBeVisible();
 });

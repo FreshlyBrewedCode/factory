@@ -39,11 +39,23 @@ export class RunCancelledSignal extends Error {
 /** Matches the spike's model (STATUS.md); overridden per-call or per-workflow. */
 export const DEFAULT_MODEL = "opencode-go/deepseek-v4.1-flash";
 
+/**
+ * The deployment-known half of write-back (D27/D32): the repo slug pushed to
+ * `gh pr create` and the branch PRs open against. The runtime supplies it
+ * from `factory.config.ts`; WorkflowCtx.writeBack callers never carry it.
+ */
+export interface RunRepo {
+  readonly slug: string;
+  readonly baseBranch: string;
+}
+
 export interface StartRunOptions {
   readonly runId: string;
   readonly dir: string;
   readonly input: unknown;
   readonly adapter: AgentAdapter;
+  /** Write-back environment (D32). Absent, a workflow's `ctx.writeBack` fails. */
+  readonly repo?: RunRepo;
   readonly onEvent: (event: RunEvent) => void;
 }
 
@@ -265,16 +277,31 @@ export function startRun<I, O>(
   const writeBackImpl = async (opts: WriteBackCallOptions): Promise<WriteBackResult> => {
     emit({ _tag: "WriteBackStarted", branch: opts.branch });
 
+    if (options.repo === undefined) {
+      const message =
+        "ctx.writeBack needs run-repo config (slug/baseBranch) — this run was started without it";
+      emit({
+        _tag: "WriteBackFinished",
+        branch: opts.branch,
+        outcome: "failed",
+        cleanedArtifacts: [],
+        stagedPaths: [],
+        error: message,
+      });
+      throw new Error(message);
+    }
+
     try {
       const result = await writeBackLib(
         {
           dir: options.dir,
           branch: opts.branch,
-          baseBranch: opts.baseBranch,
-          repoSlug: opts.repoSlug,
+          baseBranch: options.repo.baseBranch,
+          repoSlug: options.repo.slug,
           commitMessage: opts.commitMessage,
           prTitle: opts.prTitle,
           prBody: opts.prBody,
+          runId: options.runId,
         },
         execImpl,
       );
@@ -286,6 +313,7 @@ export function startRun<I, O>(
       emit({
         _tag: "WriteBackFinished",
         branch: opts.branch,
+        ...(result.collided ? { usedBranch: result.branch } : {}),
         outcome,
         cleanedArtifacts: [...result.cleanedArtifacts],
         stagedPaths: [...result.stagedPaths],

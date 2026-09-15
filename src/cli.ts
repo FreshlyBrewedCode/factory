@@ -17,6 +17,8 @@
 import { mkdir } from "node:fs/promises";
 import { dirname } from "node:path";
 import type { RunEvent } from "./events";
+import { loadFactoryConfig } from "./config";
+import type { RunRepo } from "./runtime/run";
 import { resetClone, type GitIdentity } from "./lib/clone";
 import { loadWorkflow } from "./lib/load-workflow";
 import { appendEvent, getRunEvents, listRuns, openStore } from "./persistence/store";
@@ -26,6 +28,7 @@ import { startRun } from "./runtime/run";
 import { startDaemon, type DaemonOptions } from "./server/daemon";
 
 const DEFAULT_DB_PATH = ".factory/factory.db";
+const DEFAULT_DAEMON_URL = "http://localhost:3000";
 
 export interface CliOptions {
   readonly workflowPath: string;
@@ -56,11 +59,19 @@ export async function runCli(options: CliOptions): Promise<number> {
   const db = openStore(options.dbPath);
 
   const runId = `run-${Date.now()}`;
+  let repo: RunRepo | undefined;
+  try {
+    const config = await loadFactoryConfig();
+    repo = { slug: config.repo.slug, baseBranch: config.repo.baseBranch };
+  } catch {
+    repo = undefined;
+  }
   const handle = startRun(workflow, {
     runId,
     dir: options.dir,
     input: options.input,
     adapter: options.adapter,
+    ...(repo !== undefined ? { repo } : {}),
     onEvent: (event) => {
       console.log(formatEvent(event));
       void sink.write(`${JSON.stringify(event)}\n`);
@@ -123,15 +134,130 @@ export function logRunCli(dbPath: string, runId: string): void {
   }
 }
 
+export interface StartCliOptions {
+  readonly baseUrl: string;
+  readonly workflowId: string;
+  readonly input: unknown;
+  readonly watch: boolean;
+}
+
+async function watchSse(baseUrl: string, runId: string): Promise<number> {
+  // The run's own history lives in the daemon's event log and every tail
+  // reconnect replays it from seq 0, so a dropped connection (seen live in
+  // phase 5's P6 leg: mid-run ECONNRESET while the daemon was healthy) can
+  // simply re-open and continue — events print again, idempotently.
+  const maxReconnects = 3;
+  for (let attempt = 0; attempt <= maxReconnects; attempt++) {
+    let res: Response;
+    try {
+      res = await fetch(`${baseUrl}/api/runs/${runId}/events`);
+    } catch (err) {
+      console.error(`factory start: cannot reach daemon at ${baseUrl}: ${String(err)}`);
+      return 1;
+    }
+    if (!res.ok) {
+      console.error(`factory start: ${res.status} while tailing ${runId}`);
+      return 1;
+    }
+
+    const reader = res.body!.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+
+    try {
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) {
+          console.error(`factory start: stream for ${runId} ended without a terminal event`);
+          return 1;
+        }
+        buffer += decoder.decode(value);
+        let idx = buffer.indexOf("\n\n");
+        while (idx !== -1) {
+          const raw = buffer.slice(0, idx);
+          buffer = buffer.slice(idx + 2);
+          const dataLine = raw
+            .split("\n")
+            .find((line) => line.startsWith("data:"))
+            ?.slice("data:".length)
+            .trimStart();
+          if (dataLine !== undefined) {
+            let event: RunEvent;
+            try {
+              event = JSON.parse(dataLine) as RunEvent;
+            } catch {
+              console.error(`factory start: skipping malformed frame for ${runId}`);
+              idx = buffer.indexOf("\n\n");
+              continue;
+            }
+            console.log(formatEvent(event));
+            const tag = event.payload._tag;
+            if (tag === "RunFinished") return 0;
+            if (tag === "RunFailed") return 1;
+            if (tag === "RunCancelled") return 130;
+          }
+          idx = buffer.indexOf("\n\n");
+        }
+      }
+    } catch (err) {
+      if (attempt >= maxReconnects) {
+        console.error(`factory start: connection lost tailing ${runId}: ${String(err)}`);
+        return 1;
+      }
+      console.error(
+        `factory start: connection lost, reconnecting (${attempt + 1}/${maxReconnects})...`,
+      );
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+    }
+  }
+  return 1;
+}
+
+export { watchSse };
+
+export async function startCli(options: StartCliOptions): Promise<number> {
+  let res: Response;
+  try {
+    res = await fetch(`${options.baseUrl}/api/runs`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ workflowId: options.workflowId, input: options.input }),
+    });
+  } catch (err) {
+    console.error(
+      `factory start: cannot reach daemon at ${options.baseUrl} (${String(err)}) — is 'factory serve' running? (set --url or FACTORY_URL)`,
+    );
+    return 1;
+  }
+
+  const body = (await res.json().catch(() => ({}))) as { runId?: string; error?: string };
+
+  if (res.status !== 201 || body.runId === undefined) {
+    const hint =
+      res.status === 404
+        ? `no workflow with id "${options.workflowId}" — see GET /api/workflows on ${options.baseUrl}`
+        : res.status === 409
+          ? `the daemon is at its concurrency limit: ${body.error}`
+          : (body.error ?? res.statusText);
+    console.error(`factory start: failed (${res.status}): ${hint}`);
+    return 1;
+  }
+
+  console.log(body.runId);
+  if (!options.watch) return 0;
+  return watchSse(options.baseUrl, body.runId);
+}
+
 function usageError(message: string): never {
   console.error(`error: ${message}`);
   console.error(
     [
       "usage:",
       "  factory run <workflow.ts> --input <json> --dir <path> [--clone <sshUrl> --git-name <name> --git-email <email>] [--out <path>] [--db <path>]",
+      "  factory start <workflowId> --input <json> [--url <base-url>] [--watch]",
       "  factory runs [--db <path>]",
       "  factory log <runId> [--db <path>]",
-      "  factory serve [--port <n>] [--db <path>]",
+      "  factory serve [--port <n>] [--db <path>] [--config <path>]",
       "    [--dispatch-workflow <path> --dispatch-owner <login> --dispatch-project-number <n>",
       "     --dispatch-project-id <id> --dispatch-status-field-id <id> --dispatch-in-progress-option-id <id>",
       "     --dispatch-repo <owner/repo> --dispatch-base-branch <branch> --dispatch-clone <sshUrl>",
@@ -191,6 +317,45 @@ function parseArgs(argv: ReadonlyArray<string>): CliOptions {
   return { workflowPath, input, dir, clone, outPath: out, dbPath, adapter: opencodeAdapter };
 }
 
+function parseStartArgs(argv: ReadonlyArray<string>): StartCliOptions {
+  const workflowId = argv[1];
+  if (workflowId === undefined) usageError("expected: factory start <workflowId> ...");
+
+  let inputRaw: string | undefined;
+  let url: string | undefined;
+  let watch = false;
+  for (let i = 2; i < argv.length; i++) {
+    const flag = argv[i];
+    if (flag === "--input") {
+      inputRaw = argv[++i];
+      if (inputRaw === undefined) usageError("--input needs a JSON value");
+    } else if (flag === "--url") {
+      url = argv[++i];
+      if (url === undefined) usageError("--url needs a base URL");
+    } else if (flag === "--watch") {
+      watch = true;
+    } else {
+      usageError(`unknown flag: ${flag ?? "<missing>"}`);
+    }
+  }
+
+  if (inputRaw === undefined) usageError("--input <json> is required");
+
+  let input: unknown;
+  try {
+    input = JSON.parse(inputRaw);
+  } catch (err) {
+    usageError(`--input is not valid JSON: ${err instanceof Error ? err.message : String(err)}`);
+  }
+
+  return {
+    workflowId,
+    input,
+    watch,
+    baseUrl: url ?? process.env.FACTORY_URL ?? DEFAULT_DAEMON_URL,
+  };
+}
+
 const DISPATCH_FLAG_NAMES = [
   "dispatch-workflow",
   "dispatch-owner",
@@ -206,14 +371,23 @@ const DISPATCH_FLAG_NAMES = [
   "dispatch-work-dir",
 ] as const;
 
-function parseServeArgs(argv: ReadonlyArray<string>): DaemonOptions {
+async function parseServeArgs(argv: ReadonlyArray<string>): Promise<DaemonOptions> {
   const flags = parseFlags(argv, 1);
   const dbPath = flags.get("db") ?? DEFAULT_DB_PATH;
   const portRaw = flags.get("port");
   const port = portRaw !== undefined ? Number(portRaw) : undefined;
+  const configPath = flags.get("config");
+  const configLoaded =
+    configPath !== undefined ? loadFactoryConfig(configPath) : Promise.resolve(undefined);
+
+  const build = async (): Promise<DaemonOptions> => ({
+    dbPath,
+    port,
+    ...(configPath !== undefined ? { config: await configLoaded } : {}),
+  });
 
   const present = DISPATCH_FLAG_NAMES.filter((name) => flags.has(name));
-  if (present.length === 0) return { dbPath, port };
+  if (present.length === 0) return build();
 
   const missing = DISPATCH_FLAG_NAMES.filter((name) => !flags.has(name));
   if (missing.length > 0) {
@@ -222,9 +396,12 @@ function parseServeArgs(argv: ReadonlyArray<string>): DaemonOptions {
 
   const get = (name: (typeof DISPATCH_FLAG_NAMES)[number]): string => flags.get(name) as string;
 
+  const config = await configLoaded;
+
   return {
     dbPath,
     port,
+    ...(config !== undefined ? { config } : {}),
     dispatch: {
       workflowPath: get("dispatch-workflow"),
       repoSlug: get("dispatch-repo"),
@@ -252,8 +429,11 @@ if (import.meta.main) {
     const runId = argv[1];
     if (runId === undefined) usageError("expected: factory log <runId> ...");
     logRunCli(parseFlags(argv, 2).get("db") ?? DEFAULT_DB_PATH, runId);
+  } else if (argv[0] === "start") {
+    const exitCode = await startCli(parseStartArgs(argv));
+    process.exit(exitCode);
   } else if (argv[0] === "serve") {
-    const daemonOptions = parseServeArgs(argv);
+    const daemonOptions = await parseServeArgs(argv);
     const { server, dispatchFiber } = await startDaemon(daemonOptions);
     console.log(`factory serve: listening on http://localhost:${server.port}`);
     console.log(

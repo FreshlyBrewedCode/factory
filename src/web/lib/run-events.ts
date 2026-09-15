@@ -262,6 +262,7 @@ export function deriveSteps(
         const index = writeBackIndex.get(payload.branch);
         const current = index === undefined ? undefined : steps[index];
         const base = current?.kind === "writeback" ? current : undefined;
+        const usedBranch = payload.usedBranch ?? payload.branch;
         update(index, {
           kind: "writeback",
           key: `writeback:${payload.branch}`,
@@ -272,13 +273,13 @@ export function deriveSteps(
               : payload.outcome === "cancelled"
                 ? "cancelled"
                 : "failed",
-          name: payload.branch,
+          name: usedBranch,
           durationMs: undefined,
           descriptor:
             payload.prUrl !== undefined
               ? `pr #${payload.prUrl.split("/").pop() ?? ""}`
               : (payload.error ?? "no pr"),
-          branch: payload.branch,
+          branch: usedBranch,
           cleanedArtifacts: payload.cleanedArtifacts,
           stagedPaths: payload.stagedPaths,
           prUrl: payload.prUrl,

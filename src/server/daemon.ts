@@ -10,6 +10,7 @@ import { mkdir } from "node:fs/promises";
 import { dirname } from "node:path";
 import { Effect, type Fiber } from "effect";
 type AnyFiber = Fiber.Fiber<unknown, unknown>;
+import type { FactoryConfig } from "../config";
 import { resetClone, type GitIdentity } from "../lib/clone";
 import { hostExec } from "../lib/exec";
 import { loadWorkflow } from "../lib/load-workflow";
@@ -43,6 +44,13 @@ export interface DaemonOptions {
   readonly port?: number;
   readonly adapter?: AgentAdapter;
   readonly dispatch?: DispatchWiring;
+  /**
+   * The run environment from `factory.config.ts` (D27). Present, every run —
+   * manual and dispatched alike — gets a per-run working tree under the
+   * configured `workspaceRoot` (D28) and shares one admission limit (D29).
+   * Absent, the legacy per-request `{dir, clone}` behaviour is kept.
+   */
+  readonly config?: FactoryConfig;
 }
 
 export interface DaemonHandle {
@@ -55,12 +63,18 @@ export async function startDaemon(options: DaemonOptions): Promise<DaemonHandle>
   const db = openStore(options.dbPath);
   const adapter = options.adapter ?? opencodeAdapter;
 
-  const server = serve({ db, adapter, port: options.port });
+  const server = serve({
+    db,
+    adapter,
+    port: options.port,
+    ...(options.config !== undefined ? { config: options.config } : {}),
+  });
 
   let dispatchFiber: AnyFiber | undefined;
   if (options.dispatch !== undefined) {
     const wiring = options.dispatch;
     const source = makeGitHubProjectsSource(wiring.github, hostExec);
+    const maxConcurrentRuns = options.config?.maxConcurrentRuns ?? 1;
 
     const config: DispatchConfig = {
       repoSlug: wiring.repoSlug,
@@ -70,9 +84,34 @@ export async function startDaemon(options: DaemonOptions): Promise<DaemonHandle>
     };
 
     const dispatchItem = async (item: ReadyItem): Promise<string> => {
+      const workflow = await loadWorkflow(wiring.workflowPath);
+      if (options.config !== undefined) {
+        return startTrackedRun(db, workflow, {
+          input: { issueNumber: item.issueNumber },
+          repo: {
+            slug: options.config.repo.slug,
+            baseBranch: options.config.repo.baseBranch,
+          },
+          adapter,
+          maxConcurrentRuns,
+          workspace: {
+            workspaceRoot: options.config.workspaceRoot,
+            sshUrl: options.config.repo.sshUrl,
+            identity: options.config.repo.identity,
+            retainedWorkspaces: options.config.retainedWorkspaces,
+          },
+        });
+      }
       const dir = `${wiring.workDirRoot}/issue-${item.issueNumber}`;
       await resetClone(dir, wiring.cloneSshUrl, wiring.gitIdentity);
-      const workflow = await loadWorkflow(wiring.workflowPath);
+      // No-config legacy dispatch (the pre-D27 `--dispatch-*` shape): phase 3's
+      // input contract supplied the branch and the repo environment in the
+      // input, so the dispatcher keeps supplying exactly that. D32 moved the
+      // write-back environment into the runtime, but a phase-3-era workflow
+      // loaded by path still reads these fields, so they are restored rather
+      // than silently dropped. `repo` is additionally passed so a D32-era
+      // workflow routed through the legacy wiring still gets a working
+      // `ctx.writeBack`.
       return startTrackedRun(db, workflow, {
         dir,
         input: {
@@ -81,6 +120,7 @@ export async function startDaemon(options: DaemonOptions): Promise<DaemonHandle>
           repoSlug: wiring.repoSlug,
           baseBranch: wiring.baseBranch,
         },
+        repo: { slug: wiring.repoSlug, baseBranch: wiring.baseBranch },
         adapter,
       });
     };
@@ -91,7 +131,8 @@ export async function startDaemon(options: DaemonOptions): Promise<DaemonHandle>
           db,
           source,
           config,
-          hasActiveRun: () => activeRunIds().length > 0,
+          maxConcurrentRuns,
+          activeRunCount: () => activeRunIds().length,
           dispatch: dispatchItem,
         },
         wiring.intervalMs,

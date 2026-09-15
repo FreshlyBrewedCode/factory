@@ -54,6 +54,15 @@ and the phase 4 section of `STATUS.md`. Finding 8's consequence (reuse `StreamPr
 than hand-writing the reducer) refines STATUS.md's "typed chunk accessors vs. a hand-written
 reducer" framing and D20's standing cost note.
 
+## Phase 5 — usable POC
+
+| Document | Subtask | Headline finding |
+|---|---|---|
+| [`9-phase5-p1-workspaces.md`](./9-phase5-p1-workspaces.md) | Per-run working trees, `factory.config.ts` and the single admission limit (D27–D29) | P1 landed: mirror-cache allocation + per-runId trees and one `admitRun` shared by the HTTP start path and the dispatcher; validated by two concurrent runs through the real server over real sqlite, plus 201/409/201 admission at the HTTP boundary — no sandbox redesign needed, the working directory was the last shared resource. |
+| [`10-phase5-exit-fakes-leg.md`](./10-phase5-exit-fakes-leg.md) | P6's exit criterion, fakes leg | The full stack green in one pass (119 `bun test`, 11 playwright, typecheck/lint exit 0) and every fakes-provable clause of the exit criterion named with its evidence; what stays unproven until the live leg — mirror staleness under real load, N concurrent real agent processes, D32's collision reached for real. |
+
+Conclusions → [`adr/0005-poc-manual-runs.md`](../adr/0005-poc-manual-runs.md) (D27–D33).
+
 ## Distribution
 
 | Document | Subtask | Headline finding |

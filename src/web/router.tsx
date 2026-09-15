@@ -3,13 +3,12 @@ import { AppShell } from "@/web/app-shell";
 import { DispatchPage } from "@/web/pages/dispatch";
 import { RunDetailPage } from "@/web/pages/run-detail";
 import { RunsPage } from "@/web/pages/runs";
-import { WorkflowsPage } from "@/web/pages/workflows";
 
 /**
  * Code-based routing (not file-based) so the scaffold carries no generator
- * step yet. Each nav category is its own URL, matching the refined prototype:
- * `/` is the runs list, `/runs/:runId` the run detail, with Workflows and
- * Dispatch as their own pages.
+ * step yet. `/` is the runs list, `/runs/:runId` the run detail; the
+ * Workflows page was dropped in the rescope — starting runs lives in the
+ * top bar's New-run dialog (phase 5 P4).
  */
 const rootRoute = createRootRoute({ component: AppShell });
 
@@ -25,19 +24,13 @@ const runDetailRoute = createRoute({
   component: RunDetailPage,
 });
 
-const workflowsRoute = createRoute({
-  getParentRoute: () => rootRoute,
-  path: "/workflows",
-  component: WorkflowsPage,
-});
-
 const dispatchRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/dispatch",
   component: DispatchPage,
 });
 
-const routeTree = rootRoute.addChildren([runsRoute, runDetailRoute, workflowsRoute, dispatchRoute]);
+const routeTree = rootRoute.addChildren([runsRoute, runDetailRoute, dispatchRoute]);
 
 export const router = createRouter({ routeTree });
 

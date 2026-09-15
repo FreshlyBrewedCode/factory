@@ -25,6 +25,62 @@ export async function fetchRun(runId: string): Promise<RunSummary | undefined> {
   return (await res.json()) as RunSummary;
 }
 
+export interface WorkflowSummary {
+  readonly id: string;
+  readonly inputSchema: unknown;
+}
+
+export async function fetchWorkflows(): Promise<ReadonlyArray<WorkflowSummary>> {
+  const res = await fetch("/api/workflows");
+  if (!res.ok) throw new Error(`GET /api/workflows returned ${res.status}`);
+  return (await res.json()) as ReadonlyArray<WorkflowSummary>;
+}
+
+/**
+ * The API's error surface for a start/cancel that the *server* refused —
+ * distinct from a transport failure, because the body carries the operator
+ * hint (404's `see GET /api/workflows`, 400's schema message, 409's limit).
+ */
+export class ApiError extends Error {
+  readonly status: number;
+
+  constructor(status: number, message: string) {
+    super(message);
+    this.name = "ApiError";
+    this.status = status;
+  }
+}
+
+async function errorFrom(res: Response, fallback: string): Promise<ApiError> {
+  let message = fallback;
+  try {
+    const body = (await res.json()) as { error?: unknown };
+    if (typeof body.error === "string") message = body.error;
+  } catch {
+    // Non-JSON error body — keep the fallback.
+  }
+  return new ApiError(res.status, message);
+}
+
+export async function startRun(body: { workflowId: string; input: unknown }): Promise<string> {
+  const res = await fetch("/api/runs", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (res.status === 400 || res.status === 404 || res.status === 409) {
+    throw await errorFrom(res, `POST /api/runs returned ${res.status}`);
+  }
+  if (!res.ok) throw new Error(`POST /api/runs returned ${res.status}`);
+  const { runId } = (await res.json()) as { runId: string };
+  return runId;
+}
+
+export async function cancelRun(runId: string): Promise<void> {
+  const res = await fetch(`/api/runs/${encodeURIComponent(runId)}/cancel`, { method: "POST" });
+  if (!res.ok) throw await errorFrom(res, `POST /api/runs/${runId}/cancel returned ${res.status}`);
+}
+
 export interface SubscribeToRunOptions {
   /** Resume offset; sent as `Last-Event-ID` so the server replays from `seq + 1`. */
   readonly sinceSeq?: number;

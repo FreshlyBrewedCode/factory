@@ -148,6 +148,25 @@ describe("deriveSteps", () => {
     expect(step.stagedPaths).toEqual(["a.ts"]);
   });
 
+  test("write-back that collided reports the branch actually used", () => {
+    const steps = deriveSteps([
+      STARTED,
+      event(1, { _tag: "WriteBackStarted", branch: "factory/x" }),
+      event(2, {
+        _tag: "WriteBackFinished",
+        branch: "factory/x",
+        usedBranch: "factory/x-c1a2b3c4",
+        outcome: "completed",
+        cleanedArtifacts: [],
+        stagedPaths: ["a.ts"],
+        prUrl: "https://example.test/pr/1",
+      }),
+    ]);
+    expect(steps).toHaveLength(1);
+    if (steps[0]?.kind !== "writeback") throw new Error("unreachable");
+    expect(steps[0].branch).toBe("factory/x-c1a2b3c4");
+  });
+
   test("logs are kept in seq order but the terminal run event is not a step", () => {
     const steps = deriveSteps([
       STARTED,

@@ -55,8 +55,6 @@ export interface AssertResult {
 
 export interface WriteBackCallOptions {
   readonly branch: string;
-  readonly baseBranch: string;
-  readonly repoSlug: string;
   readonly commitMessage: string;
   readonly prTitle: string;
   readonly prBody: string;

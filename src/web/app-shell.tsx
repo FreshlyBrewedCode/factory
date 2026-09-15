@@ -1,6 +1,7 @@
 import { Link, Outlet } from "@tanstack/react-router";
-import { Activity, GitBranch, ListTree, Menu, Moon, Sun, Workflow } from "lucide-react";
+import { Activity, GitBranch, ListTree, Menu, Moon, Plus, Sun } from "lucide-react";
 import { useEffect, useState } from "react";
+import { NewRunDialog } from "@/web/components/new-run-dialog";
 import { Button } from "@/web/components/ui/button";
 import { useEscapeKey } from "@/web/lib/use-escape-key";
 import { useMediaQuery } from "@/web/lib/use-media-query";
@@ -8,7 +9,6 @@ import { cn } from "@/web/lib/utils";
 
 const NAV = [
   { to: "/", label: "Runs", icon: ListTree },
-  { to: "/workflows", label: "Workflows", icon: Workflow },
   { to: "/dispatch", label: "Dispatch", icon: GitBranch },
 ] as const;
 
@@ -72,6 +72,7 @@ export function AppShell() {
   const { dark, toggle } = useTheme();
   const navCompact = useMediaQuery(NAV_COMPACT_QUERY);
   const [navOpen, setNavOpen] = useState(false);
+  const [newRunOpen, setNewRunOpen] = useState(false);
   const closeNav = () => setNavOpen(false);
 
   useEscapeKey(navOpen, closeNav);
@@ -101,11 +102,24 @@ export function AppShell() {
             <Activity className="size-4" />
             same-origin API
           </span>
+          <Button
+            data-testid="new-run-trigger"
+            size="sm"
+            aria-haspopup="dialog"
+            aria-expanded={newRunOpen}
+            onClick={() => setNewRunOpen(true)}
+            className="font-mono text-[11px]"
+          >
+            <Plus />
+            New run
+          </Button>
           <Button variant="ghost" size="icon" aria-label="Toggle theme" onClick={toggle}>
             {dark ? <Sun /> : <Moon />}
           </Button>
         </div>
       </header>
+
+      <NewRunDialog open={newRunOpen} onClose={() => setNewRunOpen(false)} />
 
       <div className="flex min-h-0 flex-1">
         {navCompact ? (

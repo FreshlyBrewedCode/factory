@@ -211,6 +211,11 @@ export const RunEventPayload = Schema.TaggedUnion({
    */
   WriteBackFinished: {
     branch: Schema.String,
+    /**
+     * Set only when D32's collision retry landed on a different branch than
+     * the run was started with — the branch the PR actually landed on.
+     */
+    usedBranch: Schema.optional(Schema.String),
     outcome: Outcome,
     cleanedArtifacts: Schema.Array(Schema.String),
     stagedPaths: Schema.Array(Schema.String),

@@ -123,10 +123,8 @@ describe("implement-issue workflow, replayed against the recorded round-trip cor
         dir: workDir,
         input: {
           issueNumber: 1,
-          branch: "factory/test-branch",
-          repoSlug: "local/fixture",
-          baseBranch: "main",
         },
+        repo: { slug: "local/fixture", baseBranch: "main" },
         adapter: createCorpusReplayAdapter(FULL_ROUND_TRIP_CORPUS),
         onEvent: (event) => events.push(event),
       });
@@ -141,6 +139,26 @@ describe("implement-issue workflow, replayed against the recorded round-trip cor
       expect(outcome.output.fixStepSurvivalIntact).toBe(true);
       expect(outcome.output.prMetadataMechanism).toBe("extracted");
       expect(outcome.output.prUrl).toBe("https://github.com/local/fixture/pull/1");
+      expect(outcome.output.prBranch).toBe("factory/issue-1");
+
+      // The commit event carries the message the template produced: exactly
+      // one "Closes" line, no escaped-newline litter, blank-line-separated.
+      const commit = events.find(
+        (event) =>
+          typeof event === "object" &&
+          event !== null &&
+          (event as { payload?: { _tag?: string } }).payload?._tag === "ExecStarted" &&
+          JSON.stringify(
+            (event as { payload?: { command?: ReadonlyArray<string> } }).payload?.command,
+          ).startsWith('["git","commit","-m"'),
+      ) as { payload: { command: ReadonlyArray<string> } } | undefined;
+      expect(commit).toBeDefined();
+      const message = commit!.payload.command[3]!;
+      expect(message).not.toContain("\\n");
+      expect(message.split("Closes #1.").length - 1).toBe(1);
+      expect(message).toBe(
+        `Implement issue #1\n\nCloses #1.\n\nAutomated by the factory implement-issue workflow.`,
+      );
     } finally {
       process.env.PATH = originalPath;
       await rm(root, { recursive: true, force: true });

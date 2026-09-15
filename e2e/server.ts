@@ -18,13 +18,30 @@
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { defineConfig } from "../src/config";
 import { hostExec } from "../src/lib/exec";
 import { appendEvent, openStore } from "../src/persistence/store";
 import { createCorpusReplayAdapter, createSlowFakeAdapter } from "../src/replay/adapter";
 import { startRun } from "../src/runtime/run";
 import { startDaemon } from "../src/server/daemon";
+import { defineWorkflow, Schema } from "../src/workflow";
 import echoWorkflow from "../test/fixtures/echo-workflow";
+import registryWorkflow from "../test/fixtures/registry-workflow";
+import slowWorkflow from "../test/fixtures/slow-workflow";
 import implementIssue from "../workflows/implement-issue";
+
+/**
+ * The POC registry the New-run dialog reads (phase 5 P4): one workflow with
+ * single-depth input fields (`registry-test`), one with a nested schema so
+ * D33's raw-JSON escape hatch is exercised.
+ */
+const nestedInputWorkflow = defineWorkflow("nested-input-test", {
+  input: Schema.Struct({ spec: Schema.Struct({ name: Schema.String }) }),
+  run: async (ctx) => {
+    const result = await ctx.agent("step", "irrelevant, replay ignores it");
+    return { finalText: result.finalText };
+  },
+});
 
 const CORPUS_ROUND_TRIP = join(import.meta.dir, "../test/corpus/run-1789308170212.ndjson");
 const CORPUS_ONE_STEP = join(
@@ -89,7 +106,7 @@ async function awaitRun(handle: ReturnType<typeof startRun>): Promise<void> {
   await handle.result;
 }
 
-async function seedCorpusRuns(root: string, db: ReturnType<typeof openStore>): Promise<void> {
+async function seedCorpusRuns(root: string, db: ReturnType<typeof openStore>): Promise<string> {
   const remoteDir = join(root, "remote.git");
   const workDir = join(root, "work");
   const binDir = join(root, "bin");
@@ -123,12 +140,8 @@ async function seedCorpusRuns(root: string, db: ReturnType<typeof openStore>): P
     startRun(implementIssue, {
       runId: "run-static-corpus",
       dir: workDir,
-      input: {
-        issueNumber: 1,
-        branch: "factory/e2e-slugify",
-        repoSlug: "local/fixture",
-        baseBranch: "main",
-      },
+      repo: { slug: "local/fixture", baseBranch: "main" },
+      input: { issueNumber: 1 },
       adapter: createCorpusReplayAdapter(CORPUS_ROUND_TRIP),
       onEvent: (event) => appendEvent(db, event),
     }),
@@ -162,9 +175,6 @@ async function seedCorpusRuns(root: string, db: ReturnType<typeof openStore>): P
       dir: workDir,
       input: {
         issueNumber: 9,
-        branch: "factory/e2e-interrupted",
-        repoSlug: "local/fixture",
-        baseBranch: "main",
       },
     },
   });
@@ -174,6 +184,8 @@ async function seedCorpusRuns(root: string, db: ReturnType<typeof openStore>): P
     ts: ts + 1,
     payload: { _tag: "ExecStarted", execId: "exec-0", command: ["bun", "test"], cwd: workDir },
   });
+
+  return remoteDir;
 }
 
 async function main(): Promise<void> {
@@ -183,16 +195,29 @@ async function main(): Promise<void> {
   mkdirSync(join(dbPath, ".."), { recursive: true });
   for (const suffix of ["", "-wal", "-shm"]) rmSync(`${dbPath}${suffix}`, { force: true });
 
-  const root = mkdtempSync(join(tmpdir(), "factory-e2e-"));
   const db = openStore(dbPath);
+  let remoteDir: string;
+  const root = mkdtempSync(join(tmpdir(), "factory-e2e-"));
   try {
-    await seedCorpusRuns(root, db);
+    remoteDir = await seedCorpusRuns(root, db);
   } finally {
     db.close();
   }
 
   const adapter = createSlowFakeAdapter(SLOW_CHUNKS, 1_000);
-  const { server } = await startDaemon({ dbPath, port, adapter });
+  const config = defineConfig({
+    repo: {
+      sshUrl: remoteDir,
+      identity: { name: "Factory E2E", email: "factory-e2e@example.com" },
+      baseBranch: "main",
+      slug: "local/fixture",
+    },
+    workflows: [registryWorkflow, nestedInputWorkflow, slowWorkflow],
+    workspaceRoot: join(root, "workspaces"),
+    maxConcurrentRuns: 5,
+    retainedWorkspaces: 10,
+  });
+  const { server } = await startDaemon({ dbPath, port, adapter, config });
   console.log(`factory e2e: listening on http://localhost:${server.port}`);
 }
 

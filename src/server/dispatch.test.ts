@@ -68,7 +68,8 @@ describe("reconcileOnce", () => {
       db,
       source,
       config: CONFIG,
-      hasActiveRun: () => false,
+      maxConcurrentRuns: 1,
+      activeRunCount: () => 0,
       dispatch: async (item) => {
         dispatched.push(item);
         return `run-for-${item.issueNumber}`;
@@ -91,7 +92,28 @@ describe("reconcileOnce", () => {
       db,
       source,
       config: CONFIG,
-      hasActiveRun: () => true,
+      maxConcurrentRuns: 1,
+      activeRunCount: () => 1,
+      dispatch: async () => "should-not-run",
+    };
+
+    const result = await reconcileOnce(deps);
+    expect(result).toEqual({ action: "skipped-wip-limit" });
+    expect(source.claimedItemIds).toEqual([]);
+
+    db.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  test("the admission limit is shared: over maxConcurrentRuns the pass is skipped", async () => {
+    const { db, dir } = tmpDb();
+    const source = makeFakeReadySource([ITEM_1]);
+    const deps: ReconcileDeps = {
+      db,
+      source,
+      config: CONFIG,
+      maxConcurrentRuns: 2,
+      activeRunCount: () => 2,
       dispatch: async () => "should-not-run",
     };
 
@@ -111,7 +133,8 @@ describe("reconcileOnce", () => {
       db,
       source,
       config: CONFIG,
-      hasActiveRun: () => false,
+      maxConcurrentRuns: 1,
+      activeRunCount: () => 0,
       dispatch: async (item) => `run-for-${item.issueNumber}`,
     };
 
@@ -131,7 +154,8 @@ describe("reconcileOnce", () => {
       db,
       source,
       config: CONFIG,
-      hasActiveRun: () => false,
+      maxConcurrentRuns: 1,
+      activeRunCount: () => 0,
       dispatch: async (item) => {
         dispatched.push(item);
         return `run-for-${item.issueNumber}`;
@@ -156,7 +180,8 @@ describe("reconcileOnce", () => {
       db,
       source,
       config: CONFIG,
-      hasActiveRun: () => false,
+      maxConcurrentRuns: 1,
+      activeRunCount: () => 0,
       dispatch: async () => "should-not-run",
       now: () => now,
     };
@@ -188,7 +213,8 @@ describe("reconcileOnce", () => {
       db,
       source,
       config: CONFIG,
-      hasActiveRun: () => false,
+      maxConcurrentRuns: 1,
+      activeRunCount: () => 0,
       dispatch: async () => "should-not-run",
       now: () => now, // only 20 min since last failure, needs 30
     };
@@ -218,7 +244,8 @@ describe("reconcileOnce", () => {
       db,
       source,
       config: CONFIG,
-      hasActiveRun: () => false,
+      maxConcurrentRuns: 1,
+      activeRunCount: () => 0,
       dispatch: async () => "run-again",
       now: () => now,
     };

@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import { Link, useParams } from "@tanstack/react-router";
 import { PanelRight, X } from "lucide-react";
 import type { RunEvent } from "@/web/api";
+import { CancelRunButton } from "@/web/components/cancel-run-button";
 import { Button } from "@/web/components/ui/button";
 import {
   MessageScroller,
@@ -685,6 +686,7 @@ function RunDetailView({ runId }: { readonly runId: string }) {
             </Link>
             <span className="font-mono text-base font-semibold">{runId}</span>
             <StatusCell status={status} />
+            {active ? <CancelRunButton runId={runId} /> : null}
             {active ? (
               <span className="ml-auto flex items-center gap-1.5 font-mono text-[11px] text-muted-foreground">
                 <i className="status-dot status-pulse" data-status="running" aria-hidden="true" />
