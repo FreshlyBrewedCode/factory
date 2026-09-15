@@ -11,12 +11,60 @@
  * `docs/findings/6-live-dispatch-run.md`.
  */
 
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync } from "node:fs";
+import { chmodSync, mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
 import { hostExec } from "./exec";
-import { cleanStrayArtifacts } from "./writeback";
+import { cleanStrayArtifacts, writeBack } from "./writeback";
+
+const FAKE_GH_URL = "https://github.com/local/fixture/pull/1";
+
+const FAKE_GH_OK = `#!/bin/sh
+echo "${FAKE_GH_URL}"
+`;
+
+const FAKE_GH_PR_EXISTS_ONCE = `#!/bin/sh
+state="$GH_COUNT_FILE"
+n=$(cat "$state" 2>/dev/null || echo 0)
+n=$((n+1))
+echo "$n" > "$state"
+if [ "$n" = "1" ]; then
+  echo 'a pull request for branch "factory/pr-collide" already exists' >&2
+  exit 1
+fi
+echo "${FAKE_GH_URL}"
+`;
+
+interface CollisionFixture {
+  readonly dir: string;
+  readonly cleanup: () => void;
+}
+
+async function git(dir: string, args: ReadonlyArray<string>): Promise<void> {
+  const result = await hostExec(["git", ...args], { cwd: dir });
+  if (result.exitCode !== 0) {
+    throw new Error(`git ${args.join(" ")} in ${dir} failed: ${result.stderr}`);
+  }
+}
+
+async function makeWorkRepo(): Promise<CollisionFixture> {
+  const root = mkdtempSync(join(tmpdir(), "factory-writeback-collide-"));
+  const remote = join(root, "remote.git");
+  const dir = join(root, "work");
+  await hostExec(["git", "init", "--bare", remote]);
+  await hostExec(["git", "init", "-b", "main", dir]);
+  await git(dir, ["config", "user.name", "Factory Test"]);
+  await git(dir, ["config", "user.email", "factory-test@example.com"]);
+  writeFileSync(join(dir, "seed.ts"), "export const seed = 1;\n");
+  await git(dir, ["add", "seed.ts"]);
+  await git(dir, ["remote", "add", "origin", remote]);
+  await git(dir, ["commit", "-q", "-m", "seed"]);
+  return {
+    dir,
+    cleanup: () => rmSync(root, { recursive: true, force: true }),
+  };
+}
 
 describe("cleanStrayArtifacts", () => {
   test("removes a stray marker nested under a wholly-new untracked directory", async () => {
@@ -47,4 +95,131 @@ describe("cleanStrayArtifacts", () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+});
+
+describe("writeBack, D32's reactive collision retry", () => {
+  const originalPath = process.env.PATH;
+  let ghRoot: string | undefined;
+
+  afterEach(() => {
+    process.env.PATH = originalPath;
+    delete process.env.GH_COUNT_FILE;
+    if (ghRoot !== undefined) {
+      rmSync(ghRoot, { recursive: true, force: true });
+      ghRoot = undefined;
+    }
+  });
+
+  function useFakeGh(script: string): void {
+    ghRoot = mkdtempSync(join(tmpdir(), "factory-writeback-gh-"));
+    const bin = join(ghRoot, "bin");
+    mkdirSync(bin, { recursive: true });
+    const ghPath = join(bin, "gh");
+    writeFileSync(ghPath, script);
+    chmodSync(ghPath, 0o755);
+    process.env.PATH = `${bin}:${originalPath}`;
+    process.env.GH_COUNT_FILE = join(ghRoot, "count");
+  }
+
+  function makeOptions(dir: string, branch: string, runId: string) {
+    return {
+      dir,
+      branch,
+      baseBranch: "main",
+      repoSlug: "local/fixture",
+      commitMessage: "work happens",
+      prTitle: "t",
+      prBody: "b",
+      runId,
+    } as const;
+  }
+
+  test("a push rejected because the branch exists remotely retries once on a runId-suffixed branch", async () => {
+    useFakeGh(FAKE_GH_OK);
+    const fixture = await makeWorkRepo();
+    try {
+      const rival = mkdtempSync(join(tmpdir(), "factory-writeback-rival-"));
+      try {
+        await hostExec(["git", "init", "-b", "main", rival]);
+        await git(rival, ["config", "user.name", "Rival"]);
+        await git(rival, ["config", "user.email", "rival@example.com"]);
+        writeFileSync(join(rival, "rival.ts"), "export const rival = 1;\n");
+        await git(rival, ["add", "rival.ts"]);
+        await git(rival, ["commit", "-q", "-m", "rival work"]);
+        await git(rival, ["remote", "add", "origin", join(fixture.dir, "..", "remote.git")]);
+        await git(rival, ["push", "-q", "origin", "main:factory/solo"]);
+      } finally {
+        rmSync(rival, { recursive: true, force: true });
+      }
+
+      writeFileSync(join(fixture.dir, "work.ts"), "export const work = 1;\n");
+      const exec = (argv: ReadonlyArray<string>) => hostExec(argv, { cwd: fixture.dir });
+
+      const result = await writeBack(
+        makeOptions(fixture.dir, "factory/solo", "run-a1b2c3d4"),
+        exec,
+      );
+
+      expect(result.collided).toBe(true);
+      expect(result.branch).toBe("factory/solo-a1b2c3d4");
+      expect(result.pushResult.exitCode).toBe(0);
+      expect(result.prResult.exitCode).toBe(0);
+      expect(result.prUrl).toBe(FAKE_GH_URL);
+
+      const head = await hostExec(["git", "rev-parse", "--abbrev-ref", "HEAD"], {
+        cwd: fixture.dir,
+      });
+      expect(head.stdout.trim()).toBe("factory/solo-a1b2c3d4");
+
+      const lsRemote = await hostExec(
+        ["git", "ls-remote", "origin", "refs/heads/factory/solo-a1b2c3d4"],
+        { cwd: fixture.dir },
+      );
+      expect(lsRemote.stdout).toContain("refs/heads/factory/solo-a1b2c3d4");
+    } finally {
+      fixture.cleanup();
+    }
+  }, 20_000);
+
+  test("a 'gh pr create' already-exists failure retries once on a runId-suffixed branch", async () => {
+    useFakeGh(FAKE_GH_PR_EXISTS_ONCE);
+    const fixture = await makeWorkRepo();
+    try {
+      writeFileSync(join(fixture.dir, "work.ts"), "export const work = 1;\n");
+      const exec = (argv: ReadonlyArray<string>) => hostExec(argv, { cwd: fixture.dir });
+
+      const result = await writeBack(
+        makeOptions(fixture.dir, "factory/pr-collide", "run-a1b2c3d4"),
+        exec,
+      );
+
+      expect(result.collided).toBe(true);
+      expect(result.branch).toBe("factory/pr-collide-a1b2c3d4");
+      expect(result.pushResult.exitCode).toBe(0);
+      expect(result.prResult.exitCode).toBe(0);
+      expect(result.prUrl).toBe(FAKE_GH_URL);
+    } finally {
+      fixture.cleanup();
+    }
+  }, 20_000);
+
+  test("a clean push opens the PR on the branch it was given and reports it used", async () => {
+    useFakeGh(FAKE_GH_OK);
+    const fixture = await makeWorkRepo();
+    try {
+      writeFileSync(join(fixture.dir, "work.ts"), "export const work = 1;\n");
+      const exec = (argv: ReadonlyArray<string>) => hostExec(argv, { cwd: fixture.dir });
+
+      const result = await writeBack(
+        makeOptions(fixture.dir, "factory/clean", "run-a1b2c3d4"),
+        exec,
+      );
+
+      expect(result.collided).toBe(false);
+      expect(result.branch).toBe("factory/clean");
+      expect(result.prUrl).toBe(FAKE_GH_URL);
+    } finally {
+      fixture.cleanup();
+    }
+  }, 20_000);
 });

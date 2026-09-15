@@ -232,6 +232,10 @@ export function createHandler(options: ServerOptions): (req: Request) => Promise
                   identity: options.config.repo.identity,
                   retainedWorkspaces: options.config.retainedWorkspaces,
                 },
+                repo: {
+                  slug: options.config.repo.slug,
+                  baseBranch: options.config.repo.baseBranch,
+                },
               }
             : {}),
           input: decodedInput,
@@ -270,6 +274,10 @@ export function createHandler(options: ServerOptions): (req: Request) => Promise
                 identity: runEnv.repo.identity,
                 retainedWorkspaces: runEnv.retainedWorkspaces,
               },
+        repo:
+          runEnv === undefined
+            ? undefined
+            : { slug: runEnv.repo.slug, baseBranch: runEnv.repo.baseBranch },
         input: body.input,
         adapter: options.adapter,
       });

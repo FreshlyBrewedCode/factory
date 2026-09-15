@@ -8,10 +8,11 @@
 
 import type { Database } from "bun:sqlite";
 import { appendEvent } from "../persistence/store";
+import type { RunRepo } from "../runtime/run";
+import { startRun, type RunHandle } from "../runtime/run";
 import type { GitIdentity } from "../lib/clone";
 import { allocateWorkspace } from "../lib/workspace";
 import type { AgentAdapter } from "../runtime/agent-adapter";
-import { startRun, type RunHandle } from "../runtime/run";
 import type { WorkflowDefinition } from "../workflow";
 import { publish } from "./pubsub";
 
@@ -40,6 +41,8 @@ export interface StartTrackedRunOptions {
   /** An explicit directory wins; otherwise `workspace` allocates one per runId (D28). */
   readonly dir?: string;
   readonly workspace?: WorkspaceSpec;
+  /** Write-back environment for the run (D32): came from config, not the caller. */
+  readonly repo?: RunRepo;
   readonly input: unknown;
   readonly adapter: AgentAdapter;
   readonly runId?: string;
@@ -71,6 +74,7 @@ export async function startTrackedRun(
   const handle = startRun(workflow, {
     runId,
     dir,
+    ...(options.repo !== undefined ? { repo: options.repo } : {}),
     input: options.input,
     adapter: options.adapter,
     onEvent: (event) => {

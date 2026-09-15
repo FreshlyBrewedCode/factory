@@ -18,6 +18,7 @@ import { mkdir } from "node:fs/promises";
 import { dirname } from "node:path";
 import type { RunEvent } from "./events";
 import { loadFactoryConfig } from "./config";
+import type { RunRepo } from "./runtime/run";
 import { resetClone, type GitIdentity } from "./lib/clone";
 import { loadWorkflow } from "./lib/load-workflow";
 import { appendEvent, getRunEvents, listRuns, openStore } from "./persistence/store";
@@ -58,11 +59,19 @@ export async function runCli(options: CliOptions): Promise<number> {
   const db = openStore(options.dbPath);
 
   const runId = `run-${Date.now()}`;
+  let repo: RunRepo | undefined;
+  try {
+    const config = await loadFactoryConfig();
+    repo = { slug: config.repo.slug, baseBranch: config.repo.baseBranch };
+  } catch {
+    repo = undefined;
+  }
   const handle = startRun(workflow, {
     runId,
     dir: options.dir,
     input: options.input,
     adapter: options.adapter,
+    ...(repo !== undefined ? { repo } : {}),
     onEvent: (event) => {
       console.log(formatEvent(event));
       void sink.write(`${JSON.stringify(event)}\n`);

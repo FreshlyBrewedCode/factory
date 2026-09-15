@@ -1,6 +1,6 @@
 # STATUS
 
-> **Phases 0–4 complete; phase 5 (usable POC) is in progress — P1–P4 done, P5 next.** Phase 4 was rescoped on
+> **Phases 0–4 complete; phase 5 (usable POC) is in progress — P1–P5 done, P6 (exit) next.** Phase 4 was rescoped on
 > 2026-09-15: S1–S4 landed, and S5/S6 dissolved into the new phase 5 — the Workflows/Dispatch pages
 > are dropped, the workflow registry became phase 5's P2, and the live leg moved to phase 5's exit
 > where concurrency makes it worth watching. Every completed phase met its exit criterion on both
@@ -10,14 +10,14 @@
 >
 > **Phase 5 is the first end state a person can use** — start a run from the browser or
 > `factory start`, watch it, cancel it, several at once. Decided 2026-09-15 as D27–D33 / ADR 0005;
-> **P1–P4 (config, per-run trees, admission, the workflow registry, `POST /api/runs {workflowId, input}`, `factory start`, and the New-run dialog + cancel in the UI) are built; D32 remains.**
+> **P1–P5 (config, per-run trees, admission, the workflow registry, `POST /api/runs {workflowId, input}`, `factory start`, the New-run dialog + cancel in the UI, and D32's reusable `implement-issue`) are built; the phase's exit criterion (P6) remains.**
 
 Project pitch, stack and constraints live in `AGENTS.md`. This file tracks where we are, what
 we have decided, and what is still unknown.
 
 |                   |                                                                                                                                                                                                                                                                                                              |
 | ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Conclusions       | `docs/adr/0001-write-back-isolation-effect-boundary.md` (phase 0) · `0002-workflow-authoring-surface.md` (authoring syntax) · `0003-run-event-type.md` (D3's event type) · `0004-server-dispatch.md` (D22–D24, phase 3) · `0005-poc-manual-runs.md` (D27–D33, phase 5 — **Proposed**; D27–D31 and D33 built) |
+| Conclusions       | `docs/adr/0001-write-back-isolation-effect-boundary.md` (phase 0) · `0002-workflow-authoring-surface.md` (authoring syntax) · `0003-run-event-type.md` (D3's event type) · `0004-server-dispatch.md` (D22–D24, phase 3) · `0005-poc-manual-runs.md` (D27–D33, phase 5 — **Proposed**; D27–D33 built) |
 | Decisions         | [`docs/decisions.md`](docs/decisions.md) — the full register, D1–D33 with rationale. This file keeps only the index                                                                                                                                                                                          |
 | Completed phases  | [`docs/phases-completed.md`](docs/phases-completed.md) — phases 0–4 in full. This file keeps a few bullets each                                                                                                                                                                                              |
 | Evidence          | `docs/findings/` (one document per subtask)                                                                                                                                                                                                                                                                  |
@@ -27,13 +27,15 @@ we have decided, and what is still unknown.
 
 **All three columns exist and are validated, fakes and live.** The workflow runtime (phase 1), the
 durable event log (phase 2), the server and dispatcher (phase 3) and the SPA (phase 4) are built;
-`bun test` is 115 green and the playwright suite is 11 specs through `nix develop`.
+`bun test` is 119 green and the playwright suite is 11 specs through `nix develop`.
 
-**The browser can now start and cancel runs.** `POST /api/runs` accepts
+**The workflow registry is live end to end, and `implement-issue` is now reusable (D32).**
+`POST /api/runs` accepts
 `{workflowId, input}` against the config's registry (D31, landed with `factory start`), the SPA's
 New-run dialog drives it from D33's single-depth form, and cancel buttons wrap the phase 3
-`POST /api/runs/:id/cancel` on run detail and running rows — the remaining unbuilt decision is
-D32 (agent-supplied write-back metadata, P5).
+`POST /api/runs/:id/cancel` on run detail and running rows. D32 closed the loop: the workflow's
+input is now just `{ issueNumber }`, the agent supplies the branch name with the PR metadata, and
+`repoSlug`/`baseBranch` come from config through the run environment.
 
 Everything up to here is history; it lives in [`docs/phases-completed.md`](docs/phases-completed.md).
 The live state is the four sections below: what is on disk, what is still unknown, what is deferred,
@@ -123,7 +125,7 @@ were out of scope by D7 — **concurrency stops being deferred in phase 5 (D28).
 deepest record. D1–D6 came from the first research pass, D7–D14 from the pre-spike design session,
 D15–D18 were forced by phase 0's findings, D19–D21 from the phase 1/2 design sessions, D22–D25 from
 phase 3, D26 from phase 4's transport question, and **D27–D33 from the 2026-09-15 POC design
-session** — built in phase 5's P-steps so far except D32 (the per-decision build state is in
+session** — built in phase 5's P-steps (D32 landed with P5; the per-decision build state is in
 the table).
 
 | #   | Decision                                                                                                  | Owning record                       |
@@ -159,7 +161,7 @@ the table).
 | D29 | **One `maxConcurrentRuns`** behind a single admission function; 409 over the limit — built (P1/P3)        | ADR 0005                            |
 | D30 | **`GET /api/workflows`** served from the config's array, schemas as JSON Schema — built (P2)              | ADR 0005                            |
 | D31 | **`POST /api/runs {workflowId, input}`**; `factory start` is a thin HTTP client — built (P3)              | ADR 0005                            |
-| D32 | **Write-back metadata is agent-supplied**, branch included; collisions resolved reactively — unbuilt (P5) | ADR 0005                            |
+| D32 | **Write-back metadata is agent-supplied**, branch included; collisions resolved reactively — built (P5)  | ADR 0005                            |
 | D33 | **The start form is single-depth**, with a raw-JSON escape hatch — built (P4)                             | ADR 0005                            |
 
 ## Still unknown
@@ -347,13 +349,27 @@ inline) and `e2e/cancel.e2e.ts` (cancel from run detail and from a running row, 
 `e2e/server.ts` now serves a config (fixture registry + a local seed repo for D28's workspace
 allocation), while `lib/start-form.test.ts` pins the projection in `bun test`.
 
-**P5 — `implement-issue` becomes reusable.** D32: `branch` joins the PR-metadata step's structured
-output, `repoSlug`/`baseBranch` leave `ctx.writeBack` for config, and the runtime suffixes and
-retries once on a push or `gh pr create` collision. Input shrinks to `{ issueNumber }`.
-_Validated by:_ the existing corpus-replay test, updated; plus a write-back unit test that forces a
-rejected push against the local bare-repo fixture and asserts the retry lands on a suffixed branch.
-**Known limit:** the collision path may not be reached in normal use at all — agent-generated
-branch names differ per task — so the test is the only thing that will exercise it until it isn't.
+**P5 — `implement-issue` becomes reusable — done (2026-09-15).** `branch` joined the PR-metadata
+step's structured output (`PrMetadataOutput`, branch optional in the schema so recorded corpora
+that predate it still decode), the tier-3 domain fallback (`resolvePrMetadata`) remains the
+extraction-failure safety net and hardcodes `factory/issue-<n>`; `repoSlug`/`baseBranch` left the
+workflow input and the `ctx.writeBack` call signature — the runtime now supplies them through
+`StartRunOptions.repo` (`runtime/run.ts`), carried by `startTrackedRun` from the `FactoryConfig`
+in `http.ts` and `daemon.ts` and, on the no-daemon `factory run` path, from the operator's
+`factory.config.ts` when one exists. Collision handling is reactive in `writeBack`: push the hint;
+if the push is rejected (branch exists remotely) or `gh pr create` reports the PR exists, the
+runtime suffixes with the first 8 chars of the runId (minus its `run-` prefix), re-branches, and
+retries once; `WriteBackResult` now carries the `branch` it actually used (`collided` flag
+included), surfaced to the SPA as `WriteBackFinished.usedBranch` so the join on the started branch
+stays intact. **Known limit:** the collision path may only ever be reached in a test —
+agent-generated branch names differ per task, so nothing in normal use has ever hit it. The test
+is its only exercise until a live run does collide. _Validated by:_ `src/lib/writeback.test.ts` —
+three new tests against the local bare-repo fixture (push rejected by a rival branch on the
+remote → retry lands on `factory/<hint>-<short runId>` and lands on the remote; a `gh pr create`
+"already exists" failure retried the same way via a stateful fake `gh`; a clean push reported
+un-collided with the branch it was given) — plus the corpus-replay test
+(`workflows/implement-issue.test.ts`) updated to the new shape and asserting the fallback
+`prBranch` end to end.
 
 **P6 — Exit criterion, both legs**, matching the precedent phases 1, 3 and 4 set. _Fakes:_ the
 whole playwright suite green in one pass through `nix develop`. _Live:_ confirmed with the user
@@ -378,10 +394,11 @@ Phases 0–4 are complete on every exit criterion — fakes and live for 0–3, 
 rescope. Bullets per phase are above; the full record is
 [`docs/phases-completed.md`](docs/phases-completed.md).
 
-**Next: phase 5, step P5** — `implement-issue` becomes reusable (D32): `branch` joins the
-PR-metadata step's structured output, `repoSlug`/`baseBranch` move to config, and the runtime
-suffixes and retries once on a push or `gh pr create` collision; input shrinks to
-`{ issueNumber }`. P1–P4 landed 2026-09-15; **D32 is the only remaining unbuilt decision.**
+**Next: phase 5's exit, P6** — the whole playwright suite green in one pass through
+`nix develop` (the fakes leg), then the live leg, **confirmed with the user first**: two
+concurrent real runs started from the browser and watched to real PRs, a findings document, and
+ADR 0005 moved from Proposed to Accepted. P1–P5 landed 2026-09-15; **every D27–D33 decision is
+built; nothing of phase 5's plan remains unbuilt.**
 
 Read **ADR 0005** first — it carries D27–D33 and, more usefully, the reasoning for the two things
 that look like bigger jobs than they are. The short version:
@@ -394,11 +411,14 @@ that look like bigger jobs than they are. The short version:
   admission function (`src/server/admission.ts`) now cover both `POST /api/runs` (409) and
   the dispatcher (skip) — see `src/server/concurrency.test.ts`.
 
-For P5, read **ADR 0005** §D32 (agent-supplied branch, reactive collision retry in `writeback.ts`
-and `run.ts`'s `writeBackImpl`) and the D31 registry tests it extends (`src/server/http.test.ts`,
-`workflows/implement-issue.test.ts`, whose corpus-replay expectations change with the input
-shape). The UI side of the start surface is now built (P4): the New-run dialog posts
-`{workflowId, input}` and cancel wraps the phase 3 endpoint from run detail and running rows.
+For P6, read **ADR 0005**'s exit-criterion shape and phase 1/3/4's precedent
+(`docs/phases-completed.md`): the fakes leg is the whole playwright suite in one pass
+(`nix develop` — `bun run test:e2e`); the live leg is two browser-started concurrent runs watched
+to real PRs, gated on the user confirming. The P4 legs are the models — `e2e/new-run.e2e.ts`
+drives the dialog against the real daemon, and `e2e/server.ts` shows the config/seed-repo
+stand-in a new leg can reuse. P5's residue worth carrying into the live leg: D32's collision
+retry has only ever been exercised by its test (`src/lib/writeback.test.ts`), so a live run that
+collides stays a genuine unknown.
 
 Left over from earlier phases, not exit-blocking, worth doing opportunistically:
 

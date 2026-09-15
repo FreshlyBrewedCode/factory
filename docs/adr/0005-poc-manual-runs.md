@@ -3,18 +3,23 @@
 ## Status
 
 Proposed, 2026-09-15. Pre-implementation, the same posture ADR 0002 took: every decision here is
-falsifiable by phase 5's own exit criterion. **Implemented so far: D27–D31 + D33 (phase 5 P1–P4)** — the config module, the per-run workspace
+falsifiable by phase 5's own exit criterion. **Implemented so far: D27–D33 in full (phase 5
+P1–P5)** — the config module, the per-run workspace
 allocator, the single admission function, `GET /api/workflows`, `POST /api/runs {workflowId,
-input}`, the `factory start` thin HTTP client, and the UI start/cancel surface (New-run dialog
+input}`, the `factory start` thin HTTP client, the UI start/cancel surface (New-run dialog
 in the top bar with D33's single-depth form and raw-JSON escape hatch; cancel wired to
-`POST /api/runs/:id/cancel` on run detail and running rows) are built and validated
-(`src/config.ts`, `src/lib/workspace.ts`, `src/server/admission.ts`,
-`src/server/concurrency.test.ts`, `src/server/http.test.ts`, `src/cli.start.test.ts`,
-`src/web/lib/start-form.ts` + its projection test, `e2e/new-run.e2e.ts`, `e2e/cancel.e2e.ts`);
-**the P4 dialog legs also surfaced and fixed a phase-3 server bug** — a disconnected SSE client
+`POST /api/runs/:id/cancel` on run detail and running rows), and D32 (P5: `branch` joins the
+PR-metadata step's structured output, `repoSlug`/`baseBranch` flow from config through
+`StartRunOptions.repo` into `run.ts`'s `writeBackImpl`, and `writeBack` reacts to a rejected push
+or a `gh pr create` conflict by suffixing the branch with a short runId and retrying once,
+returning the branch actually used as `WriteBackResult.branch`, surfaced as
+`WriteBackFinished.usedBranch` for the SPA) — validated by
+`src/lib/writeback.test.ts` (rejected-push and pr-exists collision retries against the local
+bare-repo fixture; note the collision path may only ever be exercised by these tests) and the
+updated corpus-replay test (`workflows/implement-issue.test.ts`). The P4 dialog legs also
+surfaced and fixed a phase-3 server bug — a disconnected SSE client
 stayed subscribed, and a later `publish` threw enqueue-after-closed-controller outside request
-context, killing the daemon (now guarded in `sseStream`); D32 is still a code-only
-decision. The overall posture stays
+context, killing the daemon (now guarded in `sseStream`). The overall posture stays
 Proposed until P6's exit criterion runs; nothing below has been falsified. Supersedes nothing;
 widens D5 (workflow registration), D11 (agent-supplied PR metadata) and D24 (the WIP limit), and
 fires the "concurrency isolation" deferral that STATUS.md had parked on phase 5 with a trigger.

@@ -43,12 +43,19 @@ Do not run git commands, do not commit, do not open a PR.`;
 
 const PR_METADATA_PROMPT = `You are working in the same git checkout as before, in a fresh session. Read src/index.ts and src/index.test.ts to see the \`slugify\` implementation and its tests that close GitHub issue #1 ("Add a slugify(input: string): string export, with tests").
 
-Do not modify any files. Respond only with the requested JSON object: a concise, accurate PR title and a short PR body (a couple of sentences plus a bullet list of what changed) describing this change.`;
+Do not modify any files. Respond only with the requested JSON object: the git branch name this change should live on (lowercase words joined by hyphens, prefixed with factory/, e.g. factory/issue-1-slugify), a concise, accurate PR title, and a short PR body (a couple of sentences plus a bullet list of what changed).`;
 
 const PrMetadataOutput = Schema.Struct({
   title: Schema.String,
   body: Schema.String,
+  branch: Schema.optional(Schema.String),
 });
+
+export interface PrMetadata {
+  readonly title: string;
+  readonly body: string;
+  readonly branch: string;
+}
 
 const TRACKED_FILES = ["src/index.ts", "src/index.test.ts"] as const;
 
@@ -66,24 +73,27 @@ const REQUIRED_MARKERS: Readonly<Record<string, ReadonlyArray<string>>> = {
 export type PrMetadataMechanism = "extracted" | "hardcoded-fallback";
 
 function resolvePrMetadata(
-  step: AgentResult<{ title: string; body: string }>,
+  step: AgentResult<PrMetadata>,
   issueNumber: number,
-): { readonly title: string; readonly body: string; readonly mechanism: PrMetadataMechanism } {
+): PrMetadata & { readonly mechanism: PrMetadataMechanism } {
   if (step.output !== undefined) {
-    return { title: step.output.title, body: step.output.body, mechanism: "extracted" };
+    return {
+      title: step.output.title,
+      body: step.output.body,
+      branch: step.output.branch ?? `factory/issue-${issueNumber}`,
+      mechanism: "extracted",
+    };
   }
   return {
     title: `Add slugify(input: string): string (closes #${issueNumber})`,
     body: "Automated PR from the factory implement-issue workflow. Structured-output extraction failed for this run; see the run's event log for the raw agent transcript.",
+    branch: `factory/issue-${issueNumber}`,
     mechanism: "hardcoded-fallback",
   };
 }
 
 const Input = Schema.Struct({
   issueNumber: Schema.Int,
-  branch: Schema.String,
-  repoSlug: Schema.String,
-  baseBranch: Schema.String,
 });
 
 const Output = Schema.Struct({
@@ -93,6 +103,7 @@ const Output = Schema.Struct({
   fixStepSurvivalIntact: Schema.Boolean,
   prMetadataMechanism: Schema.Literals(["extracted", "hardcoded-fallback"]),
   prUrl: Schema.NullOr(Schema.String),
+  prBranch: Schema.String,
 });
 
 export default defineWorkflow("implement-issue", {
@@ -147,20 +158,18 @@ export default defineWorkflow("implement-issue", {
     // Step 5: verify again.
     const testAfterFix = await ctx.exec(["bun", "test"]);
 
-    // Step 6: PR metadata via structured output (D11).
-    const prMetadataStep = await ctx.agent<{ title: string; body: string }>(
-      "pr-metadata",
-      PR_METADATA_PROMPT,
-      { output: PrMetadataOutput },
-    );
+    // Step 6: PR metadata via structured output (D32: branch included).
+    const prMetadataStep = await ctx.agent<PrMetadata>("pr-metadata", PR_METADATA_PROMPT, {
+      output: PrMetadataOutput,
+    });
     const prMetadata = resolvePrMetadata(prMetadataStep, input.issueNumber);
 
     // Step 7: deterministic write-back (D9) — host git + gh, not an agent instruction.
+    // repoSlug/baseBranch come from the run environment (config), not the workflow (D27/D32);
+    // a push or `gh pr create` collision gets runId-suffixed and retried once by the runtime.
     const commitMessage = `Implement slugify per issue #${input.issueNumber}\n\nCloses #${input.issueNumber}.\n\nAutomated by the factory implement-issue workflow.`;
     const writeBackResult = await ctx.writeBack({
-      branch: input.branch,
-      baseBranch: input.baseBranch,
-      repoSlug: input.repoSlug,
+      branch: prMetadata.branch,
       commitMessage,
       prTitle: prMetadata.title,
       prBody: prMetadata.body,
@@ -173,6 +182,7 @@ export default defineWorkflow("implement-issue", {
       fixStepSurvivalIntact: fixStepSurvival.pass,
       prMetadataMechanism: prMetadata.mechanism,
       prUrl: writeBackResult.prUrl,
+      prBranch: writeBackResult.branch,
     };
   },
 });

@@ -123,10 +123,8 @@ describe("implement-issue workflow, replayed against the recorded round-trip cor
         dir: workDir,
         input: {
           issueNumber: 1,
-          branch: "factory/test-branch",
-          repoSlug: "local/fixture",
-          baseBranch: "main",
         },
+        repo: { slug: "local/fixture", baseBranch: "main" },
         adapter: createCorpusReplayAdapter(FULL_ROUND_TRIP_CORPUS),
         onEvent: (event) => events.push(event),
       });
@@ -141,6 +139,7 @@ describe("implement-issue workflow, replayed against the recorded round-trip cor
       expect(outcome.output.fixStepSurvivalIntact).toBe(true);
       expect(outcome.output.prMetadataMechanism).toBe("extracted");
       expect(outcome.output.prUrl).toBe("https://github.com/local/fixture/pull/1");
+      expect(outcome.output.prBranch).toBe("factory/issue-1");
     } finally {
       process.env.PATH = originalPath;
       await rm(root, { recursive: true, force: true });

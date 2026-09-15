@@ -140,12 +140,8 @@ async function seedCorpusRuns(root: string, db: ReturnType<typeof openStore>): P
     startRun(implementIssue, {
       runId: "run-static-corpus",
       dir: workDir,
-      input: {
-        issueNumber: 1,
-        branch: "factory/e2e-slugify",
-        repoSlug: "local/fixture",
-        baseBranch: "main",
-      },
+      repo: { slug: "local/fixture", baseBranch: "main" },
+      input: { issueNumber: 1 },
       adapter: createCorpusReplayAdapter(CORPUS_ROUND_TRIP),
       onEvent: (event) => appendEvent(db, event),
     }),
@@ -179,9 +175,6 @@ async function seedCorpusRuns(root: string, db: ReturnType<typeof openStore>): P
       dir: workDir,
       input: {
         issueNumber: 9,
-        branch: "factory/e2e-interrupted",
-        repoSlug: "local/fixture",
-        baseBranch: "main",
       },
     },
   });

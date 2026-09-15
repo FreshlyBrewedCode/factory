@@ -87,10 +87,9 @@ export async function startDaemon(options: DaemonOptions): Promise<DaemonHandle>
       const workflow = await loadWorkflow(wiring.workflowPath);
       if (options.config !== undefined) {
         return startTrackedRun(db, workflow, {
-          input: {
-            issueNumber: item.issueNumber,
-            branch: `factory/issue-${item.issueNumber}`,
-            repoSlug: options.config.repo.slug,
+          input: { issueNumber: item.issueNumber },
+          repo: {
+            slug: options.config.repo.slug,
             baseBranch: options.config.repo.baseBranch,
           },
           adapter,
@@ -106,12 +105,8 @@ export async function startDaemon(options: DaemonOptions): Promise<DaemonHandle>
       await resetClone(dir, wiring.cloneSshUrl, wiring.gitIdentity);
       return startTrackedRun(db, workflow, {
         dir,
-        input: {
-          issueNumber: item.issueNumber,
-          branch: `factory/issue-${item.issueNumber}`,
-          repoSlug: wiring.repoSlug,
-          baseBranch: wiring.baseBranch,
-        },
+        input: { issueNumber: item.issueNumber },
+        repo: { slug: wiring.repoSlug, baseBranch: wiring.baseBranch },
         adapter,
       });
     };
