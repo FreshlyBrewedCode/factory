@@ -1,5 +1,5 @@
 {
-  "name": "factory",
+  "name": "@frebreco/factory",
   "private": true,
   "description": "Imperative TypeScript workflows over coding-agent sandboxes, with a dispatch daemon and a monitoring UI.",
   "license": "MIT",
@@ -7,8 +7,15 @@
     "type": "git",
     "url": "git+https://github.com/FreshlyBrewedCode/factory.git"
   },
+  "bin": {
+    "factory": "bin/factory.js"
+  },
   "type": "module",
   "module": "src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./package.json": "./package.json"
+  },
   "scripts": {
     "prepare": "effect-tsgo patch --oxlint",
     "build": "bun scripts/build-release.ts",

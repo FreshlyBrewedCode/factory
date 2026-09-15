@@ -15,7 +15,7 @@
  * workflow never carries them.
  */
 
-import { defineWorkflow, Schema } from "../../src/workflow";
+import { defineWorkflow, Schema } from "@frebreco/factory";
 
 const Input = Schema.Struct({
   issueNumber: Schema.Int,

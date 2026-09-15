@@ -15,9 +15,10 @@
  */
 
 import { mkdir } from "node:fs/promises";
-import { dirname } from "node:path";
+import { dirname, resolve } from "node:path";
 import type { RunEvent } from "./events";
-import { loadFactoryConfig } from "./config";
+import { findFactoryConfig, loadFactoryConfig } from "./config";
+import { initCli } from "./init";
 import type { RunRepo } from "./runtime/run";
 import { resetClone, type GitIdentity } from "./lib/clone";
 import { loadWorkflow } from "./lib/load-workflow";
@@ -248,23 +249,48 @@ export async function startCli(options: StartCliOptions): Promise<number> {
   return watchSse(options.baseUrl, body.runId);
 }
 
+const USAGE = [
+  "factory — imperative TypeScript workflows over coding agents.",
+  "",
+  "usage:",
+  "  factory init [--dir <path>] [--force]",
+  "      Scaffold .factory/ with a config and a starter workflow. Never",
+  "      overwrites an existing file unless --force is given.",
+  "",
+  "  factory serve [--port <n>] [--db <path>] [--config <path>]",
+  "      Run the daemon: HTTP API, live event stream, and the web UI.",
+  "      Finds .factory/factory.config.ts on its own when --config is omitted.",
+  "",
+  "  factory start <workflowId> --input <json> [--url <base-url>] [--watch]",
+  "      Start a run on a running daemon. --watch streams it and exits 0",
+  "      completed / 1 failed / 130 cancelled. Honours $FACTORY_URL.",
+  "",
+  "  factory runs [--db <path>]",
+  "      List every run this project has recorded.",
+  "",
+  "  factory log <runId> [--db <path>]",
+  "      Replay one run's full event history.",
+  "",
+  "  factory run <workflow.ts> --input <json> --dir <path>",
+  "        [--clone <sshUrl> --git-name <name> --git-email <email>]",
+  "        [--out <path>] [--db <path>]",
+  "      Run one workflow file directly — no daemon, no UI.",
+  "",
+  "  factory serve, with automatic dispatch from a GitHub Project (all required",
+  "  together):",
+  "    --dispatch-workflow <path> --dispatch-owner <login>",
+  "    --dispatch-project-number <n> --dispatch-project-id <id>",
+  "    --dispatch-status-field-id <id> --dispatch-in-progress-option-id <id>",
+  "    --dispatch-repo <owner/repo> --dispatch-base-branch <branch>",
+  "    --dispatch-clone <sshUrl> --dispatch-git-name <name>",
+  "    --dispatch-git-email <email> --dispatch-work-dir <path>",
+  "    [--dispatch-interval-ms <n>]",
+].join("\n");
+
 function usageError(message: string): never {
   console.error(`error: ${message}`);
-  console.error(
-    [
-      "usage:",
-      "  factory run <workflow.ts> --input <json> --dir <path> [--clone <sshUrl> --git-name <name> --git-email <email>] [--out <path>] [--db <path>]",
-      "  factory start <workflowId> --input <json> [--url <base-url>] [--watch]",
-      "  factory runs [--db <path>]",
-      "  factory log <runId> [--db <path>]",
-      "  factory serve [--port <n>] [--db <path>] [--config <path>]",
-      "    [--dispatch-workflow <path> --dispatch-owner <login> --dispatch-project-number <n>",
-      "     --dispatch-project-id <id> --dispatch-status-field-id <id> --dispatch-in-progress-option-id <id>",
-      "     --dispatch-repo <owner/repo> --dispatch-base-branch <branch> --dispatch-clone <sshUrl>",
-      "     --dispatch-git-name <name> --dispatch-git-email <email> --dispatch-work-dir <path>",
-      "     --dispatch-interval-ms <n>]",
-    ].join("\n"),
-  );
+  console.error("");
+  console.error(USAGE);
   process.exit(1);
 }
 
@@ -376,7 +402,11 @@ async function parseServeArgs(argv: ReadonlyArray<string>): Promise<DaemonOption
   const dbPath = flags.get("db") ?? DEFAULT_DB_PATH;
   const portRaw = flags.get("port");
   const port = portRaw !== undefined ? Number(portRaw) : undefined;
-  const configPath = flags.get("config");
+  // No `--config` means "find the project I am standing in" — the `factory
+  // init` layout first, then the pre-init root config. Finding neither is not
+  // an error: the daemon still serves the UI and the phase 3 path-based API,
+  // just with an empty workflow registry.
+  const configPath = flags.get("config") ?? (await findFactoryConfig());
   const configLoaded =
     configPath !== undefined ? loadFactoryConfig(configPath) : Promise.resolve(undefined);
 
@@ -423,7 +453,27 @@ async function parseServeArgs(argv: ReadonlyArray<string>): Promise<DaemonOption
 
 if (import.meta.main) {
   const argv = process.argv.slice(2);
-  if (argv[0] === "runs") {
+  if (argv.length === 0 || argv[0] === "--help" || argv[0] === "-h" || argv[0] === "help") {
+    console.log(USAGE);
+    process.exit(0);
+  } else if (argv[0] === "init") {
+    const flags = new Map<string, boolean | string>();
+    for (let i = 1; i < argv.length; i++) {
+      const flag = argv[i];
+      if (flag === "--force") flags.set("force", true);
+      else if (flag === "--dir") {
+        const dir = argv[++i];
+        if (dir === undefined) usageError("--dir needs a path");
+        flags.set("dir", dir);
+      } else usageError(`unknown flag: ${flag ?? "<missing>"}`);
+    }
+    const dir = flags.get("dir");
+    const exitCode = await initCli({
+      cwd: typeof dir === "string" ? resolve(dir) : process.cwd(),
+      force: flags.get("force") === true,
+    });
+    process.exit(exitCode);
+  } else if (argv[0] === "runs") {
     listRunsCli(parseFlags(argv, 1).get("db") ?? DEFAULT_DB_PATH);
   } else if (argv[0] === "log") {
     const runId = argv[1];
