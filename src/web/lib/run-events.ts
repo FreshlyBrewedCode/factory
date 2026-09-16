@@ -417,7 +417,9 @@ export function summarizeEvent(event: RunEvent): string {
     case "RunStarted":
       return `${payload.workflowId} · ${payload.dir}`;
     case "RunDispatched":
-      return `dispatched ${payload.childWorkflowId} · ${payload.childRunId}`;
+      return `dispatched ${payload.childWorkflowId} · ${payload.childRunId}${payload.dedupeKey !== undefined ? ` · key ${payload.dedupeKey}` : ""}`;
+    case "DispatchCollision":
+      return `collision · ${payload.key} held by ${payload.holderRunId}`;
     case "RunFinished":
       return `finished · ${payload.durationMs}ms`;
     case "RunFailed":

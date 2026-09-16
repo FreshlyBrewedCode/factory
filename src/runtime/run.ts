@@ -28,6 +28,7 @@ import type {
   WorkspaceKind,
   WriteBackCallOptions,
 } from "../workflow";
+import { DedupeKeyError } from "../lib/dedupe";
 import type { AgentAdapter } from "./agent-adapter";
 import { buildAgentStepEffect } from "./agent-step";
 
@@ -383,6 +384,7 @@ export function startRun<I, O>(
   const dispatchImpl = async (
     child: WorkflowDefinition<any, any>,
     input: unknown,
+    opts?: { readonly dedupeKey?: string },
   ): Promise<string> => {
     if (options.dispatch === undefined) {
       throw new Error(
@@ -392,13 +394,30 @@ export function startRun<I, O>(
       );
     }
 
-    const childRunId = await options.dispatch(child, input);
+    let childRunId: string;
+    try {
+      childRunId = await options.dispatch(child, input, opts);
+    } catch (err) {
+      // Issue #15: a dedupe-key collision is never a silent drop — it throws
+      // into the parent *and* is recorded here, with the holding run named so
+      // run detail can link straight to it.
+      if (err instanceof DedupeKeyError) {
+        emit({
+          _tag: "DispatchCollision",
+          key: err.key,
+          holderRunId: err.holderRunId,
+          childWorkflowId: child.id,
+        });
+      }
+      throw err;
+    }
 
     emit({
       _tag: "RunDispatched",
       childRunId,
       childWorkflowId: child.id,
       input: input as never,
+      ...(opts?.dedupeKey !== undefined ? { dedupeKey: opts.dedupeKey } : {}),
     });
 
     return childRunId;

@@ -6,7 +6,7 @@
  * naming the key and the holding run.
  */
 
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, test } from "bun:test";
@@ -14,7 +14,12 @@ import { openStore, getRunEvents } from "../persistence/store";
 import { createSlowFakeAdapter } from "../replay/adapter";
 import { defineWorkflow, Schema } from "../workflow";
 import { createDedupeRegistry, DedupeKeyError } from "../lib/dedupe";
-import { isActive, startTrackedRun } from "./runs";
+import { activeRunIds, getActiveHandle, isActive, startTrackedRun } from "./runs";
+
+/** Fire-and-forget children keep filling the registry; drain before closing the store. */
+async function drain(timeoutMs = 10_000): Promise<void> {
+  await waitFor(() => activeRunIds().length === 0, timeoutMs);
+}
 
 const SLOW_ADAPTER = createSlowFakeAdapter(
   [
@@ -85,6 +90,155 @@ async function errorOf(promise: Promise<string>): Promise<unknown> {
   );
 }
 
+interface WorkspaceSpec {
+  readonly workspaceRoot: string;
+  readonly sshUrl: string;
+  readonly identity: { readonly name: string; readonly email: string };
+  readonly retainedWorkspaces: number;
+}
+
+function workspaces(root: string): WorkspaceSpec {
+  return {
+    workspaceRoot: join(root, "workspaces"),
+    sshUrl: join(root, "seed-not-used"),
+    identity: { name: "Test Bot", email: "test@factory.local" },
+    retainedWorkspaces: 10,
+  };
+}
+
+function withWorkspaces(root: string): Record<string, unknown> {
+  return {
+    workspace: workspaces(root),
+    adapter: SLOW_ADAPTER,
+    maxConcurrentRuns: 10,
+  };
+}
+
+describe("dedupe keys through ctx.dispatch (issue #15)", () => {
+  const driftAdapter = SLOW_ADAPTER;
+  const busyWorkflow = defineWorkflow("busy-wf", {
+    input: Schema.Struct({ n: Schema.Number }),
+    workspace: { kind: "scratch" },
+    run: async (ctx) => {
+      await ctx.exec(["sh", "-c", "sleep 0.2"]);
+      return { n: 1 };
+    },
+  });
+
+  test("a ctx.dispatch collision throws into the parent and is recorded as DispatchCollision", async () => {
+    const root = mkdtempSync(join(tmpdir(), "factory-dedupe-dispatch-"));
+    const db = openStore(join(root, "factory.db"));
+    mkdirSync(join(root, "workspaces"), { recursive: true });
+
+    const parent = defineWorkflow("parent-wf", {
+      input: Schema.Struct({ wait: Schema.Number }),
+      workspace: { kind: "scratch" },
+      run: async (ctx, input) => {
+        const childRunId = await ctx.dispatch(busyWorkflow, { n: input.wait }, { dedupeKey: "item:7" });
+        // A second dispatch on the same key, while the first still runs.
+        await ctx.dispatch(busyWorkflow, { n: input.wait }, { dedupeKey: "item:7" });
+        return { childRunId };
+      },
+    });
+
+    const parentRunId = await startTrackedRun(db, parent, {
+      input: { wait: 3 },
+      adapter: driftAdapter,
+      workspace: workspaces(join(root)),
+      maxConcurrentRuns: 10,
+      dispatchEnv: { ...withWorkspaces(join(root)), adapter: driftAdapter } as never,
+    }).catch((err: unknown) => err);
+
+    await waitFor(() => !isActive(parentRunId));
+
+    const events = getRunEvents(db, parentRunId);
+    const collided = events.find((event) => event.payload._tag === "DispatchCollision");
+    expect(collided).toBeDefined();
+    if (collided !== undefined && collided.payload._tag === "DispatchCollision") {
+      expect(collided.payload.key).toBe("item:7");
+      expect(collided.payload.holderRunId).toBeTypeOf("string");
+      expect(collided.payload.childWorkflowId).toBe("busy-wf");
+    }
+    // The failed dispatch's throw unwound the parent into its terminal state.
+    const failed = events.find((event) => event.payload._tag === "RunFailed");
+    expect(
+      failed !== undefined && failed.payload._tag === "RunFailed" ? failed.payload.message : "",
+    ).toMatch(/dedupe key held: "item:7"/);
+
+    await drain();
+    db.close();
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  test("the key is released when the holding child run finishes, so a later dispatch succeeds", async () => {
+    const root = mkdtempSync(join(tmpdir(), "factory-dedupe-dispatch-release-"));
+    const db = openStore(join(root, "factory.db"));
+    mkdirSync(join(root, "workspaces"), { recursive: true });
+
+    let release: () => void = () => undefined;
+    const gate = makeGate();
+    const heldWorkflow = defineWorkflow("held-wf", {
+      input: Schema.Struct({}),
+      workspace: { kind: "scratch" },
+      run: async () => {
+        await gate.wait;
+        return {};
+      },
+    });
+
+    const parent = defineWorkflow("parent-release-wf", {
+      input: Schema.Struct({}),
+      workspace: { kind: "scratch" },
+      run: async (ctx) => {
+        const ids = [];
+        ids.push(await ctx.dispatch(heldWorkflow, {}, { dedupeKey: "item:8" }));
+        await new Promise<void>((r) => {
+          release = r;
+        });
+        // The first child is terminal by now; the key must be free again.
+        ids.push(await ctx.dispatch(heldWorkflow, {}, { dedupeKey: "item:8" }));
+        return { ids };
+      },
+    });
+
+    const parentRunId = (await startTrackedRun(db, parent, {
+      input: {},
+      adapter: driftAdapter,
+      workspace: workspaces(join(root)),
+      maxConcurrentRuns: 10,
+      dispatchEnv: { ...withWorkspaces(join(root)), adapter: driftAdapter } as never,
+    })) as string;
+
+    await waitFor(
+      () => getRunEvents(db, parentRunId).some((event) => event.payload._tag === "RunDispatched"),
+    );
+    await Bun.sleep(150);
+    // The first child dispatched, still holding while the gate is shut — one
+    // more dispatch inside the parent would collide. Then let the child end.
+    gate.release();
+    if (typeof release === "function") release();
+    await waitFor(
+      () =>
+        getRunEvents(db, parentRunId).filter((event) => event.payload._tag === "RunDispatched")
+          .length >= 2,
+      10_000,
+    );
+    await waitFor(() => !isActive(parentRunId));
+
+    const dispatchedCount = getRunEvents(db, parentRunId).filter(
+      (event) => event.payload._tag === "RunDispatched",
+    ).length;
+    expect(dispatchedCount).toBeGreaterThanOrEqual(2);
+    expect(
+      getRunEvents(db, parentRunId).some((event) => event.payload._tag === "DispatchCollision"),
+    ).toBe(false);
+
+    await drain();
+    db.close();
+    rmSync(root, { recursive: true, force: true });
+  });
+});
+
 describe("dedupe keys through startTrackedRun (issue #15)", () => {
   test("a key held by a non-terminal run rejects a second start with key and holder named", async () => {
     const root = mkdtempSync(join(tmpdir(), "factory-dedupe-hold-"));
@@ -118,6 +272,7 @@ describe("dedupe keys through startTrackedRun (issue #15)", () => {
     await first;
     await waitFor(() => !isActive("run-holder"));
 
+    await drain();
     db.close();
     rmSync(root, { recursive: true, force: true });
   });
@@ -156,6 +311,7 @@ describe("dedupe keys through startTrackedRun (issue #15)", () => {
     // A dropped start never started: the collision run's log has no rows.
     expect(getRunEvents(db, "run-collide")).toHaveLength(0);
 
+    await drain();
     db.close();
     rmSync(root, { recursive: true, force: true });
   });
@@ -172,6 +328,7 @@ describe("dedupe keys through startTrackedRun (issue #15)", () => {
     await waitFor(() => !isActive(retryRunId));
     expect(getRunEvents(db, retryRunId).some((e) => e.payload._tag === "RunStarted")).toBe(true);
 
+    await drain();
     db.close();
     rmSync(root, { recursive: true, force: true });
   });
@@ -194,6 +351,42 @@ describe("dedupe keys through startTrackedRun (issue #15)", () => {
     await waitFor(() => !isActive(retryRunId));
     expect(getRunEvents(db, retryRunId).some((e) => e.payload._tag === "RunStarted")).toBe(true);
 
+    await drain();
+    db.close();
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  test("a cancelled run releases its key (RunCancelled is a terminal state)", async () => {
+    const root = mkdtempSync(join(tmpdir(), "factory-dedupe-cancel-"));
+    const db = openStore(join(root, "factory.db"));
+    const registry = createDedupeRegistry();
+
+    const holderRunId = await startTrackedRun(db, echoWorkflow, {
+      runId: "run-cancelled",
+      dir: join(root, "dir-1"),
+      input: {},
+      adapter: SLOW_ADAPTER,
+      dedupeKey: "item:45",
+      dedupeRegistry: registry,
+    });
+    await waitFor(() => !isActive(holderRunId) || true);
+    const handle = getActiveHandle("run-cancelled");
+    expect(handle).toBeDefined();
+    if (handle !== undefined) await handle.cancel();
+
+    await waitFor(() => !isActive(holderRunId));
+    const started = getRunEvents(db, holderRunId).some((e) => e.payload._tag === "RunStarted");
+    const retryRunId = await startTrackedRun(db, echoWorkflow, {
+      dir: join(root, "dir-2"),
+      input: {},
+      adapter: SLOW_ADAPTER,
+      dedupeKey: "item:45",
+      dedupeRegistry: registry,
+    });
+    expect(started).toBe(true);
+    expect(retryRunId).toBeTypeOf("string");
+    await drain();
+
     db.close();
     rmSync(root, { recursive: true, force: true });
   });
@@ -208,6 +401,7 @@ describe("dedupe keys through startTrackedRun (issue #15)", () => {
     expect(secondRunId).toBeTypeOf("string");
     await waitFor(() => !isActive(firstRunId) && !isActive(secondRunId));
 
+    await drain();
     db.close();
     rmSync(root, { recursive: true, force: true });
   });
