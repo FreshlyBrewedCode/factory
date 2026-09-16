@@ -2,6 +2,14 @@
 
 ## Status
 
+**Partially superseded 2026-09-16 (D43, issue #18).** The epic #19 end state retired the hardcoded
+dispatcher: `src/server/dispatch.ts`, `src/server/ready-source.ts` (the D23 `ReadySource`
+abstraction, real and fake), the event-log backoff and the daemon's `--dispatch-*` wiring are
+deleted, and the Ready sweep now lives in the sample project's scheduled wrapper workflow
+(`sample/workflows/ready-sweep.ts`), dispatched by the #16 scheduler. D22 (plain `Bun.serve`)
+stands; D23/D24 are this ADR's retired machinery. Evidence for the retirement:
+`docs/findings/12-ready-sweep-live-leg.md`.
+
 Accepted, 2026-09-14. Validated against fakes end-to-end
 (`src/server/integration.test.ts`, `src/server/dispatch.test.ts`, `src/server/http.test.ts` —
 49/49 tests passing, repeated 4x with no flakiness, `typecheck`/`lint` clean), **and live**: a

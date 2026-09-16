@@ -233,26 +233,41 @@ you are iterating on a prompt.
 
 ---
 
-## Automatic dispatch
+## Schedules — automatic dispatch without daemon code
 
-Beyond starting runs by hand, the daemon can watch a GitHub Project and
-dispatch ready items by itself, under the same concurrency limit:
+Beyond starting runs by hand, you make the daemon dispatch automatically by
+listing **schedules** in your config. A schedule is a workflow, its input, a
+cron expression, and an explicit timezone — the daemon validates all of it at
+load and fires the workflow on the cron:
 
-```sh
-factory serve \
-  --dispatch-workflow .factory/workflows/hello.ts \
-  --dispatch-owner <login> --dispatch-project-number <n> \
-  --dispatch-repo <owner/repo> --dispatch-base-branch main \
-  --dispatch-clone git@github.com:owner/repo.git \
-  --dispatch-git-name <name> --dispatch-git-email <email> \
-  --dispatch-work-dir .factory/dispatch
-  # ...plus the project field ids — run `factory --help` for the full list
+```ts
+export default defineConfig({
+  // ...
+  workflows: [readySweep, implementIssue],
+  schedules: [
+    {
+      id: "ready-sweep",
+      workflow: "ready-sweep",
+      input: { owner: "<login>", projectNumber: 4 },
+      cron: "0 * * * * *", // every minute (6 fields — seconds first)
+      timezone: "UTC",
+    },
+  ],
+});
 ```
 
-It picks up items whose status says they are ready, moves them to in-progress,
-and runs the workflow against them. It backs off on repeated failures. Without
-these flags, the daemon simply does not dispatch — nothing runs unless you ask
-for it.
+The pattern for "watch a project board and run issues" is a scheduled
+**wrapper workflow**: `ready-sweep` runs on a scratch workspace (no clone),
+queries the GitHub Project over the GraphQL API, applies your blocker rules —
+all of that is ordinary workflow code, project policy you own — and calls
+`ctx.dispatch(implementIssue, { issueNumber }, { dedupeKey: "issue:<n>" })`
+for each eligible item. Each child is a first-class run with its own
+transcript; the dedupe key means a second sweep tick cannot double-dispatch an
+in-flight item — it collides and fails visibly instead of quietly dropping.
+
+Missed cron windows are skipped, not replayed, after a daemon restart, and an
+overlap `"skip"` schedule does not stack runs. Without schedules, the daemon
+simply serves the API and the UI — nothing runs unless you ask for it.
 
 ---
 
@@ -277,7 +292,7 @@ Three pieces, one shared event log:
 
 - **Workflows** — your imperative TypeScript, running against a working tree.
 - **The daemon** (`factory serve`) — owns run lifecycle, concurrency, the event
-  database, optional dispatch, and an HTTP + SSE API.
+  database, the scheduler, and an HTTP + SSE API.
 - **The UI** — a browser client of that same API. Anything it does, a script can
   do too.
 

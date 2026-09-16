@@ -197,9 +197,13 @@ export default defineWorkflow("ready-sweep", {
 
       const dedupeKey = `issue:${item.issueNumber}`;
       try {
-        const childRunId = await ctx.dispatch(implementIssue, { issueNumber: item.issueNumber }, {
-          dedupeKey,
-        });
+        const childRunId = await ctx.dispatch(
+          implementIssue,
+          { issueNumber: item.issueNumber },
+          {
+            dedupeKey,
+          },
+        );
         await ctx.log("dispatched", { issueNumber: item.issueNumber, childRunId });
         dispatches.push({ issueNumber: item.issueNumber, childRunId });
       } catch (err) {

@@ -1,9 +1,10 @@
 # sample — a minimal live project for `factory`
 
 A walked-through example of the three things an operator supplies: a
-project config (`factory.config.ts`), one minimal workflow
-(`workflows/implement-issue.ts`), and nothing else — the runtime, server
-and UI are the factory repo's.
+project config (`factory.config.ts`) — one registry, workflows, and the
+`ready-sweep` schedule — and two workflows
+(`workflows/ready-sweep.ts`, `workflows/implement-issue.ts`): the
+runtime, server and UI are the factory repo's.
 
 Both files import from `@frebreco/factory`, exactly as a project that
 installed factory as a dev dependency would; in this repo that specifier
@@ -52,7 +53,22 @@ bun src/cli.ts start implement-issue --input '{"issueNumber": 2}' --watch
 
 The UI is on `http://localhost:3030` — the runs list and the run's
 transcript stream live from the same event log. `GET /api/workflows`
-serves the registry, `GET /api/runs` the history.
+serves the registry, `GET /api/runs` the history, `GET /api/schedules`
+the schedules page's feed.
+
+## The scheduled wrapper: `ready-sweep`
+
+`factory.config.ts` schedules `ready-sweep` on a one-minute cron (UTC). It
+runs on a **scratch** workspace — never a clone — performs one GraphQL query
+against the configured GitHub Project board, applies the hard-blocker rule
+(an open blocker whose linked PR is open or merged does not block), and
+dispatches one `implement-issue` child run per eligible Ready issue, with a
+per-issue dedupe key (`issue:<n>`). A second tick inside the same item's
+in-flight window collides and fails visibly instead of double-dispatching.
+
+Swap the project board (`owner` / `projectNumber` in the schedule's input)
+and the whole dispatch loop is yours — it is ordinary workflow code, not
+daemon behavior.
 
 ## Verify (what the daemon's state actually is)
 

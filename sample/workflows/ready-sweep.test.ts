@@ -204,7 +204,10 @@ describe("ready-sweep (issue #18)", () => {
       stdout: ghResponse([
         readyItem(30, { blockers: [{ number: 28, state: "OPEN" }] }),
         readyItem(31, {
-          blockers: [{ number: 28, state: "OPEN" }, { number: 29, state: "OPEN", prStates: ["MERGED"] }],
+          blockers: [
+            { number: 28, state: "OPEN" },
+            { number: 29, state: "OPEN", prStates: ["MERGED"] },
+          ],
         }),
       ]),
     });
