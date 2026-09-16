@@ -39,6 +39,20 @@ describe("toStartFormSpec (D33 single-depth)", () => {
     });
   });
 
+  test("renders Schema.optional's anyOf nullable encoding as an optional field", () => {
+    const spec = toStartFormSpec({
+      type: "object",
+      properties: {
+        model: { anyOf: [{ type: "string" }, { type: "null" }] },
+      },
+      required: [],
+    });
+    expect(spec).toEqual({
+      kind: "fields",
+      fields: [{ name: "model", type: "string", required: false }],
+    });
+  });
+
   test("falls back to raw JSON for a nested object property", () => {
     const spec = toStartFormSpec({
       type: "object",

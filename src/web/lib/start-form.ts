@@ -33,19 +33,23 @@ function primitiveType(node: unknown): StartFormField["type"] | undefined {
   if (Array.isArray(anyOf) && anyOf.length > 0) {
     // Effect's Schema.Number encodes as anyOf[number, "Infinity"|"NaN"|...] —
     // a closed string enum is the marker sidecar, not a second renderable type.
+    // `Schema.optional(X)` encodes as anyOf[X, null] — the null variant is
+    // optionality's marker, not a second renderable type.
     const variants = anyOf
       .filter((variant) => !(typeof variant === "object" && variant !== null && "enum" in variant))
       .map((variant) => {
         if (typeof variant !== "object" || variant === null) return undefined;
+        if ((variant as SchemaNode).type === "null") return undefined;
         const variantType = (variant as SchemaNode).type;
         return variantType === "number" || variantType === "integer"
           ? ("number" as const)
           : (variantType as StartFormField["type"] | undefined);
       });
-    if (variants.length === 0) return undefined;
-    if (variants.every((v) => v === "number")) return "number";
-    if (new Set(variants).size > 1) return undefined;
-    return variants[0];
+    const renderable = variants.filter((v) => v !== undefined);
+    if (renderable.length === 0) return undefined;
+    if (renderable.every((v) => v === "number")) return "number";
+    if (new Set(renderable).size > 1) return undefined;
+    return renderable[0];
   }
   return undefined;
 }
