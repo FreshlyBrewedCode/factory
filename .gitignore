@@ -49,8 +49,8 @@ playwright-report/
 .playwright-cli/
 
 # factory: regenerable state (the config and workflows above it stay)
-.factory/factory.db
-.factory/factory.db-shm
-.factory/factory.db-wal
+**/factory.db
+**/factory.db-shm
+**/factory.db-wal
 .factory/workspaces/
 .factory/runs/
