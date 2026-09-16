@@ -15,7 +15,7 @@
 // release workflow passes the version semantic-release computed, which is
 // stamped into the generated manifest.
 
-import { chmod, cp, mkdir, mkdtemp, rm, symlink } from "node:fs/promises";
+import { chmod, cp, mkdir, mkdtemp, readdir, rm, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
@@ -44,11 +44,112 @@ function run(cmd: string[], cwd: string = REPO_ROOT): void {
 }
 
 /**
+ * Installs the staged package into `work` the way a registry install lays it
+ * out: factory itself as a *real directory* under `node_modules`, its
+ * dependencies beside it.
+ *
+ * The real directory is the point. Symlinking the staged package back into
+ * this repo makes every upward filesystem search — `tsconfig.json`,
+ * `bunfig.toml`, `node_modules` — succeed by walking out of `dist/` and into
+ * the repo, so a package missing those files still passes. That false positive
+ * is what let a package whose UI could not build at all ship twice.
+ */
+async function install(work: string): Promise<void> {
+  const modules = join(work, "node_modules");
+  await mkdir(join(modules, "@frebreco"), { recursive: true });
+
+  // Dependencies are linked (fast, offline); only factory is copied.
+  for (const entry of await readdir(join(REPO_ROOT, "node_modules"))) {
+    if (entry === "@frebreco") continue;
+    await symlink(join(REPO_ROOT, "node_modules", entry), join(modules, entry), "dir");
+  }
+  await cp(PKG, join(modules, "@frebreco", "factory"), { recursive: true });
+}
+
+/**
+ * Boots `factory serve` from the installed copy and asks it for the SPA.
+ *
+ * `serve` hands `src/web/index.html` to Bun's fullstack bundler, which resolves
+ * the UI's `@/web/*` imports through `tsconfig.json` and compiles
+ * `@import "tailwindcss"` through the `bun-plugin-tailwind` registered in
+ * `bunfig.toml`. Neither file used to be staged, and neither failure says so:
+ * without the tsconfig `GET /` answers `200` with an empty body, and without
+ * the bunfig it answers with Tailwind's *source* — an unstyled page. So the
+ * assertions here are on what actually reaches the browser.
+ */
+async function smokeTestUi(work: string): Promise<void> {
+  const factory = join(work, "node_modules", "@frebreco", "factory");
+  const child = Bun.spawn({
+    cmd: [
+      process.execPath,
+      join(factory, "bin", "factory.js"),
+      "serve",
+      "--port",
+      "0",
+      "--db",
+      join(work, "ui-smoke.db"),
+    ],
+    cwd: work,
+    stdout: "pipe",
+    stderr: "inherit",
+  });
+
+  /** Returns what is wrong with the served UI, or `undefined` if it is fine. */
+  async function inspect(): Promise<string | undefined> {
+    let stdout = "";
+    let port: string | undefined;
+    for await (const bytes of child.stdout as ReadableStream<Uint8Array>) {
+      stdout += new TextDecoder().decode(bytes);
+      port = /listening on http:\/\/localhost:(\d+)/.exec(stdout)?.[1];
+      if (port !== undefined) break;
+    }
+    if (port === undefined) return `\`factory serve\` never reported a port.\n${stdout}`;
+
+    const base = `http://localhost:${port}`;
+    const html = await (await fetch(base)).text();
+
+    const script = /<script[^>]+src="([^"]+\.js)"/.exec(html)?.[1];
+    const stylesheet = /<link[^>]+href="([^"]+\.css)"/.exec(html)?.[1];
+    if (script === undefined || stylesheet === undefined) {
+      return `the installed package served no SPA bundle. \`GET /\` returned:\n${html}`;
+    }
+
+    const js = await (await fetch(`${base}${script}`)).text();
+    if (!js.includes("factory")) return "the served SPA bundle looks empty.";
+
+    const css = await (await fetch(`${base}${stylesheet}`)).text();
+    // Directives the Tailwind plugin consumes. Either one reaching the browser
+    // means the stylesheet was inlined rather than compiled.
+    if (css.includes("@theme") || css.includes("@tailwind")) {
+      return "the served stylesheet is Tailwind's source, not its output — the plugin did not run.";
+    }
+    if (!css.includes("animate-status-pulse")) {
+      return "the served stylesheet carries no utilities from the UI's own sources.";
+    }
+    return undefined;
+  }
+
+  // `fail` exits the process, so calling it while the daemon is up would skip
+  // the kill below and leave a server holding this script's stdout open — the
+  // pipe never closes and whatever is reading it hangs instead of reporting.
+  // The verdict is therefore carried out of the try and acted on afterwards.
+  let problem: string | undefined;
+  try {
+    problem = await inspect();
+  } finally {
+    // `bin/factory.js` forwards the signal to the daemon it spawned.
+    child.kill();
+    await child.exited;
+  }
+  if (problem !== undefined) fail(problem);
+}
+
+/**
  * Stage-time checks that would otherwise only surface for a user: the Node
  * path must refuse with the actionable message, the staged TypeScript must
- * actually run under Bun, and — since the package is now a library as well as
- * a CLI — `import ... from "@frebreco/factory"` must resolve against the
- * staged `exports` from a directory that only has it in `node_modules`.
+ * actually run under Bun, `import ... from "@frebreco/factory"` must resolve
+ * against the staged `exports` from a directory that only has it in
+ * `node_modules`, and `factory serve` must serve a UI that built.
  */
 async function smokeTest(): Promise<void> {
   const node = Bun.spawnSync(["node", join(PKG, "bin", "factory.js")], {
@@ -65,8 +166,7 @@ async function smokeTest(): Promise<void> {
 
     // Install the staged package the way a consumer would see it, then use it
     // the way the README tells them to.
-    await mkdir(join(work, "node_modules", "@frebreco"), { recursive: true });
-    await symlink(PKG, join(work, "node_modules", "@frebreco", "factory"), "dir");
+    await install(work);
 
     run([process.execPath, join(PKG, "src", "cli.ts"), "init"], work);
 
@@ -87,6 +187,9 @@ async function smokeTest(): Promise<void> {
       ].join("\n"),
     );
     run([process.execPath, join(work, "probe.ts")], work);
+
+    await smokeTestUi(work);
+    console.log("factory: installed package serves a compiled UI.");
   } finally {
     await rm(work, { force: true, recursive: true });
   }
@@ -107,12 +210,17 @@ await cp(join(REPO_ROOT, "bin", "factory.js"), join(PKG, "bin", "factory.js"));
 await cp(join(REPO_ROOT, "src"), join(PKG, "src"), { recursive: true });
 await cp(join(REPO_ROOT, "README.md"), join(PKG, "README.md"));
 await cp(join(REPO_ROOT, "LICENSE"), join(PKG, "LICENSE"));
-// `bunfig.toml` is part of the runtime, not of development: it is what
-// registers `bun-plugin-tailwind` with the fullstack bundler that builds the
-// UI, and `bin/factory.js` points Bun at this copy with `--config`. Without it
-// staged, `factory serve` in a user's project serves the SPA with no Tailwind
-// output whatsoever.
+// `bunfig.toml` and `tsconfig.json` are part of the runtime, not of
+// development: both are read by the fullstack bundler that builds the UI when
+// `factory serve` runs. The bunfig registers `bun-plugin-tailwind` (and
+// `bin/factory.js` points Bun at this copy with `--config`); the tsconfig
+// carries the `@/*` -> `./src/*` paths the SPA imports through. Bun finds the
+// tsconfig by walking up from the source file, so it has to sit at the package
+// root — which also means the user's own `@/*` alias does not shadow ours.
+// They are copied verbatim rather than trimmed so the published build cannot
+// drift from the one the repo tests.
 await cp(join(REPO_ROOT, "bunfig.toml"), join(PKG, "bunfig.toml"));
+await cp(join(REPO_ROOT, "tsconfig.json"), join(PKG, "tsconfig.json"));
 await chmod(join(PKG, "bin", "factory.js"), 0o755);
 
 // `workflows/` is deliberately *not* staged. The repo's `implement-issue` is a
@@ -144,7 +252,7 @@ const manifest = {
   },
   engines: { bun: ">=1.4.1" },
   repository: { type: "git", url: REPOSITORY_URL },
-  files: ["bin", "src", "bunfig.toml", "README.md", "LICENSE"],
+  files: ["bin", "src", "bunfig.toml", "tsconfig.json", "README.md", "LICENSE"],
   dependencies: rootManifest.dependencies ?? {},
 };
 
