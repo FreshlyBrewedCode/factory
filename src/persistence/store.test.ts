@@ -29,6 +29,8 @@ function referenceSummary(runId: string, events: ReadonlyArray<RunEvent>): RunSu
     runId,
     workflowId: started?.payload._tag === "RunStarted" ? started.payload.workflowId : undefined,
     dir: started?.payload._tag === "RunStarted" ? started.payload.dir : undefined,
+    workspaceKind:
+      started?.payload._tag === "RunStarted" ? (started.payload.workspaceKind ?? "clone") : "clone",
     startedAt: events[0]?.ts ?? 0,
     finishedAt: terminal?.ts,
     status: terminal !== undefined ? (terminal.payload._tag as RunStatus) : "interrupted",
@@ -198,5 +200,35 @@ describe("persistence/store", () => {
     for (const runId of ["run-ok", "run-bad", "run-cancelled", "run-dead"]) {
       expect(actual.get(runId)).toEqual(referenceSummary(runId, getRunEvents(db, runId)));
     }
+  });
+});
+
+describe("RunSummary.workspaceKind (issue #13)", () => {
+  test("derived from RunStarted when present; defaults to clone when absent", () => {
+    const db = openStore(":memory:");
+    appendEvent(
+      db,
+      event("run-scratch", 0, {
+        _tag: "RunStarted",
+        workflowId: "check-on-cron",
+        dir: "/tmp/s",
+        input: {},
+        workspaceKind: "scratch",
+      }),
+    );
+    appendEvent(db, event("run-scratch", 1, { _tag: "RunFinished", durationMs: 5 }));
+    appendEvent(
+      db,
+      event("run-old", 0, {
+        _tag: "RunStarted",
+        workflowId: "wf",
+        dir: "/tmp/c",
+        input: {},
+      }),
+    );
+
+    const byRunId = new Map(listRuns(db).map((run) => [run.runId, run]));
+    expect(byRunId.get("run-scratch")?.workspaceKind).toBe("scratch");
+    expect(byRunId.get("run-old")?.workspaceKind).toBe("clone");
   });
 });
