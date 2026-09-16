@@ -3,6 +3,7 @@ import { AppShell } from "@/web/app-shell";
 import { DispatchPage } from "@/web/pages/dispatch";
 import { RunDetailPage } from "@/web/pages/run-detail";
 import { RunsPage } from "@/web/pages/runs";
+import { SchedulesPage } from "@/web/pages/schedules";
 
 /**
  * Code-based routing (not file-based) so the scaffold carries no generator
@@ -30,7 +31,13 @@ const dispatchRoute = createRoute({
   component: DispatchPage,
 });
 
-const routeTree = rootRoute.addChildren([runsRoute, runDetailRoute, dispatchRoute]);
+const schedulesRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/schedules",
+  component: SchedulesPage,
+});
+
+const routeTree = rootRoute.addChildren([runsRoute, runDetailRoute, dispatchRoute, schedulesRoute]);
 
 export const router = createRouter({ routeTree });
 
