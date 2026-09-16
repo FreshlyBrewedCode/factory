@@ -19,6 +19,17 @@ export interface ExecResult {
 }
 
 /**
+ * The injectable host-exec seam (the `ExecFn`-injection pattern): every place
+ * that runs host commands takes one of these as a parameter instead of
+ * calling `hostExec` directly, defaulting to it — so a future non-host
+ * sandbox is plumbing, not a rewrite (issue #13).
+ */
+export type ExecFn = (
+  argv: ReadonlyArray<string>,
+  options?: { cwd?: string },
+) => Promise<ExecResult>;
+
+/**
  * Run a command on the host. Returns the result — including a non-zero exit
  * code — rather than throwing. Non-zero is the caller's branching primitive
  * (sandcastle's `exec` returns rather than throws; ported here per D9).

@@ -21,9 +21,11 @@
 
 import { rm } from "node:fs/promises";
 import { join } from "node:path";
-import type { ExecResult } from "./exec";
+import type { ExecFn, ExecResult } from "./exec";
 
-export type ExecFn = (argv: ReadonlyArray<string>) => Promise<ExecResult>;
+// Re-exported for existing importers; `ExecFn` now lives in `./exec` so the
+// provisioning path (workspace.ts) and write-back share one seam type.
+export type { ExecFn } from "./exec";
 
 export interface WriteBackOptions {
   readonly dir: string;

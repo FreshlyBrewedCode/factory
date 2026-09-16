@@ -6,17 +6,28 @@
  * evicted-oldest-first — the moment a tree is worth inspecting is exactly
  * the moment a run failed.
  *
+ * Scratch workspaces (issue #13) skip the mirror entirely: a `scratch`
+ * allocation is just an empty `<workspaceRoot>/<runId>/` directory, and it
+ * neither participates in nor consumes retention — leftover scratch dirs are
+ * never eviction candidates, so they cannot evict a clone workspace.
+ *
  * Concurrency note: two allocations can refresh the same mirror at once, so
  * mirror maintenance is serialized behind a promise queue keyed by mirror
  * path; the per-run clone and eviction touch distinct runId directories and
  * are safe to run concurrently.
+ *
+ * Host command execution arrives as an injected `exec` function (the
+ * `ExecFn`-injection pattern, as in `writeBack`) — defaulting to `hostExec`,
+ * with no behaviour change — so a future non-host sandbox decides whether a
+ * non-host workspace is plumbing or a rewrite.
  */
 
 import { existsSync, readdirSync, statSync } from "node:fs";
 import { mkdir, rm } from "node:fs/promises";
 import { join } from "node:path";
 import type { GitIdentity } from "./clone";
-import { hostExec, type ExecResult } from "./exec";
+import { hostExec, type ExecFn, type ExecResult } from "./exec";
+import type { WorkspaceKind } from "../workflow";
 
 const MIRROR_DIR = ".mirror.git";
 
@@ -27,11 +38,24 @@ export interface WorkspaceAllocationInput {
   readonly identity: GitIdentity;
   readonly retainedWorkspaces: number;
   /**
+   * Issue #13's provisioning kind. `clone` (the default) mirrors + clones;
+   * `scratch` is an empty directory with no mirror refresh and no clone.
+   */
+  readonly kind?: WorkspaceKind;
+  /**
+   * Directory names (runIds) of **scratch** workspaces. They are never eviction
+   * candidates and never count toward `retainedWorkspaces` — a scratch leftover
+   * (a failed run's dir, kept for inspection) must not push a clone tree out.
+   */
+  readonly scratchEntries?: ReadonlySet<string>;
+  /**
    * Directory names (runIds) eviction must never remove — the trees of runs
    * this process still holds. Without this, retention could delete a running
    * run's tree when retainedWorkspaces is near maxConcurrentRuns.
    */
   readonly protectedEntries?: ReadonlyArray<string>;
+  /** Injectable host-exec seam; defaults to `hostExec` (no behaviour change). */
+  readonly exec?: ExecFn;
 }
 
 const refreshGates = new Map<string, Promise<void>>();
@@ -43,12 +67,12 @@ function enqueueRefresh(mirrorPath: string, task: () => Promise<void>): Promise<
   return next;
 }
 
-async function refreshMirror(mirrorPath: string, sshUrl: string): Promise<void> {
+async function refreshMirror(mirrorPath: string, sshUrl: string, exec: ExecFn): Promise<void> {
   let result: ExecResult;
   if (existsSync(mirrorPath)) {
-    result = await hostExec(["git", "remote", "update", "--prune"], { cwd: mirrorPath });
+    result = await exec(["git", "remote", "update", "--prune"], { cwd: mirrorPath });
   } else {
-    result = await hostExec(["git", "clone", "--mirror", sshUrl, mirrorPath]);
+    result = await exec(["git", "clone", "--mirror", sshUrl, mirrorPath]);
   }
   if (result.exitCode !== 0) {
     throw new Error(
@@ -58,19 +82,41 @@ async function refreshMirror(mirrorPath: string, sshUrl: string): Promise<void> 
 }
 
 export async function allocateWorkspace(input: WorkspaceAllocationInput): Promise<string> {
-  const { runId, workspaceRoot, sshUrl, identity, retainedWorkspaces, protectedEntries } = input;
+  const {
+    runId,
+    workspaceRoot,
+    sshUrl,
+    identity,
+    retainedWorkspaces,
+    kind = "clone",
+    scratchEntries,
+    protectedEntries,
+    exec = hostExec,
+  } = input;
 
   await mkdir(workspaceRoot, { recursive: true });
-  const mirrorPath = join(workspaceRoot, MIRROR_DIR);
-
-  await enqueueRefresh(mirrorPath, () => refreshMirror(mirrorPath, sshUrl));
 
   const dir = join(workspaceRoot, runId);
+
+  if (kind === "scratch") {
+    // No mirror refresh, no clone, no identity — just a path (issue #13).
+    // Scratch workspaces never participate in retention, so no eviction runs.
+    if (existsSync(dir)) {
+      await rm(dir, { recursive: true, force: true });
+    }
+    await mkdir(dir, { recursive: true });
+    return dir;
+  }
+
+  const mirrorPath = join(workspaceRoot, MIRROR_DIR);
+
+  await enqueueRefresh(mirrorPath, () => refreshMirror(mirrorPath, sshUrl, exec));
+
   if (existsSync(dir)) {
     await rm(dir, { recursive: true, force: true });
   }
 
-  const clone = await hostExec(["git", "clone", mirrorPath, dir]);
+  const clone = await exec(["git", "clone", mirrorPath, dir]);
   if (clone.exitCode !== 0) {
     throw new Error(`workspace clone failed (exit ${clone.exitCode}): ${clone.stderr.trim()}`);
   }
@@ -83,7 +129,7 @@ export async function allocateWorkspace(input: WorkspaceAllocationInput): Promis
   // (D27/D28). The mirror is refreshed before each allocation, so its content
   // tracks the remote well enough that a post-clone fetch from it would be
   // redundant.
-  const reorigin = await hostExec(["git", "remote", "set-url", "origin", sshUrl], { cwd: dir });
+  const reorigin = await exec(["git", "remote", "set-url", "origin", sshUrl], { cwd: dir });
   if (reorigin.exitCode !== 0) {
     throw new Error(
       `git remote set-url origin failed (exit ${reorigin.exitCode}): ${reorigin.stderr.trim()}`,
@@ -94,7 +140,7 @@ export async function allocateWorkspace(input: WorkspaceAllocationInput): Promis
     ["git", "config", "user.name", identity.name] as const,
     ["git", "config", "user.email", identity.email] as const,
   ]) {
-    const result = await hostExec([...args], { cwd: dir });
+    const result = await exec([...args], { cwd: dir });
     if (result.exitCode !== 0) {
       throw new Error(
         `${args.join(" ")} failed (exit ${result.exitCode}): ${result.stderr.trim()}`,
@@ -102,24 +148,32 @@ export async function allocateWorkspace(input: WorkspaceAllocationInput): Promis
     }
   }
 
-  await evictOldWorkspaces(workspaceRoot, retainedWorkspaces, protectedEntries);
+  await evictOldWorkspaces(
+    workspaceRoot,
+    retainedWorkspaces,
+    protectedEntries,
+    scratchEntries ?? new Set(),
+  );
   return dir;
 }
 
 /**
  * Retain the last `retainedWorkspaces` trees, evicting oldest-first. The
- * mirror directory is never a candidate, and neither is anything named in
+ * mirror directory is never a candidate, neither is anything named in
  * `protectedEntries` — an active run's tree survives even when retention
- * would otherwise pick it.
+ * would otherwise pick it — and neither are `scratchEntries` (issue #13):
+ * leftover scratch directories are neither eviction candidates nor counted
+ * toward `retainedWorkspaces`, so they cannot evict a clone workspace.
  */
 export async function evictOldWorkspaces(
   workspaceRoot: string,
   retainedWorkspaces: number,
   protectedEntries: ReadonlyArray<string> = [],
+  scratchEntries: ReadonlySet<string> = new Set(),
 ): Promise<ReadonlyArray<string>> {
   const protectedSet = new Set(protectedEntries);
   const entries = readdirSync(workspaceRoot).filter(
-    (entry) => entry !== MIRROR_DIR && !protectedSet.has(entry),
+    (entry) => entry !== MIRROR_DIR && !protectedSet.has(entry) && !scratchEntries.has(entry),
   );
   const evicted: Array<string> = [];
   if (entries.length <= retainedWorkspaces) return evicted;
