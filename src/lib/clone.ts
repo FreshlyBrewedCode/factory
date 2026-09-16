@@ -8,6 +8,7 @@
 import { existsSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import { hostExec } from "./exec";
+import { writeHeadlessPermissions } from "./sandbox-config";
 
 export interface GitIdentity {
   readonly name: string;
@@ -45,4 +46,7 @@ export async function resetClone(
       );
     }
   }
+
+  // Headless permission policy (#24), same as the workspace path.
+  await writeHeadlessPermissions(dir);
 }

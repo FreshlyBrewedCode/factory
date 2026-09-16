@@ -28,6 +28,7 @@ import { join } from "node:path";
 import type { GitIdentity } from "./clone";
 import { hostExec, type ExecFn, type ExecResult } from "./exec";
 import type { WorkspaceKind } from "../workflow";
+import { writeHeadlessPermissions } from "./sandbox-config";
 
 const MIRROR_DIR = ".mirror.git";
 
@@ -146,6 +147,13 @@ export async function allocateWorkspace(input: WorkspaceAllocationInput): Promis
         `${args.join(" ")} failed (exit ${result.exitCode}): ${result.stderr.trim()}`,
       );
     }
+  }
+
+  // Headless permission policy (#24): the sandboxed serve must never park a
+  // turn on a permission ask. Guarded so an injected test fake (which spawns
+  // nothing and therefore leaves `dir` absent) does not fail the allocation.
+  if (existsSync(dir)) {
+    await writeHeadlessPermissions(dir);
   }
 
   await evictOldWorkspaces(
