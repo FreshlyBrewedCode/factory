@@ -69,6 +69,21 @@ replays the event log from seq 0, the watch now reconnects (≤ 3 attempts, 1 s 
 of crashing — reprinting idempotently. Found live, fixed, exercised by nothing new beyond the
 existing `cli.start.test.ts` shape (the crash needs a real stream drop).
 
+> **Root-caused later (2026-09-16), and it was not the network.** The drop was
+> `Bun.serve`'s `idleTimeout`, which defaults to **10 seconds** and closes any connection with
+> no traffic in that window. A run's SSE stream only carries traffic when the workflow emits
+> an event, so any quiet gap longer than 10 s — `ctx.exec` running a test suite, write-back's
+> `git push` + `gh pr create` — killed the connection under a healthy run, deterministically
+> rather than by chance. The same bug is what made the **SPA** show a live run as
+> `interrupted` until a manual refresh, which is how it was finally caught.
+>
+> The reconnect above was a correct mitigation of a misdiagnosed cause, and it was
+> load-bearing in the wrong place: its attempt counter never reset on progress, so a run with
+> more than three quiet gaps still died. The server now sends a keepalive comment frame so
+> the connection does not drop in the first place; the reconnect survives as defence in depth,
+> with a budget that refills. See `src/lib/sse-client.ts` and `server/http.ts`'s
+> `DEFAULT_SSE_KEEPALIVE_MS`.
+
 ## Finding L3 — the UI concurrency leg, observed by playwright
 
 A second playwright pass (evidence `/tmp/opencode/ui-evidence-2/`) captured, on the fixed

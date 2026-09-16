@@ -1,4 +1,5 @@
 import type { RunEvent } from "../events";
+import { streamSse, type SseClientOptions } from "../lib/sse-client";
 import type { RunSummary as StoredRunSummary } from "../persistence/store";
 
 /** `RunSummary` as the API now serves it: the store's fields plus the live bit. */
@@ -81,55 +82,9 @@ export async function cancelRun(runId: string): Promise<void> {
   if (!res.ok) throw await errorFrom(res, `POST /api/runs/${runId}/cancel returned ${res.status}`);
 }
 
-export interface SubscribeToRunOptions {
-  /** Resume offset; sent as `Last-Event-ID` so the server replays from `seq + 1`. */
-  readonly sinceSeq?: number;
-  readonly signal?: AbortSignal;
-  readonly onEvent: (event: RunEvent) => void;
-}
+export type SubscribeToRunOptions = SseClientOptions;
 
-function dataLine(frame: string): string | undefined {
-  for (const line of frame.split("\n")) {
-    if (line.startsWith("data:")) return line.slice("data:".length).trimStart();
-  }
-  return undefined;
-}
-
-/**
- * Replay-then-tail one run's event stream. Resolves when the server closes
- * (terminal event, or a run this process does not hold), rejects only on a
- * transport error — an aborted read is caught by the caller.
- */
-export async function subscribeToRun(runId: string, options: SubscribeToRunOptions): Promise<void> {
-  const headers: Record<string, string> = {};
-  if (options.sinceSeq !== undefined) headers["Last-Event-ID"] = String(options.sinceSeq);
-
-  const res = await fetch(`/api/runs/${encodeURIComponent(runId)}/events`, {
-    headers,
-    signal: options.signal,
-  });
-  if (!res.ok || res.body === null) {
-    throw new Error(`GET /api/runs/${runId}/events returned ${res.status}`);
-  }
-
-  const reader = res.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = "";
-  try {
-    for (;;) {
-      const { value, done } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-
-      let boundary = buffer.indexOf("\n\n");
-      while (boundary !== -1) {
-        const raw = dataLine(buffer.slice(0, boundary));
-        buffer = buffer.slice(boundary + 2);
-        if (raw !== undefined) options.onEvent(JSON.parse(raw) as RunEvent);
-        boundary = buffer.indexOf("\n\n");
-      }
-    }
-  } finally {
-    reader.releaseLock();
-  }
+/** `streamSse` bound to one run's route — the seam D26 named. */
+export function subscribeToRun(runId: string, options: SubscribeToRunOptions): Promise<void> {
+  return streamSse(`/api/runs/${encodeURIComponent(runId)}/events`, options);
 }

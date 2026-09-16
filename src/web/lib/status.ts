@@ -37,6 +37,46 @@ export function runDisplayStatus(run: Pick<RunSummary, "active" | "status">): Ru
   }
 }
 
+export interface RunDetailStatusInput {
+  /** From the run's own events — the terminal event, if this page has seen it. */
+  readonly terminalTag: "RunFinished" | "RunFailed" | "RunCancelled" | undefined;
+  /** Is the SSE connection open? */
+  readonly streaming: boolean;
+  /** The polled run summary, if it has loaded. */
+  readonly summary: Pick<RunSummary, "active" | "status"> | undefined;
+}
+
+/**
+ * The run-detail badge, from all three sources that know anything.
+ *
+ * The ordering is the point. A terminal event outranks everything: it is the
+ * spine (D3), and a page holding one is not guessing. Otherwise the run is
+ * live if *either* the stream is open or the server still holds it — and the
+ * `or` is what fixes the defect this projection was extracted for. The page
+ * used to equate "stream closed" with "run over" and pass a hardcoded
+ * `active: false` down, so one dropped SSE connection under a healthy run
+ * rendered it "interrupted" (the store derives that for any run without a
+ * terminal event, `persistence/store.ts`) until someone refreshed.
+ *
+ * `interrupted` is left meaning what D12 and D21 made it mean: no terminal
+ * event was ever written *and* no process holds the run.
+ */
+export function runDetailStatus(input: RunDetailStatusInput): RunDisplayStatus {
+  switch (input.terminalTag) {
+    case "RunFinished":
+      return "finished";
+    case "RunFailed":
+      return "failed";
+    case "RunCancelled":
+      return "cancelled";
+    case undefined:
+      break;
+  }
+  if (input.streaming) return "running";
+  if (input.summary === undefined) return "interrupted";
+  return runDisplayStatus(input.summary);
+}
+
 const RUN_LABELS: Record<RunDisplayStatus, string> = {
   running: "running",
   finished: "finished",

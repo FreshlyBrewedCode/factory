@@ -22,6 +22,7 @@ import { initCli } from "./init";
 import type { RunRepo } from "./runtime/run";
 import { resetClone, type GitIdentity } from "./lib/clone";
 import { loadWorkflow } from "./lib/load-workflow";
+import { streamSse } from "./lib/sse-client";
 import { appendEvent, getRunEvents, listRuns, openStore } from "./persistence/store";
 import type { AgentAdapter } from "./runtime/agent-adapter";
 import { opencodeAdapter } from "./runtime/opencode-adapter";
@@ -142,76 +143,58 @@ export interface StartCliOptions {
   readonly watch: boolean;
 }
 
-async function watchSse(baseUrl: string, runId: string): Promise<number> {
-  // The run's own history lives in the daemon's event log and every tail
-  // reconnect replays it from seq 0, so a dropped connection (seen live in
-  // phase 5's P6 leg: mid-run ECONNRESET while the daemon was healthy) can
-  // simply re-open and continue — events print again, idempotently.
-  const maxReconnects = 3;
-  for (let attempt = 0; attempt <= maxReconnects; attempt++) {
-    let res: Response;
-    try {
-      res = await fetch(`${baseUrl}/api/runs/${runId}/events`);
-    } catch (err) {
-      console.error(`factory start: cannot reach daemon at ${baseUrl}: ${String(err)}`);
-      return 1;
-    }
-    if (!res.ok) {
-      console.error(`factory start: ${res.status} while tailing ${runId}`);
-      return 1;
-    }
+export interface WatchSseOptions {
+  readonly maxReconnects?: number;
+  readonly reconnectDelayMs?: number;
+}
 
-    const reader = res.body!.getReader();
-    const decoder = new TextDecoder();
-    let buffer = "";
+/**
+ * Tail one run to its terminal event, printing as it goes, and map that event
+ * to an exit code.
+ *
+ * The reconnect policy is `lib/sse-client.ts`'s, shared with the SPA. It
+ * replaces a local loop whose budget never reset, so a run with more dropped
+ * connections than the budget — four quiet gaps was enough — died mid-tail
+ * against a healthy daemon. It also resumes from the last seq rather than
+ * re-reading from 0, so a reconnect no longer reprints the run so far.
+ */
+async function watchSse(
+  baseUrl: string,
+  runId: string,
+  options: WatchSseOptions = {},
+): Promise<number> {
+  let exitCode: number | undefined;
 
-    try {
-      while (true) {
-        const { value, done } = await reader.read();
-        if (done) {
-          console.error(`factory start: stream for ${runId} ended without a terminal event`);
-          return 1;
-        }
-        buffer += decoder.decode(value);
-        let idx = buffer.indexOf("\n\n");
-        while (idx !== -1) {
-          const raw = buffer.slice(0, idx);
-          buffer = buffer.slice(idx + 2);
-          const dataLine = raw
-            .split("\n")
-            .find((line) => line.startsWith("data:"))
-            ?.slice("data:".length)
-            .trimStart();
-          if (dataLine !== undefined) {
-            let event: RunEvent;
-            try {
-              event = JSON.parse(dataLine) as RunEvent;
-            } catch {
-              console.error(`factory start: skipping malformed frame for ${runId}`);
-              idx = buffer.indexOf("\n\n");
-              continue;
-            }
-            console.log(formatEvent(event));
-            const tag = event.payload._tag;
-            if (tag === "RunFinished") return 0;
-            if (tag === "RunFailed") return 1;
-            if (tag === "RunCancelled") return 130;
-          }
-          idx = buffer.indexOf("\n\n");
-        }
-      }
-    } catch (err) {
-      if (attempt >= maxReconnects) {
-        console.error(`factory start: connection lost tailing ${runId}: ${String(err)}`);
-        return 1;
-      }
-      console.error(
-        `factory start: connection lost, reconnecting (${attempt + 1}/${maxReconnects})...`,
-      );
-      await new Promise((resolve) => setTimeout(resolve, 1000));
-    }
+  try {
+    await streamSse(`${baseUrl}/api/runs/${runId}/events`, {
+      maxReconnects: options.maxReconnects ?? 3,
+      ...(options.reconnectDelayMs !== undefined
+        ? { reconnectDelayMs: options.reconnectDelayMs }
+        : {}),
+      onEvent: (event: RunEvent) => {
+        console.log(formatEvent(event));
+        const tag = event.payload._tag;
+        if (tag === "RunFinished") exitCode = 0;
+        else if (tag === "RunFailed") exitCode = 1;
+        else if (tag === "RunCancelled") exitCode = 130;
+      },
+      onMalformedFrame: () => {
+        console.error(`factory start: skipping malformed frame for ${runId}`);
+      },
+      onReconnect: (attempt, max) => {
+        console.error(`factory start: connection lost, reconnecting (${attempt}/${max})...`);
+      },
+    });
+  } catch (err) {
+    console.error(`factory start: connection lost tailing ${runId}: ${String(err)}`);
+    return 1;
   }
-  return 1;
+
+  if (exitCode === undefined) {
+    console.error(`factory start: stream for ${runId} ended without a terminal event`);
+    return 1;
+  }
+  return exitCode;
 }
 
 export { watchSse };

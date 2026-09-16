@@ -438,7 +438,10 @@ errors. What they proved that fakes could not:
   concurrent leg ran clean — two simultaneous real agent streams to PRs #12/#13.
 - **`factory start --watch` crashed on `ECONNRESET` mid-run** while the daemon was healthy
   (run `run-d902774c` completed; the CLI died tailing it) — now reconnects ≤ 3 times since
-  every tail reconnect replays idempotently from seq 0 (finding 11 L2).
+  every tail reconnect replays idempotently from seq 0 (finding 11 L2). **Root-caused
+  2026-09-16 and it was not the network:** `Bun.serve`'s 10 s default `idleTimeout` closing a
+  quiet SSE stream. Fixed at the server with a keepalive frame; see the SSE-streaming entry
+  under phase 6 below.
 - **D32's collision retry is no longer test-only: PR #12's branch is
   `factory/issue-10-add-shout-export-42f97fe4`** — the agent-supplied name existed remotely,
   the runtime suffixed the short runId, retried, and surfaced `usedBranch`. The "known
@@ -470,6 +473,39 @@ admission-failure state that survives the claimed item; and the live leg's UI de
 (finding 11 L3 — raw ANSI in failed-run error text, glued list timestamps, `origin` always `—`,
 the un-repro'd replay-time duration glitch), plus D34's docker comment as the port revisit
 trigger when isolation lands.
+
+**Live-run streaming survives a quiet gap — done (2026-09-16).** The first phase-6 item, and it
+closed finding 11 L2's real root cause. Watching an active run in the UI showed `interrupted`
+within ~12 s and stayed there until a manual refresh. Cause: `Bun.serve`'s `idleTimeout` defaults
+to **10 s** and closes any connection with no traffic; a run's SSE stream is only as chatty as the
+workflow, so `ctx.exec` running a test suite or write-back pushing went quiet past the cliff. The
+SPA then read "stream closed" as "run over" and fell back to the store's read-time `interrupted`
+(D21) — which is what the store derives for *every* run without a terminal event, live ones
+included. Three changes, each independently sufficient to keep a run readable:
+
+- **`server/http.ts` sends a `:keepalive` comment frame every 5 s** on an open stream
+  (`DEFAULT_SSE_KEEPALIVE_MS`), cleared with the subscription in `finish()`/`cancel()`. A
+  keepalive rather than a raised `idleTimeout` because Bun caps that option at 255 s, which one
+  long agent step would still outlast.
+- **`src/lib/sse-client.ts` is a new shared reconnecting SSE client**, resuming from the last seq
+  over the `Last-Event-ID` offset the server already honoured. Both consumers read through it —
+  the SPA (`web/api.ts`) and `factory start --watch` — because the CLI's own copy of the policy
+  had drifted: its budget never reset, so four quiet gaps killed a tail against a healthy daemon.
+  The shared budget counts only *consecutive* attempts that received nothing, and any bytes —
+  an event or just a keepalive — refill it.
+- **`web/lib/status.ts`'s `runDetailStatus`** replaces run-detail's inline ternary, which passed a
+  hardcoded `active: false` and so could never report a live run once the stream was down. A run
+  now reads live if *either* the stream is open or the polled summary's `active` bit says the
+  server still holds it; `useRun` polls while that bit is true.
+
+_Validated by:_ `server/http.test.ts` (keepalive frames across a real quiet gap at a turned-down
+interval, plus a timer-cleanup guard), `lib/sse-client.test.ts` (resume offsets, budget
+exhaustion, budget refill on interleaved progress, quiet exit on abort — each verified to fail
+against a mutant of the line it covers), `web/lib/status.test.ts` (the six-way projection) and
+`cli.start.test.ts` (five drops against a budget of three, no reprinting). _Manual leg, not in the
+suite:_ a real 15 s `ctx.exec` gap watched through the real server — 0 drops with the keepalive,
+and with it disabled the drop lands at 12.0 s exactly as reported, with the reconnect recovering
+it. `interrupted` keeps its D12/D21 meaning: no terminal event *and* no process holding the run.
 
 ## Start here
 

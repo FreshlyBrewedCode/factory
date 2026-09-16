@@ -57,7 +57,34 @@ export interface ServerOptions {
    * filesystem paths (D31).
    */
   readonly config?: FactoryConfig;
+  /**
+   * How often an open SSE stream emits its keepalive comment frame. Exposed
+   * only so tests can turn it down far enough for a sub-second quiet gap to
+   * exercise the timer; production has no reason to set it.
+   */
+  readonly sseKeepaliveMs?: number;
 }
+
+/**
+ * `Bun.serve`'s `idleTimeout` defaults to **10 seconds** and closes any
+ * connection with no traffic in that window. A run's SSE stream only carries
+ * traffic when the workflow emits an event, so any quiet gap longer than that —
+ * `ctx.exec` running a test suite, write-back's `git push` + `gh pr create`, an
+ * agent thinking before its first chunk — dropped the connection under a
+ * perfectly healthy run. The SPA has no way to tell that apart from a dead
+ * process and rendered the run "interrupted" until a manual refresh.
+ *
+ * A comment frame on a timer is the fix rather than a raised `idleTimeout`,
+ * because Bun caps `idleTimeout` at 255s: a single long agent step would still
+ * outlast it, whereas a keepalive holds a stream open for any gap length.
+ * SSE comment frames (`:`-prefixed, no `data:` line) are inert to every client
+ * we ship — the SPA's `dataLine` (`web/api.ts`) and the CLI's tail both skip
+ * frames without a `data:` line.
+ *
+ * 5s leaves 2x margin under the 10s default. It is deliberately not derived
+ * from `idleTimeout`: we do not set that option, so the default is the contract.
+ */
+const DEFAULT_SSE_KEEPALIVE_MS = 5_000;
 
 /** `RunSummary` plus this process's live-registry bit — what the SPA reads. */
 export type RunSummaryResponse = RunSummary & { readonly active: boolean };
@@ -98,14 +125,24 @@ function parseLastEventId(req: Request): number | undefined {
   return Number(raw);
 }
 
-function sseStream(db: Database, runId: string, lastEventId?: number): ReadableStream<Uint8Array> {
+function sseStream(
+  db: Database,
+  runId: string,
+  lastEventId?: number,
+  keepaliveMs: number = DEFAULT_SSE_KEEPALIVE_MS,
+): ReadableStream<Uint8Array> {
   const encoder = new TextEncoder();
 
-  // `closed`/`unsubscribe` live on the stream (not just `start`) so the
-  // `cancel()` hook below can also mark them when a client disconnects
+  // `closed`/`unsubscribe`/`keepalive` live on the stream (not just `start`) so
+  // the `cancel()` hook below can also mark them when a client disconnects
   // without anyone having sent a terminal event.
   let closed = false;
   let unsubscribe: () => void = () => undefined;
+  let keepalive: ReturnType<typeof setInterval> | undefined;
+  const stopKeepalive = (): void => {
+    if (keepalive !== undefined) clearInterval(keepalive);
+    keepalive = undefined;
+  };
 
   return new ReadableStream({
     start(controller) {
@@ -126,6 +163,7 @@ function sseStream(db: Database, runId: string, lastEventId?: number): ReadableS
           // The client is gone (navigated away, fetch aborted) — Bun has
           // already closed this controller. Stop pushing and leave the fan-out.
           closed = true;
+          stopKeepalive();
           unsubscribe();
           return;
         }
@@ -135,6 +173,7 @@ function sseStream(db: Database, runId: string, lastEventId?: number): ReadableS
       const finish = (): void => {
         if (closed) return;
         closed = true;
+        stopKeepalive();
         unsubscribe();
         controller.close();
       };
@@ -162,14 +201,36 @@ function sseStream(db: Database, runId: string, lastEventId?: number): ReadableS
         if (isTerminal(event.payload)) sawTerminal = true;
       }
 
-      if (sawTerminal || !isActive(runId)) finish();
+      if (sawTerminal || !isActive(runId)) {
+        finish();
+        return;
+      }
+
+      // The run is still live, so this stream stays open indefinitely and must
+      // beat `idleTimeout` on its own. The same enqueue guard as `send`: once
+      // Bun has closed the controller under us, stop the timer rather than
+      // throw outside request context.
+      keepalive = setInterval(() => {
+        if (closed) {
+          stopKeepalive();
+          return;
+        }
+        try {
+          controller.enqueue(encoder.encode(":keepalive\n\n"));
+        } catch {
+          closed = true;
+          stopKeepalive();
+          unsubscribe();
+        }
+      }, keepaliveMs);
     },
     cancel(): void {
-      // A navigating/aborted client must drop its pubsub subscription;
-      // otherwise a later event would enqueue into a controller Bun has
-      // already closed, throwing outside request context — which kills the
-      // whole serve() process.
+      // A navigating/aborted client must drop its pubsub subscription and its
+      // keepalive timer; otherwise a later event (or tick) would enqueue into a
+      // controller Bun has already closed, throwing outside request context —
+      // which kills the whole serve() process.
       closed = true;
+      stopKeepalive();
       unsubscribe();
     },
   });
@@ -328,13 +389,16 @@ export function createHandler(options: ServerOptions): (req: Request) => Promise
       const runId = eventsMatch[1] as string;
       const exists = listSummaries(options.db).some((r) => r.runId === runId);
       if (!exists) return json({ error: "not found" }, { status: 404 });
-      return new Response(sseStream(options.db, runId, parseLastEventId(req)), {
-        headers: {
-          "content-type": "text/event-stream",
-          "cache-control": "no-cache",
-          connection: "keep-alive",
+      return new Response(
+        sseStream(options.db, runId, parseLastEventId(req), options.sseKeepaliveMs),
+        {
+          headers: {
+            "content-type": "text/event-stream",
+            "cache-control": "no-cache",
+            connection: "keep-alive",
+          },
         },
-      });
+      );
     }
 
     const runMatch = /^\/api\/runs\/([^/]+)$/.exec(url.pathname);

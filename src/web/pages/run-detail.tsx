@@ -21,7 +21,7 @@ import {
   type StepView,
 } from "@/web/lib/run-events";
 import { deriveTranscript, toTranscriptRows, type TranscriptRow } from "@/web/lib/transcript";
-import { runDisplayStatus } from "@/web/lib/status";
+import { runDetailStatus, type RunDisplayStatus } from "@/web/lib/status";
 import { StatusCell } from "@/web/components/status-cell";
 import { useEscapeKey } from "@/web/lib/use-escape-key";
 import { useMediaQuery } from "@/web/lib/use-media-query";
@@ -78,7 +78,7 @@ function MetaTable({
 }: {
   readonly runId: string;
   readonly workflowId: string | undefined;
-  readonly status: ReturnType<typeof runDisplayStatus>;
+  readonly status: RunDisplayStatus;
   readonly startedAt: number;
   readonly finishedAt: number | undefined;
   readonly duration: string;
@@ -247,7 +247,7 @@ function TerminalRow({
   name,
   meta,
 }: {
-  readonly status: ReturnType<typeof runDisplayStatus>;
+  readonly status: RunDisplayStatus;
   readonly kind: string;
   readonly time: string;
   readonly name: string;
@@ -696,26 +696,14 @@ function RunDetailView({ runId }: { readonly runId: string }) {
 
   const run = runQuery.data;
   const meta = deriveRunMeta(events);
-  // `streaming` is the live truth: the SSE stream closes on the terminal event
-  // (or when the process no longer holds the run). The summary fetched on mount
-  // can be stale once a run finishes under the page, so events win.
-  const active = streaming;
+  // Three sources, one answer — see `runDetailStatus`. In particular the run
+  // stays live while *either* the stream is open or the polled summary says the
+  // server still holds it, so a dropped connection no longer reads as a dead run.
+  const status = runDetailStatus({ terminalTag: meta.terminalTag, streaming, summary: run });
+  const active = status === "running";
   const now = useTickingNow(active);
   const steps = deriveSteps(events, { active });
   const selected = steps.find((step) => step.key === selectedKey) ?? null;
-
-  const status: ReturnType<typeof runDisplayStatus> =
-    meta.terminalTag === "RunFinished"
-      ? "finished"
-      : meta.terminalTag === "RunFailed"
-        ? "failed"
-        : meta.terminalTag === "RunCancelled"
-          ? "cancelled"
-          : active
-            ? "running"
-            : run !== undefined
-              ? runDisplayStatus({ active: false, status: run.status })
-              : "interrupted";
 
   const startedAt = run?.startedAt ?? events[0]?.ts ?? 0;
   const finishedAt = meta.finishedAt ?? run?.finishedAt;
@@ -784,7 +772,13 @@ function RunDetailView({ runId }: { readonly runId: string }) {
             <span className="min-w-0 font-mono text-base font-semibold break-all">{runId}</span>
             <StatusCell status={status} />
             {active ? <CancelRunButton runId={runId} /> : null}
-            {active ? (
+            {/*
+             * The connection indicator reports the *connection*, not the run:
+             * with reconnect in place these can legitimately disagree for a
+             * moment (a live run whose stream is mid-retry), and saying
+             * "connected" then would be a lie.
+             */}
+            {streaming ? (
               <span className="ml-auto flex items-center gap-1.5 font-mono text-[11px] text-muted-foreground">
                 <i
                   className="motion-reduce:animate-none animate-status-pulse size-[7px] flex-none rounded-full bg-(--status)"
