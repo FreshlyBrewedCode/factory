@@ -15,6 +15,8 @@ import { createSlowFakeAdapter } from "../replay/adapter";
 import { defineWorkflow, Schema } from "../workflow";
 import { createDedupeRegistry, DedupeKeyError } from "../lib/dedupe";
 import { activeRunIds, getActiveHandle, isActive, startTrackedRun } from "./runs";
+import { serve } from "./http";
+import { defineConfig } from "../config";
 
 /** Fire-and-forget children keep filling the registry; drain before closing the store. */
 async function drain(timeoutMs = 10_000): Promise<void> {
@@ -404,5 +406,149 @@ describe("dedupe keys through startTrackedRun (issue #15)", () => {
     await drain();
     db.close();
     rmSync(root, { recursive: true, force: true });
+  });
+});
+
+async function waitForTerminalStatus(
+  db: ReturnType<typeof openStore>,
+  runId: string,
+  timeoutMs = 10_000,
+): Promise<void> {
+  await waitFor(
+    () =>
+      getRunEvents(db, runId).some((event) =>
+        ["RunFinished", "RunFailed", "RunCancelled"].includes(event.payload._tag),
+      ),
+    timeoutMs,
+  );
+}
+
+describe("dedupe keys over POST /api/runs (issue #15)", () => {
+  test("a key held by a running run surfaces as a 409 conflict naming the key and the holder", async () => {
+    const root = mkdtempSync(join(tmpdir(), "factory-dedupe-http-"));
+    const db = openStore(join(root, "factory.db"));
+
+    const slowStartWorkflow = defineWorkflow("dedupe-http-slow", {
+      input: Schema.Struct({}),
+      workspace: { kind: "scratch" },
+      // Scratch: no clone needed. The key is claimed before the workflow runs.
+      run: async (ctx) => {
+        await ctx.exec(["sh", "-c", "sleep 0.5"]);
+        return {};
+      },
+    });
+
+    const server = serve({
+      db,
+      adapter: SLOW_ADAPTER,
+      port: 0,
+      config: defineConfig({
+        repo: {
+          sshUrl: join(root, "seed-not-used"),
+          identity: { name: "Factory", email: "factory@factory.test" },
+          baseBranch: "main",
+          slug: "acme/widgets",
+        },
+        workflows: [slowStartWorkflow],
+        workspaceRoot: join(root, "workspaces"),
+        retainedWorkspaces: 10,
+      }),
+    });
+    const base = `http://localhost:${server.port}`;
+
+    try {
+      const startRes = await fetch(`${base}/api/runs`, {
+        method: "POST",
+        body: JSON.stringify({ workflowId: "dedupe-http-slow", input: {}, dedupeKey: "issue:91" }),
+      });
+      expect(startRes.status).toBe(201);
+      const { runId: holderRunId } = (await startRes.json()) as { runId: string };
+
+      const collideRes = await fetch(`${base}/api/runs`, {
+        method: "POST",
+        body: JSON.stringify({
+          workflowId: "dedupe-http-slow",
+          input: {},
+          dedupeKey: "issue:91",
+        }),
+      });
+      expect(collideRes.status).toBe(409);
+      const collision = (await collideRes.json()) as {
+        error: string;
+        dedupeKey: string;
+        holderRunId: string;
+      };
+      expect(collision.dedupeKey).toBe("issue:91");
+      expect(collision.holderRunId).toBe(holderRunId);
+      expect(collision.error).toContain("issue:91");
+      expect(collision.error).toContain(holderRunId);
+
+      // A conflict is a start rejection, not a started run: nothing recorded.
+      expect(getRunEvents(db, "nonexistent")).toHaveLength(0);
+
+      await waitForTerminalStatus(db, holderRunId);
+      // Rejected while held; once terminal, a retry is a fresh 201.
+      const retryRes = await fetch(`${base}/api/runs`, {
+        method: "POST",
+        body: JSON.stringify({ workflowId: "dedupe-http-slow", input: {}, dedupeKey: "issue:91" }),
+      });
+      expect(retryRes.status).toBe(201);
+      const { runId: retryRunId } = (await retryRes.json()) as { runId: string };
+      await waitForTerminalStatus(db, retryRunId);
+    } finally {
+      await drain();
+      await server.stop(true);
+      db.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("a non-string dedupeKey is a 400, and omitting one behaves as today", async () => {
+    const root = mkdtempSync(join(tmpdir(), "factory-dedupe-http-shape-"));
+    const db = openStore(join(root, "factory.db"));
+    const plainWorkflow = defineWorkflow("dedupe-http-plain", {
+      input: Schema.Struct({}),
+      workspace: { kind: "scratch" },
+      run: async () => ({}),
+    });
+
+    const server = serve({
+      db,
+      adapter: SLOW_ADAPTER,
+      port: 0,
+      config: defineConfig({
+        repo: {
+          sshUrl: join(root, "seed-not-used"),
+          identity: { name: "Factory", email: "factory@factory.test" },
+          baseBranch: "main",
+          slug: "acme/widgets",
+        },
+        workflows: [plainWorkflow],
+        workspaceRoot: join(root, "workspaces"),
+        retainedWorkspaces: 10,
+      }),
+    });
+    const base = `http://localhost:${server.port}`;
+
+    try {
+      const bad = await fetch(`${base}/api/runs`, {
+        method: "POST",
+        body: JSON.stringify({ workflowId: "dedupe-http-plain", input: {}, dedupeKey: 7 }),
+      });
+      expect(bad.status).toBe(400);
+
+      const plain = await fetch(`${base}/api/runs`, {
+        method: "POST",
+        body: JSON.stringify({ workflowId: "dedupe-http-plain", input: {} }),
+      });
+      expect(plain.status).toBe(201);
+      const { runId } = (await plain.json()) as { runId: string };
+      await waitForTerminalStatus(db, runId);
+    } finally {
+      await drain();
+      await server.stop(true);
+      db.close();
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });
