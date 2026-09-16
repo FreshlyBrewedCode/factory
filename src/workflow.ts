@@ -90,10 +90,29 @@ export interface WorkflowAgentDefaults {
   readonly permissionMode?: "acceptEdits" | "default";
 }
 
+/**
+ * How the run's working directory is provisioned (issue #13):
+ * - `clone` (the default) is D28's per-run tree: mirror refresh + local clone.
+ * - `scratch` is an empty directory: no mirror, no clone. `ctx.exec` and
+ *   `ctx.agent` work unchanged — an agent needs a working directory, not a
+ *   repo — and `ctx.writeBack` fails: there is nothing to push.
+ *
+ * A tagged union, not an optional `dir`: "no workspace" is deliberately not
+ * representable, because a nullable `ctx.dir` would force null branches
+ * through exec, the agent adapter, and write-back for no benefit.
+ */
+export type WorkspaceKind = "clone" | "scratch";
+
+export interface WorkspaceSpec {
+  readonly kind: WorkspaceKind;
+}
+
 export interface WorkflowConfig<I, O> {
   readonly input: Schema.Codec<I, any>;
   readonly output?: Schema.Codec<O, any>;
   readonly agent?: WorkflowAgentDefaults;
+  /** Absent, the workflow runs on a `clone` workspace. */
+  readonly workspace?: WorkspaceSpec;
   readonly run: (ctx: WorkflowCtx, input: I) => Promise<O>;
 }
 
@@ -102,6 +121,8 @@ export interface WorkflowDefinition<I = unknown, O = unknown> {
   readonly input: Schema.Codec<I, any>;
   readonly output: Schema.Codec<O, any> | undefined;
   readonly agent: WorkflowAgentDefaults | undefined;
+  /** Resolved to `{kind:"clone"}` at registration — clone is the default (issue #13). */
+  readonly workspace: WorkspaceSpec;
   readonly run: (ctx: WorkflowCtx, input: I) => Promise<O>;
 }
 
@@ -110,5 +131,12 @@ export function defineWorkflow<I, O>(
   id: string,
   config: WorkflowConfig<I, O>,
 ): WorkflowDefinition<I, O> {
-  return { id, input: config.input, output: config.output, agent: config.agent, run: config.run };
+  return {
+    id,
+    input: config.input,
+    output: config.output,
+    agent: config.agent,
+    workspace: config.workspace ?? { kind: "clone" },
+    run: config.run,
+  };
 }
