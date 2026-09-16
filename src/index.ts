@@ -37,7 +37,9 @@ export type {
 // --- Authoring: the project config (ADR 0005, D27) --------------------------
 
 export {
+  DEFAULT_MAX_CHILDREN_PER_RUN,
   DEFAULT_MAX_CONCURRENT_RUNS,
+  DEFAULT_MAX_DISPATCH_DEPTH,
   DEFAULT_RETAINED_WORKSPACES,
   DEFAULT_WORKSPACE_ROOT,
   defineConfig,
