@@ -75,6 +75,12 @@ export interface StartRunOptions {
    * Recorded on `RunStarted.parentId`.
    */
   readonly parentRunId?: string;
+  /**
+   * This run's dedupe key (issue #15), when it was started with one. Recorded
+   * on `RunStarted.dedupeKey` for observability; the claim itself is the
+   * server's (server/runs.ts), not the runtime's.
+   */
+  readonly dedupeKey?: string;
   readonly onEvent: (event: RunEvent) => void;
 }
 
@@ -425,6 +431,7 @@ export function startRun<I, O>(
       input: decodedInput as never,
       workspaceKind,
       ...(options.parentRunId !== undefined ? { parentId: options.parentRunId } : {}),
+      ...(options.dedupeKey !== undefined ? { dedupeKey: options.dedupeKey } : {}),
     });
 
     try {

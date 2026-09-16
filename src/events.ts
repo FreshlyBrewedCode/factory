@@ -81,6 +81,14 @@ export const RunEventPayload = Schema.TaggedUnion({
      * parent ↔ child navigation and nothing else.
      */
     parentId: Schema.optional(Schema.String),
+    /**
+     * The run's dedupe key (issue #15), present only when the run was started
+     * with one. While this run is non-terminal, no other run can start with
+     * the same key; the record here is for observability — the holder is
+     * named in any `DispatchCollision` raised against it. Absent, the run
+     * holds nothing.
+     */
+    dedupeKey: Schema.optional(Schema.String),
   },
 
   RunFinished: {
