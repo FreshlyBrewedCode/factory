@@ -185,6 +185,55 @@ async function seedCorpusRuns(root: string, db: ReturnType<typeof openStore>): P
     payload: { _tag: "ExecStarted", execId: "exec-0", command: ["bun", "test"], cwd: workDir },
   });
 
+  // Issue #14: a parent/child pair, seeded by hand so the SPA can prove the
+  // parent ↔ child navigation without the browser dispatching a real run.
+  appendEvent(db, {
+    runId: "run-static-tree",
+    seq: 0,
+    ts,
+    payload: {
+      _tag: "RunStarted",
+      workflowId: "implement-issue",
+      dir: workDir,
+      input: { issueNumber: 3 },
+    },
+  });
+  appendEvent(db, {
+    runId: "run-static-tree",
+    seq: 1,
+    ts,
+    payload: {
+      _tag: "RunDispatched",
+      childRunId: "run-static-tree-child",
+      childWorkflowId: "implement-issue",
+      input: { issueNumber: 3 },
+    },
+  });
+  appendEvent(db, {
+    runId: "run-static-tree",
+    seq: 2,
+    ts,
+    payload: { _tag: "RunFinished", durationMs: 5 },
+  });
+  appendEvent(db, {
+    runId: "run-static-tree-child",
+    seq: 0,
+    ts,
+    payload: {
+      _tag: "RunStarted",
+      workflowId: "implement-issue",
+      dir: workDir,
+      input: { issueNumber: 3 },
+      parentId: "run-static-tree",
+    },
+  });
+  appendEvent(db, {
+    runId: "run-static-tree-child",
+    seq: 1,
+    ts,
+    payload: { _tag: "RunFinished", durationMs: 5 },
+  });
+
   return remoteDir;
 }
 

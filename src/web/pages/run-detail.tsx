@@ -64,6 +64,18 @@ function outputSummary(output: unknown): React.ReactNode {
   return <span className="font-mono text-[11px]">{JSON.stringify(output)}</span>;
 }
 
+function runLink(runId: string): React.ReactNode {
+  return (
+    <Link
+      to="/runs/$runId"
+      params={{ runId }}
+      className="font-mono text-[11px] underline hover:text-foreground"
+    >
+      {runId}
+    </Link>
+  );
+}
+
 function MetaTable({
   runId,
   workflowId,
@@ -76,6 +88,8 @@ function MetaTable({
   input,
   output,
   note,
+  parentId,
+  dispatched,
 }: {
   readonly runId: string;
   readonly workflowId: string | undefined;
@@ -88,6 +102,11 @@ function MetaTable({
   readonly input: unknown;
   readonly output: unknown;
   readonly note: string | undefined;
+  readonly parentId: string | undefined;
+  readonly dispatched: ReadonlyArray<{
+    readonly childRunId: string;
+    readonly childWorkflowId: string;
+  }>;
 }) {
   return (
     <table data-testid="run-meta" className="w-full border-collapse">
@@ -105,7 +124,35 @@ function MetaTable({
         )}
         {finishedAt !== undefined ? metaRow("finished", formatClock(finishedAt), true) : null}
         {metaRow("duration", duration, true)}
-        {metaRow("origin", <span className="text-muted-foreground">—</span>)}
+        {/*
+         * Parent ↔ child navigation (issue #14): "origin" links child → parent,
+         * "children" links parent → each dispatched child, straight to run
+         * detail with no detour through the runs list.
+         */}
+        {metaRow(
+          "origin",
+          parentId !== undefined ? (
+            runLink(parentId)
+          ) : (
+            <span className="text-muted-foreground">—</span>
+          ),
+        )}
+        {metaRow(
+          "children",
+          dispatched.length > 0 ? (
+            <span className="flex flex-wrap gap-x-3 gap-y-0.5">
+              {dispatched.map((child) => (
+                <span key={child.childRunId}>
+                  <span className="text-muted-foreground">{child.childWorkflowId}</span>{" "}
+                  {runLink(child.childRunId)}
+                </span>
+              ))}
+            </span>
+          ) : (
+            <span className="text-muted-foreground">—</span>
+          ),
+          false,
+        )}
         {metaRow("dir", dir ?? "—", true)}
         {metaRow("workspace", workspaceKind, true)}
         {metaRow("input", inputSummary(input), true)}
@@ -808,6 +855,8 @@ function RunDetailView({ runId }: { readonly runId: string }) {
             input={meta.input}
             output={meta.output}
             note={status === "interrupted" ? "no terminal event — process died mid-run" : undefined}
+            parentId={meta.parentId}
+            dispatched={meta.dispatched}
           />
         </header>
 

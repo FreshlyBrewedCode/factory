@@ -325,6 +325,13 @@ export interface RunMeta {
   readonly finishedAt: number | undefined;
   readonly durationMs: number | undefined;
   readonly sessions: ReadonlyArray<RunSession>;
+  /** This run's parent, when it was started by `ctx.dispatch` (issue #14). */
+  readonly parentId: string | undefined;
+  /** The children this run dispatched via `ctx.dispatch` (issue #14). */
+  readonly dispatched: ReadonlyArray<{
+    readonly childRunId: string;
+    readonly childWorkflowId: string;
+  }>;
 }
 
 /** Run-overview fields that only exist in events, not in `RunSummary`. */
@@ -340,6 +347,8 @@ export function deriveRunMeta(events: ReadonlyArray<RunEvent>): RunMeta {
   let finishedAt: number | undefined;
   let durationMs: number | undefined;
   const sessions: Array<RunSession> = [];
+  let parentId: string | undefined;
+  const dispatched: Array<{ childRunId: string; childWorkflowId: string }> = [];
 
   for (const event of events) {
     switch (event.payload._tag) {
@@ -348,6 +357,13 @@ export function deriveRunMeta(events: ReadonlyArray<RunEvent>): RunMeta {
         dir = event.payload.dir;
         input = event.payload.input;
         workspaceKind = event.payload.workspaceKind ?? "clone";
+        parentId = event.payload.parentId;
+        break;
+      case "RunDispatched":
+        dispatched.push({
+          childRunId: event.payload.childRunId,
+          childWorkflowId: event.payload.childWorkflowId,
+        });
         break;
       case "RunFinished":
         output = event.payload.output;
@@ -389,6 +405,8 @@ export function deriveRunMeta(events: ReadonlyArray<RunEvent>): RunMeta {
     finishedAt,
     durationMs,
     sessions,
+    parentId,
+    dispatched,
   };
 }
 
@@ -398,6 +416,8 @@ export function summarizeEvent(event: RunEvent): string {
   switch (payload._tag) {
     case "RunStarted":
       return `${payload.workflowId} · ${payload.dir}`;
+    case "RunDispatched":
+      return `dispatched ${payload.childWorkflowId} · ${payload.childRunId}`;
     case "RunFinished":
       return `finished · ${payload.durationMs}ms`;
     case "RunFailed":
