@@ -14,14 +14,15 @@
  */
 
 import type { Database } from "bun:sqlite";
+import { rm } from "node:fs/promises";
 import { admitRun } from "./admission";
-import { appendEvent } from "../persistence/store";
+import { appendEvent, listRuns } from "../persistence/store";
 import type { RunRepo } from "../runtime/run";
 import { startRun, type RunHandle } from "../runtime/run";
 import type { GitIdentity } from "../lib/clone";
 import { allocateWorkspace } from "../lib/workspace";
 import type { AgentAdapter } from "../runtime/agent-adapter";
-import type { WorkflowDefinition } from "../workflow";
+import type { WorkflowDefinition, WorkspaceKind } from "../workflow";
 import { publish } from "./pubsub";
 
 interface ReservedSlot {
@@ -128,6 +129,19 @@ export async function startTrackedRun(
   try {
     if (options.beforeStart !== undefined) await options.beforeStart();
 
+    // Issue #13: a scratch workspace takes its kind from the workflow and
+    // never evicts clone workspaces — leftover scratch dirs (kept failures)
+    // are excluded from retention via the run log's recorded kinds.
+    const kind: WorkspaceKind = workflow.workspace?.kind ?? "clone";
+    const scratchEntries =
+      options.workspace !== undefined && kind === "scratch"
+        ? undefined
+        : new Set(
+            listRuns(db)
+              .filter((run) => run.workspaceKind === "scratch")
+              .map((run) => run.runId),
+          );
+
     const dir =
       options.dir ??
       (options.workspace === undefined
@@ -135,15 +149,22 @@ export async function startTrackedRun(
         : await allocateWorkspace({
             runId,
             ...options.workspace,
+            kind,
+            ...(scratchEntries !== undefined ? { scratchEntries } : {}),
             protectedEntries: [runId, ...activeRunIds()],
           }));
 
     if (dir === undefined) throw new Error("startTrackedRun needs `dir` or `workspace`");
 
+    // Whether the runtime allocated this dir itself (explicit callers' dirs,
+    // incl. the legacy path-based API, are not reaped — they are caller-owned).
+    const workspaceAllocated = options.dir === undefined;
+
     const handle = startRun(workflow, {
       runId,
       dir,
       ...(options.repo !== undefined ? { repo: options.repo } : {}),
+      workspaceKind: kind,
       input: options.input,
       adapter: options.adapter,
       onEvent: (event) => {
@@ -164,6 +185,16 @@ export async function startTrackedRun(
 
     void handle.result.finally(() => {
       if (active.get(runId) === handle) active.delete(runId);
+    });
+
+    // Issue #13: a scratch dir is reaped when the run succeeds — there is no
+    // tree worth keeping, and retention never applies to it. It is kept when
+    // the run fails (or is cancelled) so a failed precondition check remains
+    // inspectable.
+    void handle.result.then((outcome) => {
+      if (workspaceAllocated && kind === "scratch" && outcome.outcome === "completed") {
+        void rm(dir, { recursive: true, force: true });
+      }
     });
 
     if (cancelRequested) void handle.cancel();
