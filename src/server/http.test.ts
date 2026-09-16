@@ -9,6 +9,7 @@ import registryWorkflow from "../../test/fixtures/registry-workflow";
 import { serve } from "./http";
 
 const ECHO_WORKFLOW = `${import.meta.dir}/../../test/fixtures/echo-workflow.ts`;
+const QUIET_GAP_WORKFLOW = `${import.meta.dir}/../../test/fixtures/quiet-gap-workflow.ts`;
 const FIXTURE_CONFIG = `${import.meta.dir}/../../test/fixtures/factory.config.ts`;
 
 async function waitForTerminal(
@@ -171,6 +172,122 @@ describe("phase 4 SPA serving", () => {
       expect(apiRes.status).toBe(200);
       expect(apiRes.headers.get("content-type")).toContain("application/json");
       expect(await apiRes.json()).toEqual([]);
+    } finally {
+      await server.stop(true);
+      db.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+/**
+ * Reads the raw SSE bytes as well as the parsed frames, because the keepalive
+ * is a *comment* frame — by design it is invisible to `parseFrame`, so only the
+ * raw text can attest that it was sent.
+ */
+async function readSseRawUntilTerminal(
+  url: string,
+): Promise<{ raw: string; frames: ReadonlyArray<SseFrame> }> {
+  const res = await fetch(url);
+  const reader = res.body!.getReader();
+  const decoder = new TextDecoder();
+  const frames: Array<SseFrame> = [];
+  let raw = "";
+  let buffer = "";
+
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    const text = decoder.decode(value, { stream: true });
+    raw += text;
+    buffer += text;
+
+    let idx = buffer.indexOf("\n\n");
+    while (idx !== -1) {
+      const frame = parseFrame(buffer.slice(0, idx));
+      buffer = buffer.slice(idx + 2);
+      if (frame !== undefined) {
+        frames.push(frame);
+        if (["RunFinished", "RunFailed", "RunCancelled"].includes(frame.tag)) {
+          reader.releaseLock();
+          return { raw, frames };
+        }
+      }
+      idx = buffer.indexOf("\n\n");
+    }
+  }
+  return { raw, frames };
+}
+
+describe("SSE keepalive", () => {
+  /*
+   * Bun.serve's `idleTimeout` defaults to 10 seconds and kills any connection
+   * with no traffic, so a run that goes quiet longer than that — `ctx.exec`
+   * running a test suite, write-back pushing — loses its SSE stream while the
+   * run itself is perfectly healthy. The SPA then renders the run as
+   * "interrupted" until someone refreshes. The fix is a comment frame on a
+   * timer; this test turns the interval down so a sub-second gap exercises it.
+   */
+  test("keeps a quiet live run's stream open with comment frames", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "factory-sse-keepalive-test-"));
+    const db = openStore(join(dir, "factory.db"));
+    const adapter = createSlowFakeAdapter([], 1);
+    const server = serve({ db, adapter, port: 0, sseKeepaliveMs: 25 });
+    const base = `http://localhost:${server.port}`;
+
+    try {
+      const startRes = await fetch(`${base}/api/runs`, {
+        method: "POST",
+        body: JSON.stringify({ workflowPath: QUIET_GAP_WORKFLOW, input: {}, dir }),
+      });
+      expect(startRes.status).toBe(201);
+      const { runId } = (await startRes.json()) as { runId: string };
+
+      const { raw, frames } = await readSseRawUntilTerminal(`${base}/api/runs/${runId}/events`);
+
+      // The 400ms exec gap at a 25ms interval is many keepalives; two is
+      // enough to prove the timer runs and keeps running.
+      const keepalives = raw.split(":keepalive\n\n").length - 1;
+      expect(keepalives).toBeGreaterThanOrEqual(2);
+
+      // The run still completes, and the comment frames are inert to the
+      // client parser — no phantom events, no corrupted ones.
+      const tags = frames.map((f) => f.tag);
+      expect(tags).toContain("ExecStarted");
+      expect(tags).toContain("ExecFinished");
+      expect(tags).toContain("RunFinished");
+      expect(frames.every((f) => f.seq >= 0)).toBe(true);
+    } finally {
+      await server.stop(true);
+      db.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("stops the keepalive timer once the stream closes", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "factory-sse-keepalive-stop-test-"));
+    const db = openStore(join(dir, "factory.db"));
+    const adapter = createSlowFakeAdapter([], 1);
+    const server = serve({ db, adapter, port: 0, sseKeepaliveMs: 10 });
+    const base = `http://localhost:${server.port}`;
+
+    try {
+      const startRes = await fetch(`${base}/api/runs`, {
+        method: "POST",
+        body: JSON.stringify({ workflowPath: ECHO_WORKFLOW, input: {}, dir }),
+      });
+      const { runId } = (await startRes.json()) as { runId: string };
+      await waitForTerminal(db, runId, 10_000);
+
+      // A finished run's stream closes after its replay. If the timer outlived
+      // the close it would enqueue into a closed controller — the exact shape
+      // of the P4-era crash — so the daemon must still be answering after
+      // several intervals have elapsed.
+      await readSseUntilTerminal(`${base}/api/runs/${runId}/events`);
+      await Bun.sleep(60);
+
+      const res = await fetch(`${base}/api/runs`);
+      expect(res.status).toBe(200);
     } finally {
       await server.stop(true);
       db.close();

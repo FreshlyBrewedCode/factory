@@ -8,8 +8,19 @@ export function useRuns() {
   return useQuery({ queryKey: ["runs"], queryFn: fetchRuns, refetchInterval: 2_000 });
 }
 
+/**
+ * One run's summary. Polled while the server still holds the run, because its
+ * `active` bit is what tells a live run apart from a crashed one when the SSE
+ * stream is down (`runDetailStatus`) — a value fetched once at mount cannot do
+ * that job. Polling stops as soon as the server reports the run inactive: from
+ * that point the summary is final.
+ */
 export function useRun(runId: string) {
-  return useQuery({ queryKey: ["run", runId], queryFn: () => fetchRun(runId) });
+  return useQuery({
+    queryKey: ["run", runId],
+    queryFn: () => fetchRun(runId),
+    refetchInterval: (query) => (query.state.data?.active === false ? false : 2_000),
+  });
 }
 
 /** The workflow registry (D30), for the New-run dialog. */
@@ -42,15 +53,20 @@ export function useCancelRun() {
 
 export interface RunEventsState {
   readonly events: ReadonlyArray<RunEvent>;
-  /** The stream is open: the run is live (or the initial replay is still arriving). */
+  /**
+   * The SSE connection is open. **Not** the same as "the run is live": since
+   * `subscribeToRun` reconnects, this settles false only when the stream ends
+   * for good — a clean close, or the reconnect budget running out. Whether the
+   * *run* is live is `runDetailStatus`'s question, and it needs the server's
+   * `active` bit too.
+   */
   readonly streaming: boolean;
 }
 
 /**
  * Replay-then-tail a run's event log over SSE (D26). Events are appended in
  * `seq` order and de-duplicated, because a reconnect replays from an offset
- * and the live tail races the persisted read. `streaming` is the UI's signal
- * that the run has not reached a terminal event yet.
+ * and the live tail races the persisted read.
  *
  * Callers must remount per `runId` (e.g. `<View key={runId} />`): state is
  * reset by remount, not by an effect that synchronously clears it.

@@ -189,4 +189,78 @@ describe("factory start (D31): thin HTTP client against a real daemon", () => {
       await server.stop(true);
     }
   });
+
+  test("watchSse survives more drops than its budget when each one makes progress", async () => {
+    /*
+     * The counter in the original reconnect fix never reset, so a run with more
+     * quiet gaps than the budget died mid-tail even though the daemon was
+     * healthy — the same defect the SPA had, in the CLI. Five drops against a
+     * budget of three: this only reaches the terminal event if progress refills
+     * the budget.
+     *
+     * Each connection here also asserts the resume: it must arrive carrying the
+     * last seq the CLI saw, so the tail continues rather than reprinting the
+     * run from the top on every reconnect.
+     */
+    const resumeOffsets: Array<string | null> = [];
+    const encoder = new TextEncoder();
+    const frames = [0, 1, 2, 3, 4].map(
+      (seq) =>
+        `id: ${seq}\ndata: ${JSON.stringify({
+          runId: "run-x",
+          seq,
+          ts: seq,
+          payload: { _tag: "LogRecorded", name: `step-${seq}`, data: {} },
+        })}\n\n`,
+    );
+    const terminal = `id: 5\ndata: ${JSON.stringify({
+      runId: "run-x",
+      seq: 5,
+      ts: 5,
+      payload: { _tag: "RunFinished", durationMs: 1 },
+    })}\n\n`;
+
+    const server = Bun.serve({
+      port: 0,
+      fetch(req) {
+        const attempt = resumeOffsets.length;
+        resumeOffsets.push(req.headers.get("last-event-id"));
+        return new Response(
+          new ReadableStream({
+            start(controller) {
+              if (attempt < frames.length) {
+                controller.enqueue(encoder.encode(frames[attempt]!));
+                setTimeout(() => controller.error(), 5);
+                return;
+              }
+              controller.enqueue(encoder.encode(terminal));
+              controller.close();
+            },
+          }),
+          { headers: { "content-type": "text/event-stream" } },
+        );
+      },
+    });
+    const base = `http://localhost:${server.port}`;
+
+    try {
+      const { watchSse } = await import("./cli");
+      const originalLog = console.log;
+      const originalError = console.error;
+      const stdout: Array<string> = [];
+      console.log = (line: string) => stdout.push(line);
+      console.error = () => undefined;
+      const exit = await watchSse(base, "run-x", { reconnectDelayMs: 1 });
+      console.log = originalLog;
+      console.error = originalError;
+
+      expect(exit).toBe(0);
+      // Six connections: five dropped, the last one terminal.
+      expect(resumeOffsets).toEqual([null, "0", "1", "2", "3", "4"]);
+      // And no event printed twice — the resume means no re-replay.
+      expect(stdout).toHaveLength(6);
+    } finally {
+      await server.stop(true);
+    }
+  }, 15_000);
 });
