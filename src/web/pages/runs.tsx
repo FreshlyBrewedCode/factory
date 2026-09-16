@@ -116,25 +116,27 @@ function RunTable({
   readonly now: number;
 }) {
   return (
-    <table className="w-full border-collapse">
-      <thead>
-        <tr className="border-b-2 border-border-strong text-left">
-          {["Status", "Run", "Task", "Started", "Duration", "Result", ""].map((heading) => (
-            <th
-              key={heading}
-              className="px-3 py-1.5 text-[11px] font-semibold tracking-wide text-muted-foreground uppercase"
-            >
-              {heading}
-            </th>
+    <div className="-mx-1 overflow-x-auto px-1">
+      <table className="w-full border-collapse">
+        <thead>
+          <tr className="border-b-2 border-border-strong text-left">
+            {["Status", "Run", "Task", "Started", "Duration", "Result", ""].map((heading) => (
+              <th
+                key={heading}
+                className="px-3 py-1.5 text-[11px] font-semibold tracking-wide text-muted-foreground uppercase"
+              >
+                {heading}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {runs.map((run) => (
+            <RunRow key={run.runId} run={run} now={now} />
           ))}
-        </tr>
-      </thead>
-      <tbody>
-        {runs.map((run) => (
-          <RunRow key={run.runId} run={run} now={now} />
-        ))}
-      </tbody>
-    </table>
+        </tbody>
+      </table>
+    </div>
   );
 }
 
@@ -171,7 +173,11 @@ export function RunsPage() {
           {running.length > 0 ? (
             <section data-testid="runs-group-running" className="mb-8">
               <div className="mb-2 flex items-center gap-2">
-                <i className="status-dot status-pulse" data-status="running" aria-hidden="true" />
+                <i
+                  className="motion-reduce:animate-none animate-status-pulse size-[7px] flex-none rounded-full bg-(--status)"
+                  data-status="running"
+                  aria-hidden="true"
+                />
                 <span className="text-[11px] font-semibold tracking-wide text-muted-foreground uppercase">
                   Running
                 </span>

@@ -71,6 +71,10 @@
   --color-status-pending: var(--status-pending);
   --color-status-blocked: var(--status-blocked);
   --color-status-cancelled: var(--status-cancelled);
+  --color-term-bg: var(--term-bg);
+  --color-term-fg: var(--term-fg);
+
+  --animate-status-pulse: status-pulse 1.6s ease-in-out infinite;
 
   --font-sans: "Inter Variable", ui-sans-serif, system-ui, sans-serif;
   --font-mono: "JetBrains Mono Variable", ui-monospace, SFMono-Regular, Menlo, monospace;
@@ -106,8 +110,10 @@
 }
 
 /*
- * Shared status language (finding 7): `data-status` maps the semantic value to
- * a token; the dot and label read that token. Running is the only pulse.
+ * Shared status language (finding 7): `data-status` maps the semantic value
+ * to a token; the dot and label read that token. Running is the only pulse.
+ * (`@keyframes` ships globally; `--animate-status-pulse` in `@theme inline`
+ * binds it to the `animate-status-pulse` utility.)
  */
 [data-status="finished"],
 [data-status="complete"],
@@ -133,29 +139,6 @@
   --status: var(--muted-foreground);
 }
 
-.status-cell {
-  display: inline-flex;
-  align-items: center;
-  gap: 7px;
-}
-
-.status-dot {
-  width: 7px;
-  height: 7px;
-  flex: none;
-  border-radius: 9999px;
-  background-color: var(--status, var(--muted-foreground));
-}
-
-.status-label {
-  font-size: 11px;
-  font-weight: 600;
-  letter-spacing: 0.02em;
-  text-transform: uppercase;
-  color: var(--status, var(--muted-foreground));
-  white-space: nowrap;
-}
-
 @keyframes status-pulse {
   0%,
   100% {
@@ -164,158 +147,4 @@
   50% {
     opacity: 0.25;
   }
-}
-
-.status-pulse {
-  animation: status-pulse 1.6s ease-in-out infinite;
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .status-pulse {
-    animation: none;
-  }
-}
-
-/* Indexed step spine (finding 7): numbered nodes connected by a hairline. */
-.step-item {
-  position: relative;
-  display: grid;
-  grid-template-columns: 24px minmax(0, 1fr);
-  gap: 12px;
-}
-
-.step-index {
-  position: relative;
-  display: flex;
-  justify-content: center;
-  align-items: flex-start;
-}
-
-.step-index .num {
-  z-index: 1;
-  display: grid;
-  place-items: center;
-  width: 22px;
-  height: 22px;
-  margin-top: 10px;
-  border: 1px solid var(--status, var(--border-strong));
-  border-radius: 9999px;
-  background-color: var(--card);
-  color: var(--status, var(--muted-foreground));
-  font-family: var(--font-mono);
-  font-size: 10px;
-  font-weight: 500;
-}
-
-.step-index::after {
-  content: "";
-  position: absolute;
-  top: 32px;
-  bottom: -7px;
-  left: 50%;
-  width: 1px;
-  transform: translateX(-50%);
-  background-color: var(--border-strong);
-}
-
-.step-item:last-child .step-index::after {
-  display: none;
-}
-
-.step-index .num.dot {
-  width: 8px;
-  height: 8px;
-  margin-top: 18px;
-  border: none;
-  background-color: var(--border);
-}
-
-.step-row {
-  display: grid;
-  grid-template-columns: 112px 76px 64px minmax(0, 1fr) auto 18px;
-  align-items: center;
-  gap: 12px;
-  width: 100%;
-  padding: 10px 14px;
-  border: 1px solid var(--border);
-  border-left: 3px solid var(--status, var(--border));
-  background-color: var(--card);
-  text-align: left;
-}
-
-button.step-row:hover {
-  border-color: var(--border);
-  border-left-color: var(--status, var(--border));
-}
-
-button.step-row[aria-current="true"] {
-  outline: 2px solid var(--ring);
-  outline-offset: 1px;
-}
-
-.step-kind {
-  font-size: 11px;
-  font-weight: 600;
-  letter-spacing: 0.025em;
-  text-transform: uppercase;
-  color: var(--muted-foreground);
-}
-
-.step-time {
-  font-family: var(--font-mono);
-  font-size: 11px;
-  white-space: nowrap;
-}
-
-.step-name {
-  min-width: 0;
-  font-family: var(--font-mono);
-  font-size: 12px;
-  font-weight: 500;
-  word-break: break-word;
-}
-
-.step-meta {
-  font-family: var(--font-mono);
-  font-size: 11px;
-  text-align: right;
-  white-space: nowrap;
-  color: var(--muted-foreground);
-}
-
-/* Exec output (finding: terminal formatting): always dark, regardless of theme. */
-.term {
-  background-color: var(--term-bg);
-  color: var(--term-fg);
-  border: 1px solid var(--border);
-}
-
-.term-head {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 8px 12px;
-  border-bottom: 1px solid oklch(1 0 0 / 12%);
-  font-family: var(--font-mono);
-  font-size: 11px;
-}
-
-.term-head .prompt {
-  color: var(--status-ready);
-  font-weight: 600;
-}
-
-.term pre {
-  margin: 0;
-  padding: 10px 12px;
-  max-height: 320px;
-  overflow-y: auto;
-  font-family: var(--font-mono);
-  font-size: 11px;
-  white-space: pre-wrap;
-  word-break: break-word;
-}
-
-.term .stderr {
-  color: var(--status-blocked);
 }
