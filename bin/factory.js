@@ -13,6 +13,16 @@
  * Do not give this file a `#!/usr/bin/env node` shebang: `bunx` honors the
  * shebang too, so that would route every `bunx @frebreco/factory` invocation
  * through Node and this package could never run.
+ *
+ * The launcher also pins Bun's config file to *this package's* `bunfig.toml`.
+ * `factory serve` hands `src/web/index.html` to Bun's fullstack bundler, and
+ * the only way to register `bun-plugin-tailwind` with that bundler is
+ * `[serve.static] plugins` in a bunfig — which Bun reads from `$cwd`, not from
+ * the code being run. Since `factory serve` runs in the *user's* project
+ * directory, the repo-root bunfig is never found there and the UI ships with
+ * no Tailwind output at all: no theme variables, no utilities, an unstyled
+ * page. `--config` is the documented override, so the bundling behaviour now
+ * travels with the package instead of with the working directory.
  */
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
@@ -33,8 +43,9 @@ if (typeof Bun === "undefined") {
 }
 
 const entry = fileURLToPath(new URL("../src/cli.ts", import.meta.url));
+const bunfig = fileURLToPath(new URL("../bunfig.toml", import.meta.url));
 
-const child = spawn(process.execPath, [entry, ...process.argv.slice(2)], {
+const child = spawn(process.execPath, [`--config=${bunfig}`, entry, ...process.argv.slice(2)], {
   stdio: "inherit",
 });
 

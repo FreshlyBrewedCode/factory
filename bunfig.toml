@@ -1,5 +1,11 @@
 # Bun's fullstack bundler needs the Tailwind plugin registered here (not in
 # package.json) so `Bun.serve`'s HTML-route bundling picks it up when it
 # processes `src/web/styles.css`.
+#
+# Bun resolves a bunfig from `$cwd`, but `factory serve` runs in the *user's*
+# project directory — so this file is shipped with the package and pinned by
+# `bin/factory.js` with `bun --config=<pkg>/bunfig.toml`. Keep it free of
+# anything that is not needed at runtime: it overrides the user's own bunfig
+# for the factory process.
 [serve.static]
 plugins = ["bun-plugin-tailwind"]
