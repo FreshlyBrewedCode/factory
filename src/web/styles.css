@@ -258,6 +258,7 @@ button.step-row[aria-current="true"] {
   font-weight: 600;
   letter-spacing: 0.025em;
   text-transform: uppercase;
+  white-space: nowrap;
   color: var(--muted-foreground);
 }
 
@@ -269,18 +270,73 @@ button.step-row[aria-current="true"] {
 
 .step-name {
   min-width: 0;
+  overflow: hidden;
   font-family: var(--font-mono);
   font-size: 12px;
   font-weight: 500;
-  word-break: break-word;
+  white-space: nowrap;
+  text-overflow: ellipsis;
 }
 
 .step-meta {
+  max-width: 32ch;
+  min-width: 0;
+  overflow: hidden;
   font-family: var(--font-mono);
   font-size: 11px;
   text-align: right;
   white-space: nowrap;
+  text-overflow: ellipsis;
   color: var(--muted-foreground);
+}
+
+/*
+ * The steps pane is a size container so the compact row layout reacts to the
+ * pane's real width — the inspector aside can steal half of it on desktop,
+ * which a viewport media query cannot see.
+ */
+.steps-pane {
+  container-type: inline-size;
+}
+
+@container (max-width: 559px) {
+  .step-row {
+    grid-template-columns: minmax(0, 1fr) auto auto;
+    grid-template-areas:
+      "status kind time"
+      "name name name"
+      "meta meta meta";
+    row-gap: 2px;
+    padding: 10px 12px;
+  }
+
+  .step-row > .status-cell {
+    grid-area: status;
+  }
+
+  .step-row > .step-kind {
+    grid-area: kind;
+  }
+
+  .step-row > .step-time {
+    grid-area: time;
+    justify-self: end;
+    text-align: right;
+  }
+
+  .step-row > .step-name {
+    grid-area: name;
+  }
+
+  .step-row > .step-meta {
+    grid-area: meta;
+    max-width: none;
+    text-align: left;
+  }
+
+  .step-row > .step-chevron {
+    display: none;
+  }
 }
 
 /* Exec output (finding: terminal formatting): always dark, regardless of theme. */

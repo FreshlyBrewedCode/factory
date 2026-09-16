@@ -33,7 +33,9 @@ function metaRow(label: string, value: React.ReactNode, mono = false) {
       <th className="w-24 px-0 py-1 pr-4 text-left align-top font-mono text-[11px] font-normal whitespace-nowrap text-muted-foreground">
         {label}
       </th>
-      <td className={cn("py-1 text-xs break-words", mono && "font-mono text-[11px]")}>{value}</td>
+      <td className={cn("py-1 min-w-0 text-xs break-words", mono && "font-mono text-[11px]")}>
+        {value}
+      </td>
     </tr>
   );
 }
@@ -161,7 +163,7 @@ function StepRow({
         </span>
         <span className="step-name">{step.name}</span>
         <span className="step-meta">{step.descriptor}</span>
-        <span className="text-right text-muted-foreground">›</span>
+        <span className="step-chevron text-right text-muted-foreground">›</span>
       </button>
     </div>
   );
@@ -193,7 +195,7 @@ function TerminalRow({
         </span>
         <span className="step-name">{name}</span>
         <span className="step-meta">{meta}</span>
-        <span />
+        <span className="step-chevron" />
       </div>
     </div>
   );
@@ -564,7 +566,7 @@ function EventsTable({ events }: { readonly events: ReadonlyArray<RunEvent> }) {
             <td className="px-3 py-1.5 font-mono text-[11px]">{event.seq}</td>
             <td className="px-3 py-1.5 font-mono text-[11px]">{formatClock(event.ts)}</td>
             <td className="px-3 py-1.5 font-mono text-[11px] font-medium">{event.payload._tag}</td>
-            <td className="px-3 py-1.5 font-mono text-[11px] text-muted-foreground">
+            <td className="px-3 py-1.5 font-mono text-[11px] break-words text-muted-foreground">
               {summarizeEvent(event)}
             </td>
           </tr>
@@ -674,9 +676,14 @@ function RunDetailView({ runId }: { readonly runId: string }) {
     );
 
   return (
-    <section data-testid="run-detail" className="flex h-full overflow-hidden">
-      <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
-        <header className="border-b border-border px-5 pt-4 pb-3">
+    <section data-testid="run-detail" className="flex h-full min-h-0 overflow-hidden">
+      {/*
+       * The whole main column scrolls as one page (header, tabs, steps), so a
+       * tall overview can scroll away instead of pinning the steps. The aside
+       * stays height-bound with its own internal scroll.
+       */}
+      <div className="flex min-w-0 flex-1 flex-col overflow-y-auto">
+        <header className="shrink-0 border-b border-border px-5 pt-4 pb-3">
           <div className="mb-3 flex flex-wrap items-center gap-3">
             <Link
               to="/"
@@ -684,7 +691,7 @@ function RunDetailView({ runId }: { readonly runId: string }) {
             >
               ‹ runs
             </Link>
-            <span className="font-mono text-base font-semibold">{runId}</span>
+            <span className="min-w-0 font-mono text-base font-semibold break-all">{runId}</span>
             <StatusCell status={status} />
             {active ? <CancelRunButton runId={runId} /> : null}
             {active ? (
@@ -712,7 +719,7 @@ function RunDetailView({ runId }: { readonly runId: string }) {
           />
         </header>
 
-        <div className="flex items-center gap-2 border-b border-border px-5 py-2">
+        <div className="flex shrink-0 items-center gap-2 border-b border-border px-5 py-2">
           <div role="tablist" className="inline-flex gap-0.5 rounded-xl bg-muted p-1">
             {(["steps", "events"] as const).map((value) => (
               <button
@@ -732,7 +739,7 @@ function RunDetailView({ runId }: { readonly runId: string }) {
               </button>
             ))}
           </div>
-          <span className="font-mono text-[11px] text-muted-foreground">
+          <span className="hidden min-w-0 truncate font-mono text-[11px] text-muted-foreground lg:inline">
             GET /api/runs/{runId}/events
           </span>
           <Button
@@ -748,7 +755,7 @@ function RunDetailView({ runId }: { readonly runId: string }) {
           </Button>
         </div>
 
-        <div className="min-w-0 flex-1 overflow-y-auto p-4">
+        <div className="steps-pane min-w-0 flex-1 p-4">
           {tab === "steps" ? (
             steps.length === 0 && !active ? (
               <p className="py-12 text-center text-sm text-muted-foreground">No steps recorded.</p>

@@ -116,25 +116,27 @@ function RunTable({
   readonly now: number;
 }) {
   return (
-    <table className="w-full border-collapse">
-      <thead>
-        <tr className="border-b-2 border-border-strong text-left">
-          {["Status", "Run", "Task", "Started", "Duration", "Result", ""].map((heading) => (
-            <th
-              key={heading}
-              className="px-3 py-1.5 text-[11px] font-semibold tracking-wide text-muted-foreground uppercase"
-            >
-              {heading}
-            </th>
+    <div className="-mx-1 overflow-x-auto px-1">
+      <table className="w-full border-collapse">
+        <thead>
+          <tr className="border-b-2 border-border-strong text-left">
+            {["Status", "Run", "Task", "Started", "Duration", "Result", ""].map((heading) => (
+              <th
+                key={heading}
+                className="px-3 py-1.5 text-[11px] font-semibold tracking-wide text-muted-foreground uppercase"
+              >
+                {heading}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {runs.map((run) => (
+            <RunRow key={run.runId} run={run} now={now} />
           ))}
-        </tr>
-      </thead>
-      <tbody>
-        {runs.map((run) => (
-          <RunRow key={run.runId} run={run} now={now} />
-        ))}
-      </tbody>
-    </table>
+        </tbody>
+      </table>
+    </div>
   );
 }
 
