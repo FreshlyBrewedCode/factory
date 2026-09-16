@@ -13,6 +13,10 @@ import type { WorkflowDefinition } from "./workflow";
 export const DEFAULT_WORKSPACE_ROOT = ".factory/workspaces";
 export const DEFAULT_MAX_CONCURRENT_RUNS = 3;
 export const DEFAULT_RETAINED_WORKSPACES = 10;
+/** Issue #14: how deep a parent → child → grandchild chain may nest. */
+export const DEFAULT_MAX_DISPATCH_DEPTH = 5;
+/** Issue #14: how many children one run itself may dispatch. */
+export const DEFAULT_MAX_CHILDREN_PER_RUN = 20;
 
 /**
  * Where `factory init` writes the project, and where every command looks when
@@ -40,6 +44,13 @@ export interface FactoryConfig {
   readonly workspaceRoot: string;
   readonly maxConcurrentRuns: number;
   readonly retainedWorkspaces: number;
+  /**
+   * Issue #14: nested-run caps, over the defaults (`DEFAULT_MAX_DISPATCH_DEPTH`,
+   * `DEFAULT_MAX_CHILDREN_PER_RUN`). A workflow that dispatches itself must
+   * not be able to fill the daemon.
+   */
+  readonly maxDispatchDepth: number;
+  readonly maxChildrenPerRun: number;
 }
 
 export interface FactoryConfigInput {
@@ -48,6 +59,8 @@ export interface FactoryConfigInput {
   readonly workspaceRoot?: string;
   readonly maxConcurrentRuns?: number;
   readonly retainedWorkspaces?: number;
+  readonly maxDispatchDepth?: number;
+  readonly maxChildrenPerRun?: number;
 }
 
 export function defineConfig(config: FactoryConfigInput): FactoryConfig {
@@ -63,12 +76,26 @@ export function defineConfig(config: FactoryConfigInput): FactoryConfig {
       `retainedWorkspaces (${retainedWorkspaces}) must be >= maxConcurrentRuns (${maxConcurrentRuns}) — retention below the concurrency limit can evict a running run's workspace`,
     );
   }
+  const maxDispatchDepth = config.maxDispatchDepth ?? DEFAULT_MAX_DISPATCH_DEPTH;
+  const maxChildrenPerRun = config.maxChildrenPerRun ?? DEFAULT_MAX_CHILDREN_PER_RUN;
+  if (!Number.isInteger(maxDispatchDepth) || maxDispatchDepth < 1) {
+    throw new Error(
+      `maxDispatchDepth must be an integer >= 1 (got ${JSON.stringify(config.maxDispatchDepth)})`,
+    );
+  }
+  if (!Number.isInteger(maxChildrenPerRun) || maxChildrenPerRun < 1) {
+    throw new Error(
+      `maxChildrenPerRun must be an integer >= 1 (got ${JSON.stringify(config.maxChildrenPerRun)})`,
+    );
+  }
   return {
     repo: config.repo,
     workflows: config.workflows,
     workspaceRoot: config.workspaceRoot ?? DEFAULT_WORKSPACE_ROOT,
     maxConcurrentRuns,
     retainedWorkspaces,
+    maxDispatchDepth,
+    maxChildrenPerRun,
   };
 }
 

@@ -2,6 +2,8 @@ import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, test } from "bun:test";
+import { Schema } from "effect";
+import { defineWorkflow } from "../workflow";
 import { createSlowFakeAdapter } from "../replay/adapter";
 import { getRunEvents, openStore } from "../persistence/store";
 import { defineConfig, loadFactoryConfig } from "../config";
@@ -749,6 +751,99 @@ describe("a scratch workflow through POST /api/runs (issue #13)", () => {
         workspaceKind: string;
       };
       expect(detail.workspaceKind).toBe("scratch");
+    } finally {
+      await server.stop(true);
+      db.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("ctx.dispatch through POST /api/runs (issue #14)", () => {
+  test("a registry workflow dispatches a child via the config's dispatch env", async () => {
+    const root = mkdtempSync(join(tmpdir(), "factory-http-nested-"));
+    const db = openStore(join(root, "factory.db"));
+    const adapter = createSlowFakeAdapter(
+      [
+        { type: "TEXT_MESSAGE_START" },
+        { type: "TEXT_MESSAGE_CONTENT", delta: "hi" },
+        { type: "TEXT_MESSAGE_END" },
+      ],
+      1,
+    );
+
+    const childWorkflow = defineWorkflow("nested-child-http", {
+      input: Schema.Struct({ n: Schema.Number }),
+      workspace: { kind: "scratch" },
+      run: async (ctx) => {
+        await ctx.exec(["sh", "-c", "true"]);
+        return { n: ctx ? 1 : 1 };
+      },
+    });
+    const dispatcherWorkflow = defineWorkflow("dispatcher-http", {
+      input: Schema.Struct({}),
+      workspace: { kind: "scratch" },
+      run: async (ctx) => {
+        const childRunId = await ctx.dispatch(childWorkflow, { n: 3 });
+        return { childRunId };
+      },
+    });
+
+    const server = serve({
+      db,
+      adapter,
+      port: 0,
+      config: defineConfig({
+        repo: {
+          sshUrl: "git@github.com:acme/widgets.git",
+          identity: { name: "Factory", email: "factory@factory.test" },
+          baseBranch: "main",
+          slug: "acme/widgets",
+        },
+        workflows: [dispatcherWorkflow, childWorkflow],
+        workspaceRoot: join(root, "workspaces"),
+        retainedWorkspaces: 10,
+      }),
+    });
+    const base = `http://localhost:${server.port}`;
+
+    try {
+      const startRes = await fetch(`${base}/api/runs`, {
+        method: "POST",
+        body: JSON.stringify({ workflowId: "dispatcher-http", input: {} }),
+      });
+      expect(startRes.status).toBe(201);
+      const { runId: parentRunId } = (await startRes.json()) as { runId: string };
+
+      await waitForTerminal(db, parentRunId, 10_000);
+
+      const parentEvents = getRunEvents(db, parentRunId);
+      const dispatched = parentEvents.find((e) => e.payload._tag === "RunDispatched");
+      expect(dispatched).toBeDefined();
+      const childRunId =
+        dispatched !== undefined && dispatched.payload._tag === "RunDispatched"
+          ? dispatched.payload.childRunId
+          : undefined;
+      expect(childRunId).toBeTypeOf("string");
+      if (childRunId === undefined) return;
+
+      // Fire-and-forget: the parent's terminal says nothing about the child,
+      // so wait for the child's own terminal separately.
+      await waitForTerminal(db, childRunId, 10_000);
+
+      const childStarted = getRunEvents(db, childRunId).find(
+        (e) => e.payload._tag === "RunStarted",
+      );
+      expect(
+        childStarted !== undefined && childStarted.payload._tag === "RunStarted"
+          ? childStarted.payload.parentId
+          : "missing",
+      ).toBe(parentRunId);
+      expect(
+        childStarted !== undefined && childStarted.payload._tag === "RunStarted"
+          ? childStarted.payload.input
+          : "missing",
+      ).toEqual({ n: 3 });
     } finally {
       await server.stop(true);
       db.close();

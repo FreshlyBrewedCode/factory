@@ -13,9 +13,10 @@
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { Database } from "bun:sqlite";
 import { describe, expect, test } from "bun:test";
 import { Schema } from "effect";
-import { getRunEvents, listRuns, openStore, type Database } from "../persistence/store";
+import { getRunEvents, listRuns, openStore } from "../persistence/store";
 import { createSlowFakeAdapter } from "../replay/adapter";
 import { activeRunIds, isActive, startTrackedRun } from "./runs";
 import { defineWorkflow } from "../workflow";

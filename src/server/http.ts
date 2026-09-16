@@ -44,6 +44,7 @@ import {
   cancelRegisteredRun,
   isActive,
   startTrackedRun,
+  type DispatchEnv,
   type StartTrackedRunOptions,
 } from "./runs";
 
@@ -97,6 +98,29 @@ export type RunSummaryResponse = RunSummary & { readonly active: boolean };
  */
 function listSummaries(db: Database): ReadonlyArray<RunSummaryResponse> {
   return listRuns(db).map((run) => ({ ...run, active: isActive(run.runId) }));
+}
+
+/**
+ * Issue #14: the dispatch environment a run's `ctx.dispatch` shares with its
+ * child runs — the same config wiring the run itself gets (workspace root,
+ * repo, adapter, admission). Present only for config-backed servers; without
+ * it `ctx.dispatch` throws, because in-process/path-based legacy runs have
+ * no registry to start children from.
+ */
+function dispatchEnvFor(config: FactoryConfig, adapter: AgentAdapter): DispatchEnv {
+  return {
+    workspace: {
+      workspaceRoot: config.workspaceRoot,
+      sshUrl: config.repo.sshUrl,
+      identity: config.repo.identity,
+      retainedWorkspaces: config.retainedWorkspaces,
+    },
+    repo: { slug: config.repo.slug, baseBranch: config.repo.baseBranch },
+    maxConcurrentRuns: config.maxConcurrentRuns,
+    adapter,
+    maxDispatchDepth: config.maxDispatchDepth,
+    maxChildrenPerRun: config.maxChildrenPerRun,
+  };
 }
 
 interface StartRunBody {
@@ -308,6 +332,7 @@ export function createHandler(options: ServerOptions): (req: Request) => Promise
                   baseBranch: options.config.repo.baseBranch,
                 },
                 maxConcurrentRuns,
+                dispatchEnv: dispatchEnvFor(options.config, options.adapter),
               }
             : {}),
           input: decodedInput,
@@ -360,6 +385,7 @@ export function createHandler(options: ServerOptions): (req: Request) => Promise
             ? undefined
             : { slug: runEnv.repo.slug, baseBranch: runEnv.repo.baseBranch },
         ...(runEnv !== undefined ? { maxConcurrentRuns } : {}),
+        ...(runEnv !== undefined ? { dispatchEnv: dispatchEnvFor(runEnv, options.adapter) } : {}),
         input: body.input,
         adapter: options.adapter,
       };

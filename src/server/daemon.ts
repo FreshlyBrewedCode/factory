@@ -86,19 +86,35 @@ export async function startDaemon(options: DaemonOptions): Promise<DaemonHandle>
     const dispatchItem = async (item: ReadyItem): Promise<string> => {
       const workflow = await loadWorkflow(wiring.workflowPath);
       if (options.config !== undefined) {
+        const config = options.config;
         return startTrackedRun(db, workflow, {
           input: { issueNumber: item.issueNumber },
           repo: {
-            slug: options.config.repo.slug,
-            baseBranch: options.config.repo.baseBranch,
+            slug: config.repo.slug,
+            baseBranch: config.repo.baseBranch,
           },
           adapter,
           maxConcurrentRuns,
           workspace: {
-            workspaceRoot: options.config.workspaceRoot,
-            sshUrl: options.config.repo.sshUrl,
-            identity: options.config.repo.identity,
-            retainedWorkspaces: options.config.retainedWorkspaces,
+            workspaceRoot: config.workspaceRoot,
+            sshUrl: config.repo.sshUrl,
+            identity: config.repo.identity,
+            retainedWorkspaces: config.retainedWorkspaces,
+          },
+          // Issue #14: dispatched workflows may dispatch too — same env as the
+          // HTTP start path, so a wrapper workflow's children are real runs.
+          dispatchEnv: {
+            workspace: {
+              workspaceRoot: config.workspaceRoot,
+              sshUrl: config.repo.sshUrl,
+              identity: config.repo.identity,
+              retainedWorkspaces: config.retainedWorkspaces,
+            },
+            repo: { slug: config.repo.slug, baseBranch: config.repo.baseBranch },
+            maxConcurrentRuns,
+            adapter,
+            maxDispatchDepth: config.maxDispatchDepth,
+            maxChildrenPerRun: config.maxChildrenPerRun,
           },
         });
       }
