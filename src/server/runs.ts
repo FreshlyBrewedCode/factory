@@ -16,13 +16,13 @@
 import type { Database } from "bun:sqlite";
 import { rm } from "node:fs/promises";
 import { admitRun } from "./admission";
-import { appendEvent, listRuns } from "../persistence/store";
+import { appendEvent, getRunEvents, listRuns } from "../persistence/store";
 import type { RunRepo } from "../runtime/run";
 import { startRun, type RunHandle } from "../runtime/run";
 import type { GitIdentity } from "../lib/clone";
 import { allocateWorkspace } from "../lib/workspace";
 import type { AgentAdapter } from "../runtime/agent-adapter";
-import type { WorkflowDefinition, WorkspaceKind } from "../workflow";
+import type { DispatchChildFn, WorkflowDefinition, WorkspaceKind } from "../workflow";
 import { publish } from "./pubsub";
 
 interface ReservedSlot {
@@ -30,6 +30,22 @@ interface ReservedSlot {
 }
 
 const active = new Map<string, RunHandle<unknown> | ReservedSlot>();
+
+/**
+ * Issue #14: how deep a parent → child → grandchild chain may nest — the cap
+ * that keeps a workflow which dispatches itself from filling the daemon.
+ */
+export const DEFAULT_MAX_DISPATCH_DEPTH = 5;
+/** Issue #14: how many children one run itself may dispatch. */
+export const DEFAULT_MAX_CHILDREN_PER_RUN = 20;
+
+/** Issue #14: a `ctx.dispatch` rejected by a cap, for the parent to surface. */
+export class DispatchCapError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "DispatchCapError";
+  }
+}
 
 function isReserved(entry: RunHandle<unknown> | ReservedSlot | undefined): boolean {
   return entry !== undefined && !("result" in entry) && "cancelled" in entry;
@@ -100,6 +116,127 @@ export interface StartTrackedRunOptions {
   readonly maxConcurrentRuns?: number;
   /** Injectable for tests: holds the reserved-but-not-started window open. */
   readonly beforeStart?: () => Promise<void>;
+  /**
+   * Issue #14: the environment a child run of this run starts with, so
+   * `ctx.dispatch` can allocate a workspace, admission-limit and repo for it.
+   * Absent, the workflow's `ctx.dispatch` throws (dispatch needs a
+   * config-backed daemon run; in-process execution is legacy). Children
+   * inherit it, so grandchildren work too.
+   */
+  readonly dispatchEnv?: DispatchEnv;
+  /**
+   * Issue #14: this run's parent, when it was started by `ctx.dispatch` —
+   * recorded on `RunStarted.parentId` so the UI can navigate child → parent.
+   */
+  readonly parentRunId?: string;
+}
+
+/**
+ * The environment `ctx.dispatch`'s children share with their parent (issue
+ * #14): workspace provisioning, write-back environment, adapter and the
+ * concurrency ceiling — the same wiring a config-backed server wraps every
+ * run in, simply reused for child runs (children inherit it, so a child can
+ * dispatch grandchildren).
+ */
+export interface DispatchEnv {
+  readonly workspace?: WorkspaceSpec;
+  readonly repo?: RunRepo;
+  readonly maxConcurrentRuns?: number;
+  readonly adapter: AgentAdapter;
+  /** Issue #14: dispatch depth / per-run child caps, over the defaults. */
+  readonly maxDispatchDepth?: number;
+  readonly maxChildrenPerRun?: number;
+}
+
+/**
+ * The run this `runId` was started from (`RunStarted.parentId`), or none —
+ * a run started without `ctx.dispatch` has no parent.
+ */
+function parentOf(db: Database, runId: string): string | undefined {
+  const started = getRunEvents(db, runId).find((event) => event.payload._tag === "RunStarted");
+  if (started === undefined || started.payload._tag !== "RunStarted") return undefined;
+  return started.payload.parentId;
+}
+
+/** How deep this run sits in the parent → child chain (a top-level run is 0). */
+function dispatchDepth(db: Database, runId: string): number {
+  let depth = 0;
+  let cursor = runId;
+  while (true) {
+    const parent = parentOf(db, cursor);
+    if (parent === undefined) break;
+    depth += 1;
+    cursor = parent;
+  }
+  return depth;
+}
+
+/**
+ * Issue #14: start a child run of `parentRunId`.
+ *
+ * Every rejection is a throw, so `ctx.dispatch` rejects and the *parent*
+ * fails visibly — nothing about a child's admission is allowed to be a
+ * silent drop. The checks are synchronous over in-memory state and the sync
+ * sqlite event log, so by the time the parent carries on, admission has
+ * already happened. A validated child is started without being awaited: the
+ * parent never exposes an awaitable child (D-epic 19). The child's own
+ * startup failures land on the child's event log / console, never in the
+ * parent's.
+ */
+async function dispatchChildRun(
+  db: Database,
+  env: DispatchEnv,
+  parentRunId: string,
+  child: WorkflowDefinition<any, any>,
+  input: unknown,
+): Promise<string> {
+  const maxDepth = env.maxDispatchDepth ?? DEFAULT_MAX_DISPATCH_DEPTH;
+  const maxChildren = env.maxChildrenPerRun ?? DEFAULT_MAX_CHILDREN_PER_RUN;
+
+  if (
+    env.maxConcurrentRuns !== undefined &&
+    !admitRun(env.maxConcurrentRuns, activeRunIds().length)
+  ) {
+    throw new ConcurrencyLimitError(env.maxConcurrentRuns);
+  }
+
+  const depth = dispatchDepth(db, parentRunId);
+  if (depth + 1 > maxDepth) {
+    throw new DispatchCapError(
+      `dispatch depth exceeded: run ${parentRunId} is nested ${depth} levels deep; ` +
+        `max ${maxDepth} (a workflow that dispatches itself must not fill the daemon)`,
+    );
+  }
+  const childCount = countDispatchedChildren(db, parentRunId);
+  if (childCount >= maxChildren) {
+    throw new DispatchCapError(
+      `dispatch child cap exceeded: run ${parentRunId} already dispatched ${childCount} children; max ${maxChildren}`,
+    );
+  }
+
+  const childRunId = `run-${crypto.randomUUID()}`;
+
+  void startTrackedRun(db, child, {
+    runId: childRunId,
+    ...(env.workspace !== undefined ? { workspace: env.workspace } : {}),
+    ...(env.repo !== undefined ? { repo: env.repo } : {}),
+    ...(env.maxConcurrentRuns !== undefined ? { maxConcurrentRuns: env.maxConcurrentRuns } : {}),
+    input,
+    adapter: env.adapter,
+    parentRunId,
+    dispatchEnv: env,
+  }).catch((err: unknown) => {
+    console.error(
+      `nested run start failed (parent ${parentRunId}, child ${childRunId}):` +
+        `${err instanceof Error ? err.message : String(err)}`,
+    );
+  });
+
+  return childRunId;
+}
+
+function countDispatchedChildren(db: Database, runId: string): number {
+  return getRunEvents(db, runId).filter((event) => event.payload._tag === "RunDispatched").length;
 }
 
 /** Starts a run, persists+publishes every event, and tracks it until terminal. */
@@ -160,11 +297,21 @@ export async function startTrackedRun(
     // incl. the legacy path-based API, are not reaped — they are caller-owned).
     const workspaceAllocated = options.dir === undefined;
 
+    // Issue #14: the per-run dispatch member comes from the run's dispatch
+    // environment, bound at this run's id — the parent's own log is where the
+    // depth walk and the child count are read from.
+    const dispatch: DispatchChildFn | undefined =
+      options.dispatchEnv === undefined
+        ? undefined
+        : (child, input) => dispatchChildRun(db, options.dispatchEnv!, runId, child, input);
+
     const handle = startRun(workflow, {
       runId,
       dir,
       ...(options.repo !== undefined ? { repo: options.repo } : {}),
       workspaceKind: kind,
+      ...(dispatch !== undefined ? { dispatch } : {}),
+      ...(options.parentRunId !== undefined ? { parentRunId: options.parentRunId } : {}),
       input: options.input,
       adapter: options.adapter,
       onEvent: (event) => {
