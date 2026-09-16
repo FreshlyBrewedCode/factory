@@ -180,8 +180,13 @@ function MetaTable({
           collisions.length > 0 ? (
             <span className="flex flex-wrap gap-x-3 gap-y-0.5">
               {collisions.map((collision) => (
-                <span key={`${collision.key}:${collision.holderRunId}`} data-testid="dispatch-collision">
-                  <span className="text-muted-foreground">{collision.childWorkflowId} · {collision.key}</span>{" "}
+                <span
+                  key={`${collision.key}:${collision.holderRunId}`}
+                  data-testid="dispatch-collision"
+                >
+                  <span className="text-muted-foreground">
+                    {collision.childWorkflowId} · {collision.key}
+                  </span>{" "}
                   held by {runLink(collision.holderRunId)}
                 </span>
               ))}

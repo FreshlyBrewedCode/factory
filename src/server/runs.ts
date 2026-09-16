@@ -348,7 +348,8 @@ export async function startTrackedRun(
     const dispatch: DispatchChildFn | undefined =
       options.dispatchEnv === undefined
         ? undefined
-        : (child, input, opts) => dispatchChildRun(db, options.dispatchEnv!, runId, child, input, opts);
+        : (child, input, opts) =>
+            dispatchChildRun(db, options.dispatchEnv!, runId, child, input, opts);
 
     const handle = startRun(workflow, {
       runId,

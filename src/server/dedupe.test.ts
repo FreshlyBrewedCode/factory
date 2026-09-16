@@ -136,7 +136,11 @@ describe("dedupe keys through ctx.dispatch (issue #15)", () => {
       input: Schema.Struct({ wait: Schema.Number }),
       workspace: { kind: "scratch" },
       run: async (ctx, input) => {
-        const childRunId = await ctx.dispatch(busyWorkflow, { n: input.wait }, { dedupeKey: "item:7" });
+        const childRunId = await ctx.dispatch(
+          busyWorkflow,
+          { n: input.wait },
+          { dedupeKey: "item:7" },
+        );
         // A second dispatch on the same key, while the first still runs.
         await ctx.dispatch(busyWorkflow, { n: input.wait }, { dedupeKey: "item:7" });
         return { childRunId };
@@ -211,8 +215,8 @@ describe("dedupe keys through ctx.dispatch (issue #15)", () => {
       dispatchEnv: { ...withWorkspaces(join(root)), adapter: driftAdapter } as never,
     })) as string;
 
-    await waitFor(
-      () => getRunEvents(db, parentRunId).some((event) => event.payload._tag === "RunDispatched"),
+    await waitFor(() =>
+      getRunEvents(db, parentRunId).some((event) => event.payload._tag === "RunDispatched"),
     );
     await Bun.sleep(150);
     // The first child dispatched, still holding while the gate is shut — one
@@ -259,9 +263,7 @@ describe("dedupe keys through startTrackedRun (issue #15)", () => {
 
     const err = (await errorOf(
       start(db, { runId: "run-collide", dir: join(root, "dir-2"), dedupeKey: "item:41", registry }),
-    )) as
-      | DedupeKeyError
-      | string;
+    )) as DedupeKeyError | string;
     expect(err).toBeInstanceOf(DedupeKeyError);
     if (err instanceof DedupeKeyError) {
       expect(err.key).toBe("item:41");
@@ -302,7 +304,9 @@ describe("dedupe keys through startTrackedRun (issue #15)", () => {
     await first;
     await waitFor(() => !isActive("run-holder"));
 
-    const holderStarted = getRunEvents(db, "run-holder").find((e) => e.payload._tag === "RunStarted");
+    const holderStarted = getRunEvents(db, "run-holder").find(
+      (e) => e.payload._tag === "RunStarted",
+    );
 
     expect(holderStarted !== undefined && holderStarted.payload._tag === "RunStarted").toBe(true);
     expect(

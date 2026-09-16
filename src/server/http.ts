@@ -305,7 +305,10 @@ export function createHandler(options: ServerOptions): (req: Request) => Promise
         return json({ error: "invalid JSON body" }, { status: 400 });
       }
       if (typeof body.workflowId === "string") {
-        if (body.dedupeKey !== undefined && (typeof body.dedupeKey !== "string" || body.dedupeKey === "")) {
+        if (
+          body.dedupeKey !== undefined &&
+          (typeof body.dedupeKey !== "string" || body.dedupeKey === "")
+        ) {
           return json({ error: "dedupeKey must be a non-empty string" }, { status: 400 });
         }
         const registry = options.config?.workflows ?? [];
@@ -360,7 +363,10 @@ export function createHandler(options: ServerOptions): (req: Request) => Promise
           // the key and the run holding it, so a client can see exactly whom it
           // raced with.
           if (err instanceof DedupeKeyError) {
-            return json({ error: err.message, dedupeKey: err.key, holderRunId: err.holderRunId }, { status: 409 });
+            return json(
+              { error: err.message, dedupeKey: err.key, holderRunId: err.holderRunId },
+              { status: 409 },
+            );
           }
           throw err;
         }
@@ -421,7 +427,10 @@ export function createHandler(options: ServerOptions): (req: Request) => Promise
           return json({ error: err.message }, { status: 409 });
         }
         if (err instanceof DedupeKeyError) {
-          return json({ error: err.message, dedupeKey: err.key, holderRunId: err.holderRunId }, { status: 409 });
+          return json(
+            { error: err.message, dedupeKey: err.key, holderRunId: err.holderRunId },
+            { status: 409 },
+          );
         }
         throw err;
       }
