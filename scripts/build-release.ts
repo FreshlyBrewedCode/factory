@@ -107,6 +107,12 @@ await cp(join(REPO_ROOT, "bin", "factory.js"), join(PKG, "bin", "factory.js"));
 await cp(join(REPO_ROOT, "src"), join(PKG, "src"), { recursive: true });
 await cp(join(REPO_ROOT, "README.md"), join(PKG, "README.md"));
 await cp(join(REPO_ROOT, "LICENSE"), join(PKG, "LICENSE"));
+// `bunfig.toml` is part of the runtime, not of development: it is what
+// registers `bun-plugin-tailwind` with the fullstack bundler that builds the
+// UI, and `bin/factory.js` points Bun at this copy with `--config`. Without it
+// staged, `factory serve` in a user's project serves the SPA with no Tailwind
+// output whatsoever.
+await cp(join(REPO_ROOT, "bunfig.toml"), join(PKG, "bunfig.toml"));
 await chmod(join(PKG, "bin", "factory.js"), 0o755);
 
 // `workflows/` is deliberately *not* staged. The repo's `implement-issue` is a
@@ -138,7 +144,7 @@ const manifest = {
   },
   engines: { bun: ">=1.4.1" },
   repository: { type: "git", url: REPOSITORY_URL },
-  files: ["bin", "src", "README.md", "LICENSE"],
+  files: ["bin", "src", "bunfig.toml", "README.md", "LICENSE"],
   dependencies: rootManifest.dependencies ?? {},
 };
 
