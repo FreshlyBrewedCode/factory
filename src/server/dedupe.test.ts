@@ -149,7 +149,7 @@ describe("dedupe keys through ctx.dispatch (issue #15)", () => {
       workspace: workspaces(join(root)),
       maxConcurrentRuns: 10,
       dispatchEnv: { ...withWorkspaces(join(root)), adapter: driftAdapter } as never,
-    }).catch((err: unknown) => err);
+    });
 
     await waitFor(() => !isActive(parentRunId));
 

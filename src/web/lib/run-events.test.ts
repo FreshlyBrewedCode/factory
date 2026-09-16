@@ -284,3 +284,74 @@ describe("parent/child navigation (issue #14)", () => {
     ).toContain("wf");
   });
 });
+
+describe("dedupe keys (issue #15)", () => {
+  test("deriveRunMeta reads the run's dedupe key, absent without one", () => {
+    const keyed = deriveRunMeta([
+      event(0, {
+        _tag: "RunStarted",
+        workflowId: "wf",
+        dir: "/tmp/wf",
+        input: {},
+        dedupeKey: "issue:41",
+      }),
+    ]);
+    const unkeyed = deriveRunMeta([STARTED]);
+    expect(keyed.dedupeKey).toBe("issue:41");
+    expect(unkeyed.dedupeKey).toBeUndefined();
+  });
+
+  test("deriveRunMeta collects dispatch collisions, holding run reachable from them", () => {
+    const meta = deriveRunMeta([
+      STARTED,
+      event(1, {
+        _tag: "DispatchCollision",
+        key: "issue:41",
+        holderRunId: "run-holder",
+        childWorkflowId: "wf",
+      }),
+    ]);
+    expect(meta.collisions).toEqual([
+      { key: "issue:41", holderRunId: "run-holder", childWorkflowId: "wf" },
+    ]);
+    expect(deriveRunMeta([STARTED]).collisions).toEqual([]);
+  });
+
+  test("a keyed RunDispatched still yields the same dispatched list", () => {
+    const meta = deriveRunMeta([
+      STARTED,
+      event(1, {
+        _tag: "RunDispatched",
+        childRunId: "run-a",
+        childWorkflowId: "wf",
+        input: {},
+        dedupeKey: "issue:41",
+      }),
+    ]);
+    expect(meta.dispatched).toEqual([{ childRunId: "run-a", childWorkflowId: "wf" }]);
+  });
+
+  test("summarizeEvent names the key and the holder on a collision; key on a dispatch", () => {
+    expect(
+      summarizeEvent(
+        event(1, {
+          _tag: "DispatchCollision",
+          key: "issue:41",
+          holderRunId: "run-holder",
+          childWorkflowId: "wf",
+        }),
+      ),
+    ).toContain("run-holder");
+    expect(
+      summarizeEvent(
+        event(2, {
+          _tag: "RunDispatched",
+          childRunId: "run-a",
+          childWorkflowId: "wf",
+          input: {},
+          dedupeKey: "issue:41",
+        }),
+      ),
+    ).toContain("issue:41");
+  });
+});
