@@ -56,5 +56,7 @@ export function formatAhead(ts: number, now: number = Date.now()): string {
   const minutes = Math.floor(seconds / 60);
   if (minutes < 60) return `in ${minutes}m`;
   const hours = Math.floor(minutes / 60);
-  return `in ${hours}h ${minutes % 60}m`;
+  if (hours < 24) return `in ${hours}h ${minutes % 60}m`;
+  const days = Math.floor(hours / 24);
+  return `in ${days}d ${hours % 24}h`;
 }

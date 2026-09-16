@@ -62,5 +62,6 @@ describe("formatAhead (issue #17)", () => {
     expect(formatAhead(now + 42_000, now)).toBe("in 42s");
     expect(formatAhead(now + 90_000, now)).toBe("in 1m");
     expect(formatAhead(now + 3 * 3_600_000 + 60_000, now)).toBe("in 3h 1m");
+    expect(formatAhead(now + 27 * 3_600_000, now)).toBe("in 1d 3h");
   });
 });
