@@ -72,6 +72,7 @@ function MetaTable({
   finishedAt,
   duration,
   dir,
+  workspaceKind,
   input,
   output,
   note,
@@ -83,6 +84,7 @@ function MetaTable({
   readonly finishedAt: number | undefined;
   readonly duration: string;
   readonly dir: string | undefined;
+  readonly workspaceKind: string;
   readonly input: unknown;
   readonly output: unknown;
   readonly note: string | undefined;
@@ -105,6 +107,7 @@ function MetaTable({
         {metaRow("duration", duration, true)}
         {metaRow("origin", <span className="text-muted-foreground">—</span>)}
         {metaRow("dir", dir ?? "—", true)}
+        {metaRow("workspace", workspaceKind, true)}
         {metaRow("input", inputSummary(input), true)}
         {metaRow("output", outputSummary(output))}
         {note !== undefined
@@ -801,6 +804,7 @@ function RunDetailView({ runId }: { readonly runId: string }) {
             finishedAt={finishedAt}
             duration={duration}
             dir={meta.dir ?? run?.dir}
+            workspaceKind={run?.workspaceKind ?? meta.workspaceKind}
             input={meta.input}
             output={meta.output}
             note={status === "interrupted" ? "no terminal event — process died mid-run" : undefined}

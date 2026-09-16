@@ -221,3 +221,21 @@ describe("summarizeEvent", () => {
     expect(summarizeEvent(event(3, { _tag: "WriteBackStarted", branch: "b" }))).toContain("b");
   });
 });
+
+describe("deriveRunMeta.workspaceKind (issue #13)", () => {
+  test("surfaces the RunStarted kind, defaulting to clone when absent", () => {
+    const scratch = deriveRunMeta([
+      event(0, {
+        _tag: "RunStarted",
+        workflowId: "wf",
+        dir: "/tmp/wf",
+        input: {},
+        workspaceKind: "scratch",
+      }),
+    ]);
+    const legacy = deriveRunMeta([STARTED]);
+
+    expect(scratch.workspaceKind).toBe("scratch");
+    expect(legacy.workspaceKind).toBe("clone");
+  });
+});
