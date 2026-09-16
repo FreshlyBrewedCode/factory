@@ -318,4 +318,34 @@ describe("Factory lifecycle events", () => {
     expect(isTerminal(finished.payload)).toBe(true);
     expect(isTerminal(started.payload)).toBe(false);
   });
+
+  describe("RunStarted.workspaceKind (issue #13)", () => {
+    test("records the workspace kind when present", () => {
+      const event = decodeRunEvent({
+        runId: "r1",
+        seq: 0,
+        ts: 1789300000000,
+        payload: {
+          _tag: "RunStarted",
+          workflowId: "check",
+          dir: "/tmp/x",
+          input: {},
+          workspaceKind: "scratch",
+        },
+      });
+
+      expect(event.payload._tag === "RunStarted" && event.payload.workspaceKind).toBe("scratch");
+    });
+
+    test("is optional, so pre-existing events (and corpora) still decode", () => {
+      const event = decodeRunEvent({
+        runId: "r1",
+        seq: 0,
+        ts: 1789300000000,
+        payload: { _tag: "RunStarted", workflowId: "implement-issue", dir: "/tmp/x", input: {} },
+      });
+
+      expect(event.payload).toMatchObject({ _tag: "RunStarted" });
+    });
+  });
 });
