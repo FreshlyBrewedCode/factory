@@ -82,6 +82,11 @@ export interface StartRunOptions {
    * server's (server/runs.ts), not the runtime's.
    */
   readonly dedupeKey?: string;
+  /**
+   * Issue #16: the schedule that started this run, when any did. Recorded on
+   * `RunStarted.scheduleId` so a run explains its trigger.
+   */
+  readonly scheduleId?: string;
   readonly onEvent: (event: RunEvent) => void;
 }
 
@@ -451,6 +456,7 @@ export function startRun<I, O>(
       workspaceKind,
       ...(options.parentRunId !== undefined ? { parentId: options.parentRunId } : {}),
       ...(options.dedupeKey !== undefined ? { dedupeKey: options.dedupeKey } : {}),
+      ...(options.scheduleId !== undefined ? { scheduleId: options.scheduleId } : {}),
     });
 
     try {

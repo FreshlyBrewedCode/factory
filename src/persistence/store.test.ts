@@ -37,6 +37,7 @@ function referenceSummary(runId: string, events: ReadonlyArray<RunEvent>): RunSu
     eventCount: events.length,
     input: started?.payload._tag === "RunStarted" ? started.payload.input : undefined,
     output: terminal?.payload._tag === "RunFinished" ? terminal.payload.output : undefined,
+    scheduleId: started?.payload._tag === "RunStarted" ? started.payload.scheduleId : undefined,
   };
 }
 
@@ -230,5 +231,35 @@ describe("RunSummary.workspaceKind (issue #13)", () => {
     const byRunId = new Map(listRuns(db).map((run) => [run.runId, run]));
     expect(byRunId.get("run-scratch")?.workspaceKind).toBe("scratch");
     expect(byRunId.get("run-old")?.workspaceKind).toBe("clone");
+  });
+});
+
+describe("RunSummary.scheduleId (issue #16)", () => {
+  test("derived from RunStarted when present; absent otherwise", () => {
+    const db = openStore(":memory:");
+    appendEvent(
+      db,
+      event("run-sched", 0, {
+        _tag: "RunStarted",
+        workflowId: "wf",
+        dir: "/tmp/s",
+        input: {},
+        scheduleId: "nightly",
+      }),
+    );
+    appendEvent(db, event("run-sched", 1, { _tag: "RunFinished", durationMs: 5 }));
+    appendEvent(
+      db,
+      event("run-manual", 0, {
+        _tag: "RunStarted",
+        workflowId: "wf",
+        dir: "/tmp/c",
+        input: {},
+      }),
+    );
+
+    const byRunId = new Map(listRuns(db).map((run) => [run.runId, run]));
+    expect(byRunId.get("run-sched")?.scheduleId).toBe("nightly");
+    expect(byRunId.get("run-manual")?.scheduleId).toBeUndefined();
   });
 });

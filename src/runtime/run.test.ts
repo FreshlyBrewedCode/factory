@@ -182,3 +182,45 @@ describe("startRun workspace kind (issue #13)", () => {
     ).toBe("clone");
   });
 });
+
+describe("startRun schedule trigger (issue #16)", () => {
+  test("RunStarted records the starting schedule when started by one", async () => {
+    const events: Array<RunEvent> = [];
+    const workflow = defineWorkflow("scheduled-echo", {
+      input: Schema.Struct({ issueNumber: Schema.Number }),
+      run: async (ctx) => {
+        const result = await ctx.agent("step", "irrelevant, replay ignores it");
+        return { finalText: result.finalText };
+      },
+    });
+    const handle = startRun(workflow, {
+      runId: "run-by-schedule",
+      dir: "/tmp",
+      input: { issueNumber: 7 },
+      adapter: createSlowFakeAdapter(SLOW_CHUNKS, 5),
+      scheduleId: "nightly",
+      onEvent: (event) => events.push(event),
+    });
+    await handle.result;
+    const started = events.find((e) => e.payload._tag === "RunStarted");
+    expect(started?.payload).toMatchObject({ scheduleId: "nightly" });
+  });
+
+  test("a run started without a schedule records none", async () => {
+    const events: Array<RunEvent> = [];
+    const workflow = defineWorkflow("unscheduled-echo", {
+      input: Schema.Struct({}),
+      run: async () => ({}),
+    });
+    const handle = startRun(workflow, {
+      runId: "run-manual",
+      dir: "/tmp",
+      input: {},
+      adapter: createSlowFakeAdapter([]),
+      onEvent: (event) => events.push(event),
+    });
+    await handle.result;
+    const started = events.find((e) => e.payload._tag === "RunStarted");
+    expect(started?.payload._tag === "RunStarted" && "scheduleId" in started.payload).toBe(false);
+  });
+});

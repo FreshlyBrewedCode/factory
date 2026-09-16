@@ -149,6 +149,11 @@ export interface StartTrackedRunOptions {
    * shared process-wide registry (`lib/dedupe.ts`) is used.
    */
   readonly dedupeRegistry?: DedupeRegistry;
+  /**
+   * Issue #16: the schedule that started this run, when any did - passed
+   * through to `RunStarted.scheduleId`.
+   */
+  readonly scheduleId?: string;
 }
 
 /**
@@ -359,6 +364,7 @@ export async function startTrackedRun(
       ...(dispatch !== undefined ? { dispatch } : {}),
       ...(options.parentRunId !== undefined ? { parentRunId: options.parentRunId } : {}),
       ...(options.dedupeKey !== undefined ? { dedupeKey: options.dedupeKey } : {}),
+      ...(options.scheduleId !== undefined ? { scheduleId: options.scheduleId } : {}),
       input: options.input,
       adapter: options.adapter,
       onEvent: (event) => {
