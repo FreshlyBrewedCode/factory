@@ -81,9 +81,29 @@ describe("buildStartInput", () => {
     });
   });
 
-  test("omits empty strings but always includes booleans", () => {
+  test("omits empty strings, and an unchecked optional boolean is omitted", () => {
     const result = buildStartInput(fields, { title: "", count: "", enabled: false });
-    expect(result).toEqual({ input: { enabled: false } });
+    expect(result).toEqual({ input: {} });
+  });
+
+  test("includes a required boolean even when unchecked, and optional ones only when checked", () => {
+    const result = buildStartInput(
+      [
+        { name: "always", type: "boolean" as const, required: true },
+        { name: "maybe", type: "boolean" as const, required: false },
+      ],
+      {},
+    );
+    expect(result).toEqual({ input: { always: false } });
+
+    const checked = buildStartInput(
+      [
+        { name: "always", type: "boolean" as const, required: true },
+        { name: "maybe", type: "boolean" as const, required: false },
+      ],
+      { always: false, maybe: true },
+    );
+    expect(checked).toEqual({ input: { always: false, maybe: true } });
   });
 
   test("rejects a number field that does not parse", () => {

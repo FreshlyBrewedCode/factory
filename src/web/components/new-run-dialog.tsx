@@ -220,7 +220,9 @@ function StartFormFields({
             <span className="font-mono text-[10px] text-muted-foreground">{field.type}</span>
             {field.required ? (
               <span className="font-mono text-[10px] text-muted-foreground">required</span>
-            ) : null}
+            ) : (
+              <span className="font-mono text-[10px] text-muted-foreground">optional</span>
+            )}
           </span>
           {field.type === "boolean" ? (
             <input
