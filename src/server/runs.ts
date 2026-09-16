@@ -154,6 +154,11 @@ export interface StartTrackedRunOptions {
    * through to `RunStarted.scheduleId`.
    */
   readonly scheduleId?: string;
+  /**
+   * Issue #16: agent-level overrides the starting schedule carries. Passed
+   * through to the run's model precedence chain.
+   */
+  readonly agentOverrides?: { readonly model?: string };
 }
 
 /**
@@ -365,6 +370,7 @@ export async function startTrackedRun(
       ...(options.parentRunId !== undefined ? { parentRunId: options.parentRunId } : {}),
       ...(options.dedupeKey !== undefined ? { dedupeKey: options.dedupeKey } : {}),
       ...(options.scheduleId !== undefined ? { scheduleId: options.scheduleId } : {}),
+      ...(options.agentOverrides !== undefined ? { agentOverrides: options.agentOverrides } : {}),
       input: options.input,
       adapter: options.adapter,
       onEvent: (event) => {

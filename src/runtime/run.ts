@@ -87,6 +87,12 @@ export interface StartRunOptions {
    * `RunStarted.scheduleId` so a run explains its trigger.
    */
   readonly scheduleId?: string;
+  /**
+   * Issue #16: agent-level overrides the starting schedule carries (its
+   * `agent.model`). Sits between a per-call option and the workflow's own
+   * default in the precedence chain.
+   */
+  readonly agentOverrides?: { readonly model?: string };
   readonly onEvent: (event: RunEvent) => void;
 }
 
@@ -186,7 +192,10 @@ export function startRun<I, O>(
     if (cancelled) throw new RunCancelledSignal();
 
     const stepId = nextStepId();
-    const model = opts?.model ?? workflow.agent?.model ?? DEFAULT_MODEL;
+    // Precedence (issue #16): per-call option > the starting schedule's
+    // override > the workflow's `agent` default > the runtime fallback.
+    const model =
+      opts?.model ?? options.agentOverrides?.model ?? workflow.agent?.model ?? DEFAULT_MODEL;
     const outputSchema =
       opts?.output !== undefined ? Schema.toJsonSchemaDocument(opts.output) : undefined;
 
