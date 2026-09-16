@@ -22,6 +22,7 @@ import type {
   AgentResult,
   AssertCallback,
   AssertResult,
+  DispatchChildFn,
   WorkflowCtx,
   WorkflowDefinition,
   WorkspaceKind,
@@ -63,6 +64,17 @@ export interface StartRunOptions {
    * failure message.
    */
   readonly workspaceKind?: WorkspaceKind;
+  /**
+   * The context service behind `ctx.dispatch` (issue #14). Absent, the ctx
+   * member is still present but throws — in-process execution is legacy and
+   * cannot start nested runs.
+   */
+  readonly dispatch?: DispatchChildFn;
+  /**
+   * This run's parent, when it was started by `ctx.dispatch` (issue #14).
+   * Recorded on `RunStarted.parentId`.
+   */
+  readonly parentRunId?: string;
   readonly onEvent: (event: RunEvent) => void;
 }
 
@@ -362,6 +374,30 @@ export function startRun<I, O>(
     }
   };
 
+  const dispatchImpl = async (
+    child: WorkflowDefinition<any, any>,
+    input: unknown,
+  ): Promise<string> => {
+    if (options.dispatch === undefined) {
+      throw new Error(
+        "ctx.dispatch is only available on a daemon-managed run — start runs via the daemon " +
+          "(factory serve / factory start). A workflow executed without a daemon " +
+          "(in-process execution is legacy) has no registry to start a nested run from",
+      );
+    }
+
+    const childRunId = await options.dispatch(child, input);
+
+    emit({
+      _tag: "RunDispatched",
+      childRunId,
+      childWorkflowId: child.id,
+      input: input as never,
+    });
+
+    return childRunId;
+  };
+
   const ctx: WorkflowCtx = {
     dir: options.dir,
     agent: agentImpl,
@@ -369,6 +405,7 @@ export function startRun<I, O>(
     assert: assertImpl,
     log: logImpl,
     writeBack: writeBackImpl,
+    dispatch: dispatchImpl,
   };
 
   const resultPromise: Promise<RunOutcome<O>> = (async (): Promise<RunOutcome<O>> => {
@@ -387,6 +424,7 @@ export function startRun<I, O>(
       dir: options.dir,
       input: decodedInput as never,
       workspaceKind,
+      ...(options.parentRunId !== undefined ? { parentId: options.parentRunId } : {}),
     });
 
     try {

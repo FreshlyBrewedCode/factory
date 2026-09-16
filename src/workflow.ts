@@ -61,6 +61,17 @@ export interface WriteBackCallOptions {
 }
 
 /**
+ * The context service behind `ctx.dispatch` (issue #14), injected by the
+ * runtime. It starts a child run of `child` with `input` and resolves to the
+ * child's run id — never waiting for the child (D-epic 19: a parent awaiting
+ * a child while holding a concurrency slot deadlocks the pool). The child's
+ * outcome is observable in its own log and the UI, not in the parent.
+ */
+export interface DispatchChildFn {
+  (child: WorkflowDefinition<any, any>, input: unknown): Promise<string>;
+}
+
+/**
  * The six-member run context (ADR 0002 §2/§4). Ownership rule: the runtime
  * owns the tree, the log, and cancellation; the workflow owns everything
  * else.
@@ -83,6 +94,17 @@ export interface WorkflowCtx {
    * Host `git`/`gh`, not an agent instruction (D9).
    */
   writeBack(options: WriteBackCallOptions): Promise<WriteBackResult>;
+  /**
+   * Starts a child run of `child` and resolves to its run id without waiting
+   * for it (issue #14). `input` is type-checked against the child's schema at
+   * the call site and decoded at the child's run start like any other input.
+   *
+   * Throws, never silently drops, when the child is invalid (caps, concurrency
+   * limit) or when the run is executing without a daemon — in-process
+   * execution is legacy, dispatch is a daemon feature. Resolves to the
+   * child's run id; observe the child's outcome in its own log and the UI.
+   */
+  dispatch<I2>(child: WorkflowDefinition<I2, any>, input: I2): Promise<string>;
 }
 
 export interface WorkflowAgentDefaults {
