@@ -127,6 +127,55 @@ function stepKindLabel(step: StepView): string {
   return step.kind;
 }
 
+/*
+ * The step row: six columns >559px pane-width (status | kind | time | name |
+ * descriptor | chevron), stacked full-width lines below that. The pane is a
+ * named size container (`@container/steps`) so the compact layout reacts to
+ * the pane's real width — the inspector aside can steal half of it on
+ * desktop, which a viewport query cannot see. Grid areas re-order the
+ * compact layout; wide layout is plain auto-flow.
+ */
+const STEP_ROW = [
+  "grid w-full items-center gap-x-3 border border-l-[3px] bg-card px-3.5 py-2.5 text-left",
+  "grid-cols-[112px_76px_64px_minmax(0,1fr)_auto_18px]",
+  "border-l-(--status)",
+  "@max-[559px]/steps:grid-cols-[minmax(0,1fr)_auto_auto]",
+  "@max-[559px]/steps:gap-y-0.5",
+  "@max-[559px]/steps:px-3",
+  "@max-[559px]/steps:[grid-template-areas:'status_kind_time'_'name_name_name'_'meta_meta_meta']",
+].join(" ");
+
+const STEP_AREA_STATUS = "@max-[559px]/steps:[grid-area:status]";
+const STEP_AREA_KIND = "@max-[559px]/steps:[grid-area:kind]";
+const STEP_AREA_TIME = "@max-[559px]/steps:[grid-area:time] @max-[559px]/steps:justify-self-end";
+const STEP_AREA_NAME = "@max-[559px]/steps:[grid-area:name]";
+const STEP_AREA_META =
+  "@max-[559px]/steps:[grid-area:meta] @max-[559px]/steps:max-w-none @max-[559px]/steps:text-left";
+const STEP_CHEVRON = "text-right text-muted-foreground @max-[559px]/steps:hidden";
+// Indexed step spine (finding 7): numbered nodes connected by a hairline.
+const STEP_SPINE =
+  "relative flex items-start justify-center after:absolute after:top-8 after:-bottom-[7px] after:left-1/2 after:w-px after:-translate-x-1/2 after:bg-border-strong group-last/step:after:hidden";
+const STEP_ROW_SELECTED = "outline-solid outline-2 outline-(--ring) outline-offset-1";
+
+function KindSpan({
+  className,
+  children,
+}: {
+  readonly className?: string;
+  readonly children: string;
+}) {
+  return (
+    <span
+      className={cn(
+        "text-[11px] font-semibold tracking-[0.025em] whitespace-nowrap uppercase text-muted-foreground",
+        className,
+      )}
+    >
+      {children}
+    </span>
+  );
+}
+
 function StepRow({
   step,
   index,
@@ -141,9 +190,12 @@ function StepRow({
   readonly onSelect: () => void;
 }) {
   return (
-    <div className="step-item">
-      <div className="step-index">
-        <span className="num" data-status={step.status}>
+    <div className="group/step relative grid grid-cols-[24px_minmax(0,1fr)] gap-3">
+      <div className={STEP_SPINE}>
+        <span
+          data-status={step.status}
+          className="relative z-[1] mt-2.5 grid size-[22px] place-items-center rounded-full border bg-card font-mono text-[10px] font-medium text-(--status) border-(--status)"
+        >
           {index}
         </span>
       </div>
@@ -154,16 +206,35 @@ function StepRow({
         data-status={step.status}
         aria-current={selected}
         onClick={onSelect}
-        className="step-row"
+        className={cn(STEP_ROW, selected && STEP_ROW_SELECTED)}
       >
-        <StatusCell status={step.status} />
-        <span className="step-kind">{stepKindLabel(step)}</span>
-        <span className="step-time" data-testid="step-duration">
+        <StatusCell status={step.status} className={STEP_AREA_STATUS} />
+        <KindSpan className={STEP_AREA_KIND}>{stepKindLabel(step)}</KindSpan>
+        <span
+          className={cn("whitespace-nowrap font-mono text-[11px]", STEP_AREA_TIME)}
+          data-testid="step-duration"
+        >
           {stepDuration(step, now)}
         </span>
-        <span className="step-name">{step.name}</span>
-        <span className="step-meta">{step.descriptor}</span>
-        <span className="step-chevron text-right text-muted-foreground">›</span>
+        <span
+          title={step.name}
+          className={cn(
+            "min-w-0 overflow-hidden font-mono text-xs font-medium text-ellipsis whitespace-nowrap",
+            STEP_AREA_NAME,
+          )}
+        >
+          {step.name}
+        </span>
+        <span
+          title={step.descriptor}
+          className={cn(
+            "max-w-[32ch] min-w-0 overflow-hidden text-right font-mono text-[11px] whitespace-nowrap text-ellipsis text-muted-foreground",
+            STEP_AREA_META,
+          )}
+        >
+          {step.descriptor}
+        </span>
+        <span className={STEP_CHEVRON}>›</span>
       </button>
     </div>
   );
@@ -183,19 +254,38 @@ function TerminalRow({
   readonly meta: string;
 }) {
   return (
-    <div className="step-item">
-      <div className="step-index">
-        <span className="num dot" aria-hidden="true" />
+    <div className="group/step relative grid grid-cols-[24px_minmax(0,1fr)] gap-3">
+      <div className={STEP_SPINE}>
+        <span aria-hidden="true" className="mt-[18px] size-2 rounded-full bg-border" />
       </div>
-      <div className="step-row" data-testid="step-row" data-kind={kind} data-status={status}>
-        <StatusCell status={status} />
-        <span className="step-kind">{kind}</span>
-        <span className="step-time" data-testid="step-duration">
+      <div className={STEP_ROW} data-testid="step-row" data-kind={kind} data-status={status}>
+        <StatusCell status={status} className={STEP_AREA_STATUS} />
+        <KindSpan className={STEP_AREA_KIND}>{kind}</KindSpan>
+        <span
+          className={cn("whitespace-nowrap font-mono text-[11px]", STEP_AREA_TIME)}
+          data-testid="step-duration"
+        >
           {time}
         </span>
-        <span className="step-name">{name}</span>
-        <span className="step-meta">{meta}</span>
-        <span className="step-chevron" />
+        <span
+          title={name}
+          className={cn(
+            "min-w-0 overflow-hidden font-mono text-xs font-medium text-ellipsis whitespace-nowrap",
+            STEP_AREA_NAME,
+          )}
+        >
+          {name}
+        </span>
+        <span
+          title={meta}
+          className={cn(
+            "max-w-[32ch] min-w-0 overflow-hidden text-right font-mono text-[11px] whitespace-nowrap text-ellipsis text-muted-foreground",
+            STEP_AREA_META,
+          )}
+        >
+          {meta}
+        </span>
+        <span className={STEP_CHEVRON} />
       </div>
     </div>
   );
@@ -266,14 +356,14 @@ function Terminal({
   readonly stderr: string;
 }) {
   return (
-    <div className="term">
-      <div className="term-head">
-        <span className="prompt">$</span>
+    <div className="bg-term-bg border text-term-fg">
+      <div className="flex items-center gap-2 border-b border-b-[oklch(1_0_0/12%)] px-3 py-2 font-mono text-[11px]">
+        <span className="font-semibold text-status-ready">$</span>
         <span>{command.join(" ")}</span>
       </div>
-      <pre>
+      <pre className="m-0 max-h-80 overflow-y-auto px-3 py-2.5 font-mono text-[11px] whitespace-pre-wrap break-words">
         {stdout}
-        {stderr ? <span className="stderr">{`\n${stderr}`}</span> : null}
+        {stderr ? <span className="text-status-blocked">{`\n${stderr}`}</span> : null}
       </pre>
     </div>
   );
@@ -696,7 +786,11 @@ function RunDetailView({ runId }: { readonly runId: string }) {
             {active ? <CancelRunButton runId={runId} /> : null}
             {active ? (
               <span className="ml-auto flex items-center gap-1.5 font-mono text-[11px] text-muted-foreground">
-                <i className="status-dot status-pulse" data-status="running" aria-hidden="true" />
+                <i
+                  className="motion-reduce:animate-none animate-status-pulse size-[7px] flex-none rounded-full bg-(--status)"
+                  data-status="running"
+                  aria-hidden="true"
+                />
                 replay-then-tail · connected
               </span>
             ) : (
@@ -755,7 +849,7 @@ function RunDetailView({ runId }: { readonly runId: string }) {
           </Button>
         </div>
 
-        <div className="steps-pane min-w-0 flex-1 p-4">
+        <div className="min-w-0 flex-1 p-4 @container/steps">
           {tab === "steps" ? (
             steps.length === 0 && !active ? (
               <p className="py-12 text-center text-sm text-muted-foreground">No steps recorded.</p>

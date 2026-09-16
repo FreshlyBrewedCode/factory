@@ -173,7 +173,11 @@ export function RunsPage() {
           {running.length > 0 ? (
             <section data-testid="runs-group-running" className="mb-8">
               <div className="mb-2 flex items-center gap-2">
-                <i className="status-dot status-pulse" data-status="running" aria-hidden="true" />
+                <i
+                  className="motion-reduce:animate-none animate-status-pulse size-[7px] flex-none rounded-full bg-(--status)"
+                  data-status="running"
+                  aria-hidden="true"
+                />
                 <span className="text-[11px] font-semibold tracking-wide text-muted-foreground uppercase">
                   Running
                 </span>
