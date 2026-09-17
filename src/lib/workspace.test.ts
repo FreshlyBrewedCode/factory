@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, test } from "bun:test";
@@ -334,8 +334,17 @@ describe("evictOldWorkspaces scratch exclusion (issue #13)", () => {
     const root = mkdtempSync(join(tmpdir(), "factory-workspace-evict-scratch-test-"));
     const workspaceRoot = join(root, "workspace");
     await Bun.$`mkdir -p ${workspaceRoot}`.quiet();
-    for (const name of ["clone-a", "clone-b", "scratch-a", "scratch-b"]) {
-      writeFileSync(join(workspaceRoot, name), "x");
+    // Writes this close together can land on the same filesystem mtime tick,
+    // at which point ordering falls back to directory-enumeration order —
+    // unspecified, and observed to differ between local ext4 and CI's
+    // runner filesystem. Stamp explicit, strictly increasing mtimes so
+    // "clone-a is oldest" doesn't depend on either.
+    const base = Date.now() / 1000;
+    for (const [index, name] of ["clone-a", "clone-b", "scratch-a", "scratch-b"].entries()) {
+      const path = join(workspaceRoot, name);
+      writeFileSync(path, "x");
+      const mtime = base + index;
+      utimesSync(path, mtime, mtime);
     }
 
     const evicted = await evictOldWorkspaces(workspaceRoot, 2, [], new Set(["scratch-a"]));
