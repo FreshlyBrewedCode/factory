@@ -24,8 +24,7 @@ export const DEFAULT_MAX_CHILDREN_PER_RUN = 20;
  * IANA zone. `Cron.parse` would use the same fallback, but an explicit constant
  * keeps the resolved value visible in the config and the API.
  */
-export const DEFAULT_SCHEDULE_TIMEZONE =
-  Intl.DateTimeFormat().resolvedOptions().timeZone ?? "UTC";
+export const DEFAULT_SCHEDULE_TIMEZONE = Intl.DateTimeFormat().resolvedOptions().timeZone ?? "UTC";
 
 /**
  * Where `factory init` writes the project, and where every command looks when
@@ -52,9 +51,9 @@ export interface FactoryConfig {
   readonly workflows: ReadonlyArray<WorkflowDefinition<any, any>>;
   /**
    * Issue #16: cron schedules, validated at load — a schedule is a workflow
-    * (by registry id), its input, and a cron expression in an optional
-    * timezone (default: the system's, `DEFAULT_SCHEDULE_TIMEZONE`).
-    * `defineConfig` validates everything a wrong value would
+   * (by registry id), its input, and a cron expression in an optional
+   * timezone (default: the system's, `DEFAULT_SCHEDULE_TIMEZONE`).
+   * `defineConfig` validates everything a wrong value would
    * otherwise break at 3am: unregistered workflow, input that fails the
    * workflow's schema, and an unparsable cron expression all throw here,
    * naming the offending schedule.
