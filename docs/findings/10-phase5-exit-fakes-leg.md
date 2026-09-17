@@ -99,7 +99,7 @@ The live leg must also, per phase 1/3/4's precedent, show the round trip end to 
 - `docs/findings/README.md` had not been indexed for finding 9; this step adds a phase-5 section
   covering 9 and 10.
 - **ADR numbering collision:** two files carry `0005` — `0005-poc-manual-runs.md` (phase 5,
-  indexed in STATUS) and `0005-raw-typescript-distribution.md` (distribution). Both predate this
+  indexed in STATUS) and `0006-raw-typescript-distribution.md` (distribution). Both predate this
   step; worth renumbering one on the next docs touch so cross-references stay unique.
 - `factory start` has no `cancel` verb (see clause 2 above) — arguably in-scope before the live
   leg, one small CLI addition if wanted.

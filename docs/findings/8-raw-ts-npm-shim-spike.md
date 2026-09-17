@@ -87,5 +87,5 @@ listener does not (verified 143/130, no orphans).
 `bin/factory.js` uses `#!/usr/bin/env bun`, the `typeof Bun` guard, and Option
 B's async spawn. `scripts/build-release.ts` stamps `"type": "module"`,
 `engines: { bun: ">=1.4.1" }` and the launcher's shebang into the staged
-manifest. See [`adr/0005-raw-typescript-distribution.md`](../adr/0005-raw-typescript-distribution.md)
+manifest. See [`adr/0006-raw-typescript-distribution.md`](../adr/0006-raw-typescript-distribution.md)
 for the decision and its consequences.

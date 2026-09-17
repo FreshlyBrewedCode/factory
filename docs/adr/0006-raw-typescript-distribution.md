@@ -1,4 +1,4 @@
-# 0005. Distribution: raw TypeScript on Bun, behind a shebang-guarded launcher
+# 0006. Distribution: raw TypeScript on Bun, behind a shebang-guarded launcher
 
 ## Status
 

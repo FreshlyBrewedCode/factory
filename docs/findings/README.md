@@ -24,7 +24,7 @@ Conclusions → [`adr/0001-write-back-isolation-effect-boundary.md`](../adr/0001
 | [`1-event-type-corpus-analysis.md`](./1-event-type-corpus-analysis.md) | D3's event type, designed against the nine recorded NDJSON corpora | Chunk timestamps are not a valid ordering key — `sandbox.file` chunks are back-dated by up to 1473 ms because they carry an mtime — and cancellation emits no chunk at all, so both ordering and termination must be Factory's to record. The chunks themselves are AG-UI protocol, whose transport and client TanStack already ships. |
 | [`2-sandbox-reuse-nonce-probe.md`](./2-sandbox-reuse-nonce-probe.md) | D10 in isolation: does the working tree survive a fresh-session boundary, independent of any workflow's own prompts? | Confirmed, live, three runs: a nonce written to disk by session 1 was read back correctly by session 2 (same `threadId`/`dir`, no shared transcript) — both from the read tool's own `TOOL_CALL_RESULT` and from the host filesystem directly. |
 
-Conclusions → [`adr/0003-run-event-type.md`](../adr/0003-run-event-type.md) (D10 itself is recorded in `STATUS.md`'s decision table; this probe adds confirming evidence, no new decision).
+Conclusions → [`adr/0003-run-event-type.md`](../adr/0003-run-event-type.md) (D10 itself is recorded in [`adr/0001-write-back-isolation-effect-boundary.md`](../adr/0001-write-back-isolation-effect-boundary.md); this probe adds confirming evidence, no new decision).
 
 ## Phase 2 — persistence & lifecycle
 
@@ -32,7 +32,7 @@ Conclusions → [`adr/0003-run-event-type.md`](../adr/0003-run-event-type.md) (D
 |---|---|---|
 | [`4-crash-mid-run-recovery.md`](./4-crash-mid-run-recovery.md) | `SIGKILL` mid-`ctx.exec`, then reopen the same sqlite file | The partial history survives intact and reads back as `"interrupted"` — derived at read time, since nothing observes the crash as it happens. |
 
-Conclusions → D21 in `STATUS.md`; no ADR (plain synchronous sqlite, no Effect layer to bridge).
+Conclusions → [`adr/0010-event-log-persistence.md`](../adr/0010-event-log-persistence.md) (D21: plain synchronous sqlite, no Effect layer to bridge).
 
 ## Phase 3 — server & dispatch
 
@@ -69,5 +69,5 @@ Conclusions → [`adr/0005-poc-manual-runs.md`](../adr/0005-poc-manual-runs.md) 
 |---|---|---|
 | [`8-raw-ts-npm-shim-spike.md`](./8-raw-ts-npm-shim-spike.md) | How to publish a Bun-only, raw-TypeScript CLI to npm | `bunx`/`npx` honor a bin's shebang, so the launcher must declare `#!/usr/bin/env bun`; a `node` shebang makes `bunx` run Node and the Bun branch unreachable. |
 
-Conclusions → [`adr/0005-raw-typescript-distribution.md`](../adr/0005-raw-typescript-distribution.md).
+Conclusions → [`adr/0006-raw-typescript-distribution.md`](../adr/0006-raw-typescript-distribution.md).
 

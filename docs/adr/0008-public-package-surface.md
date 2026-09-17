@@ -7,11 +7,11 @@ stacked on `feat/phase-5`). Validated by `src/index.test.ts`,
 `src/init.test.ts`, and the staged-package smoke test in
 `scripts/build-release.ts`.
 
-ADR 0005 (`0005-raw-typescript-distribution.md`) decided *how* the package
+ADR 0006 (`0006-raw-typescript-distribution.md`) decided *how* the package
 ships — raw TypeScript on Bun behind a shebang-guarded launcher. This ADR
-decides *what it exposes* once it gets there. The two are complementary; the
-duplicate `0005` number is a pre-existing collision with
-`0005-poc-manual-runs.md` and is not resolved here.
+decides *what it exposes* once it gets there. The two are complementary. (That
+ADR was filed as a second `0005`, colliding with `0005-poc-manual-runs.md`; it
+was renumbered to `0006` in the 2026-09-17 docs cleanup.)
 
 ## Context
 
@@ -61,7 +61,7 @@ is then a deliberate edit, guarded by a test that pins the exported key list.
 ### 2. The repo imports through the specifier it publishes
 
 The root manifest's `name` becomes `@frebreco/factory` (it stays
-`"private": true`, per ADR 0005). That makes Node/Bun self-referencing
+`"private": true`, per ADR 0006). That makes Node/Bun self-referencing
 resolution work, so `sample/`, `src/index.test.ts` and every future example
 import `@frebreco/factory` — the exact string a user types — while resolving to
 the working tree. The published surface cannot drift from the tested one,

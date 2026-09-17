@@ -1,37 +1,51 @@
 factory
 
-- this is a greenfield POC project
-- elevator pitch:
-  - a copy of mattpocock/sandcastle (https://raw.githubusercontent.com/mattpocock/sandcastle/refs/heads/main/README.md) but using @tanstack/ai (see tanstack-ai skill) and using a lightweight server + web ui with automatic run/dispatch (see ../wayful/scripts/dispatch-ready-issues.sh) and run monitoring
-  - three columns
-    1. imperative typescript workflows (plain async control flow over a sandbox handle, like sandcastle)
-    2. responsive web ui SPA for monitoring
-    3. server/daemon that handles lifecycle and automatic dispatch
+- factory runs coding agents against a real repository from workflows you write as plain
+  TypeScript, with a daemon that owns their lifecycle and a web UI to watch them. Published as
+  `@frebreco/factory` The authoring model is borrowed from mattpocock/sandcastle
+- three columns
+  1. **workflows** — plain `async (ctx, input) => {...}` TypeScript over a run context
+     (`ctx.agent`/`exec`/`writeBack`/`assert`/`log`/`output`). No step graph, no DSL (ADR 0002)
+  2. **server/cli** — `factory serve`: HTTP + SSE API, run admission and lifecycle, sqlite persistence,
+     automatic dispatch
+  3. **web UI** — a React SPA for monitoring, observability, and manual dispatching 
+  
+- one typed, append-only run-event log is the spine all three columns share (ADR 0003); raw agent
+  chunks ride inside it opaquely
+- a project owns a `.factory/` folder (ADR 0008): `factory.config.ts` (repo, identity, workflow
+  registry, `maxConcurrentRuns`, workspace root) and `workflows/` are committed; `factory.db`,
+  `workspaces/` and `runs/` are regenerable and ignored. `factory init` scaffolds it
 
-- suggested stack
-  - bun all the way (consider buns bundler (https://bun.com/docs/bundler/fullstack) during POC phase instead of e.g. vite)
-  - bun test
-  - oxfmt, oxlint, type aware: true, effect lint rules (https://effect.website/docs/v4/getting-started/devtools#oxlint)
-  - Effect TS v4 for serverside, owns lifecycle/dispatch/persistence (workflow authoring stays plain async TS, the runtime bridges the two)
-    - sqlite for persistence
-  - tanstack/ai for the ai/agent runtime using their harness agents and sandboxes (https://raw.githubusercontent.com/tanstack/ai/main/docs/sandbox/overview.md), main adapter to start with is Opencode
-    - their workspaces cover clone + bootstrap only, git write-back (branch/commit/push/PR) is ours
-  - Web UI, React SPA, tanstack router and query, shadcn, tailwind
+- stack
+  - bun (runtime, test runner, and bundler — `Bun.serve` for HTTP/SSE, the fullstack bundler for
+    the SPA), `bun:sqlite` for persistence
+  - Effect v4 (`4.0.0-rc.*`) for the run lifecycle and scheduling; Effect Schema is the schema
+    language throughout — workflow inputs, agent structured output, config. 
+  - `@tanstack/ai` with `-opencode` and `-sandbox-local-process` for the agent runtime. 
+  - React 19 SPA: tanstack router and query, tailwind v4, shadcn primitives 
+  - oxfmt, oxlint (type-aware, with the `@effect/tsgo` and react rules)
+  - playwright for the browser legs
 
-- Run playwright/browser automation through the Nix dev shell (`nix develop`), which pins bun and puts playwright's browser libs on `LD_LIBRARY_PATH` — see the playwright-cli skill
+- working in this repo
+  - `bun run check` is the gate: format:check + lint + typecheck + `bun test`. `bun run test:e2e`
+    runs playwright
+  - run playwright/browser automation through the Nix dev shell (`nix develop`), which pins bun and
+    puts playwright's browser libs on `LD_LIBRARY_PATH` — see the playwright-cli skill
+  - `bun run format` is deliberately scoped to explicit paths: a bare `oxfmt .` reformats Markdown
+  - conventional commits; CI lints PR titles and semantic-release publishes from `main`
+  - we build in iterations: (spike ->) prototype → validate → harden. The stack still applies while
+    prototyping, unless there is a good reason it should not
 
-- We build in iterrations, it is encouraged to first prototype -> validate -> harden architecture, stack should still be respected during prototyping unless good reasons come up
+- tracking and documentation
+  - **issue tracker: GitHub issues**: 
+    - use `gh` to interact with issues
+    - use the `issue-tracker` skill for further info 
+  - `docs/adr/NNNN-<slug>.md` — the durable record (Status / Context / Decision / Consequences).
+  - `docs/findings/` — evidence from spikes and experiments 
+  - `docs/design/design.md` — rough design guideline, no full design system, copied verbatim from a sibling project  
 
-- Read `STATUS.md` to understand the current status at the end of the session, consider updating `STATUS.md` using /handoff
-
-- documentation layout
-  - `STATUS.md` — where we are, what is still unknown, and the phase we are in. Keep it current and free of stale claims; it is the entry point. It indexes rather than contains: completed phases and the decision register live in their own files, so STATUS stays readable as *status*
-  - `docs/decisions.md` — the decision register, D1–DN with rationale. `STATUS.md` carries a one-line index of these; where a decision has an owning ADR, that ADR is the deeper record
-  - `docs/phases-completed.md` — completed phases in full, as written while they ran. `STATUS.md` keeps a few bullets each. Not current status; kept for the file pointers and the reasoning later phases inherit
-  - `docs/adr/NNNN-<slug>.md` — decision records (Status / Context / Decision / Consequences). Write one when a phase exits, or when a decision is made that later phases must not re-litigate
-  - `docs/findings/` — evidence from spikes and experiments, one document per subtask, written for a reader who was not there. Kept separate from the decisions drawn from it, so a wrong conclusion can be revised without losing the measurements
-  - `docs/research/` — reading notes on external sources, captured before we have run anything. Annotate rather than delete once a spike contradicts them
-  - `docs/design/design.md` — wayful's UI design guideline, copied verbatim with its reference screenshots. The rough design reference for the phase 4 UI (achromatic instrument panel, status-only colour, mono for CLI-typeable identifiers); wayful's repo stays canonical where the copy drifts
-  - `prototypes/` — throwaway single-file UI mockups for brainstorming, not part of the stack or the build. `prototypes/phase4-ui/index.html` is the phase 4 visual mock (self-contained HTML/CSS/JS, no backend, simulated live feed)
-
-- If significant changes/decisions have been made that go against the foundation established above, consider updating `AGENTS.md` in the same style. Always confirm these changes with the user.
+- host environment
+  - a prod instance of factory may be running on this machine (`bun src/cli serve --port 3005`,
+    log at `/tmp/factory-serve.log`)
+  - we use factory to build factory
+  - when doing real agent tests via opencode the preferred model is `opencode-go/big-pickle`
