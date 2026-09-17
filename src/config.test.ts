@@ -3,6 +3,7 @@ import { Schema } from "effect";
 import {
   DEFAULT_MAX_CONCURRENT_RUNS,
   DEFAULT_RETAINED_WORKSPACES,
+  DEFAULT_SCHEDULE_TIMEZONE,
   DEFAULT_WORKSPACE_ROOT,
   defineConfig,
   type ScheduleConfigInput,
@@ -145,6 +146,14 @@ describe("defineConfig schedules (issue #16)", () => {
       schedules: [scheduleInput({ timezone: "Not/AZone" })],
     };
     expect(() => defineConfig(broken)).toThrow(/schedule "nightly"/);
+  });
+
+  test("a schedule without a timezone defaults to the system's zone", () => {
+    const config = defineConfig({
+      ...baseWithWorkflow(),
+      schedules: [scheduleInput({ timezone: undefined })],
+    });
+    expect(config.schedules[0]!.timezone).toBe(DEFAULT_SCHEDULE_TIMEZONE);
   });
 
   test("a schedule's input is validated against its workflow's schema at load", () => {

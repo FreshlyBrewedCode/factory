@@ -20,6 +20,14 @@ export const DEFAULT_MAX_DISPATCH_DEPTH = 5;
 export const DEFAULT_MAX_CHILDREN_PER_RUN = 20;
 
 /**
+ * The timezone a schedule without one is evaluated in: the system's resolved
+ * IANA zone. `Cron.parse` would use the same fallback, but an explicit constant
+ * keeps the resolved value visible in the config and the API.
+ */
+export const DEFAULT_SCHEDULE_TIMEZONE =
+  Intl.DateTimeFormat().resolvedOptions().timeZone ?? "UTC";
+
+/**
  * Where `factory init` writes the project, and where every command looks when
  * no `--config` is given. `.factory/` holds both the authored source (this
  * config, `workflows/`) and the regenerable state (`factory.db`,
@@ -44,8 +52,9 @@ export interface FactoryConfig {
   readonly workflows: ReadonlyArray<WorkflowDefinition<any, any>>;
   /**
    * Issue #16: cron schedules, validated at load — a schedule is a workflow
-   * (by registry id), its input, and a cron expression in an explicit
-   * timezone. `defineConfig` validates everything a wrong value would
+    * (by registry id), its input, and a cron expression in an optional
+    * timezone (default: the system's, `DEFAULT_SCHEDULE_TIMEZONE`).
+    * `defineConfig` validates everything a wrong value would
    * otherwise break at 3am: unregistered workflow, input that fails the
    * workflow's schema, and an unparsable cron expression all throw here,
    * naming the offending schedule.
@@ -86,10 +95,11 @@ export interface ScheduleConfigInput {
    */
   readonly cron: string;
   /**
-   * The IANA timezone the expression is evaluated in. Required — a daemon
-   * silently using its own local zone is a clock-change bug waiting to happen.
+   * The IANA timezone the expression is evaluated in. Optional — when omitted
+   * the daemon's system zone is used (`DEFAULT_SCHEDULE_TIMEZONE`). An
+   * explicitly wrong value still fails at load.
    */
-  readonly timezone: string;
+  readonly timezone?: string;
   /** Default `"skip"`. */
   readonly overlap?: ScheduleOverlapPolicy;
   /** Fire once when the daemon starts. Default `false`. */
@@ -162,7 +172,7 @@ export function defineConfig(config: FactoryConfigInput): FactoryConfig {
       workflowId: schedule.workflow,
       input: schedule.input,
       cron: schedule.cron,
-      timezone: schedule.timezone,
+      timezone: schedule.timezone ?? DEFAULT_SCHEDULE_TIMEZONE,
       overlap: schedule.overlap ?? "skip",
       runOnStart: schedule.runOnStart ?? false,
       agent: schedule.agent,
@@ -246,11 +256,12 @@ export function validateSchedules(
         `schedule "${schedule.id}" has an invalid cron expression ${JSON.stringify(schedule.cron)}`,
       );
     }
-    const parsed = Cron.parse(schedule.cron, schedule.timezone);
+    const resolvedTimezone = schedule.timezone ?? DEFAULT_SCHEDULE_TIMEZONE;
+    const parsed = Cron.parse(schedule.cron, resolvedTimezone);
     if (Result.isFailure(parsed)) {
       const reason = parsed.failure.message ?? String(schedule.cron);
       throw new Error(
-        `schedule "${schedule.id}" has an invalid cron expression "${schedule.cron}": ${reason}`,
+        `schedule "${schedule.id}" has an invalid cron expression "${schedule.cron}" in timezone "${resolvedTimezone}": ${reason}`,
       );
     }
 
