@@ -25,6 +25,8 @@ export type {
   AgentResult,
   AssertCallback,
   AssertResult,
+  WorkspaceKind,
+  WorkspaceSpec,
   WorkflowAgentDefaults,
   WorkflowConfig,
   WorkflowCtx,

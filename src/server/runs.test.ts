@@ -9,12 +9,13 @@
  *   clean RunCancelled with no orphaned slot.
  */
 
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, test } from "bun:test";
+import type { RunEvent } from "../events";
 import echoWorkflow from "../../test/fixtures/echo-workflow";
-import { openStore, getRunEvents } from "../persistence/store";
+import { appendEvent, openStore, getRunEvents } from "../persistence/store";
 import { createSlowFakeAdapter } from "../replay/adapter";
 import { defineWorkflow, Schema } from "../workflow";
 import {
@@ -187,4 +188,123 @@ describe("cancel of a reserved-but-not-started run (L1)", () => {
     db.close();
     finish();
   }, 10_000);
+});
+
+describe("scratch workspaces through startTrackedRun (issue #13)", () => {
+  const scratchWorkflow = defineWorkflow("scratch-test", {
+    input: Schema.Struct({}),
+    workspace: { kind: "scratch" },
+    run: async (ctx) => {
+      const result = await ctx.agent("step", "irrelevant, replay ignores it");
+      return { finalText: result.finalText };
+    },
+  });
+  const failingScratchWorkflow = defineWorkflow("scratch-fail-test", {
+    input: Schema.Struct({}),
+    workspace: { kind: "scratch" },
+    run: async () => {
+      throw new Error("precondition check failed");
+    },
+  });
+
+  function workspaceSpec() {
+    return {
+      workspaceRoot: join(tmpRootDir(), "workspaces"),
+      sshUrl: join(tmpRootDir(), "seed"),
+      identity: { name: "Test Bot", email: "test@factory.local" },
+      retainedWorkspaces: 10,
+    };
+  }
+
+  let _tmp = "";
+  function tmpRootDir() {
+    return _tmp;
+  }
+
+  test("a scratch run gets an empty directory with no mirror and no clone", async () => {
+    const { root, finish } = tmpRoot();
+    _tmp = root;
+    const db = openStore(join(root, "factory.db"));
+    mkdirSync(join(root, "seed"), { recursive: true });
+
+    const runId = await startTrackedRun(db, failingScratchWorkflow, {
+      runId: "run-scratch-empty",
+      workspace: { ...workspaceSpec(), sshUrl: join(root, "no-such-remote") },
+      input: {},
+      adapter: SLOW_ADAPTER,
+    });
+    await waitFor(() => !isActive(runId));
+
+    const dir = join(root, "workspaces", "run-scratch-empty");
+    expect(existsSync(dir)).toBe(true);
+    // failing, so the dir survives for inspection (a completed scratch dir is reaped).
+    expect(readdirSync(dir)).toEqual([]);
+    expect(existsSync(join(root, "workspaces", ".mirror.git"))).toBe(false);
+    finish();
+  });
+
+  test("a completed scratch run is reaped; a failed one is kept for inspection", async () => {
+    const { root, finish } = tmpRoot();
+    _tmp = root;
+    const db = openStore(join(root, "factory.db"));
+    mkdirSync(join(root, "seed"), { recursive: true });
+
+    const okId = await startTrackedRun(db, scratchWorkflow, {
+      runId: "run-scratch-ok",
+      workspace: workspaceSpec(),
+      input: {},
+      adapter: SLOW_ADAPTER,
+    });
+    await waitFor(() => !isActive(okId));
+    await new Promise((resolve) => setTimeout(resolve, 50)); // reap lands async
+    expect(existsSync(join(root, "workspaces", "run-scratch-ok"))).toBe(false);
+
+    const badId = await startTrackedRun(db, failingScratchWorkflow, {
+      runId: "run-scratch-bad",
+      workspace: workspaceSpec(),
+      input: {},
+      adapter: SLOW_ADAPTER,
+    });
+    await waitFor(() => !isActive(badId));
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(existsSync(join(root, "workspaces", "run-scratch-bad"))).toBe(true);
+    finish();
+  });
+
+  test("a scratch leftover does not evict clone workspaces from retention", async () => {
+    const { root, finish } = tmpRoot();
+    _tmp = root;
+    const db = openStore(join(root, "factory.db"));
+    const seed = join(root, "seed");
+    await Bun.$`git init -b main -q ${seed}`.quiet();
+
+    // A kept (failed) scratch dir, already recorded in the log.
+    appendEvent(db, {
+      runId: "run-scratch-kept",
+      seq: 0,
+      ts: Date.now(),
+      payload: {
+        _tag: "RunStarted",
+        workflowId: "scratch-test",
+        dir: join(root, "workspaces", "run-scratch-kept"),
+        input: {},
+        workspaceKind: "scratch",
+      },
+    } satisfies RunEvent);
+    mkdirSync(join(root, "workspaces", "run-scratch-kept"), { recursive: true });
+
+    // retention = 1: with the scratch dir correctly excluded, the only clone
+    // survives: the leftover must not count toward retention.
+    await startTrackedRun(db, echoWorkflow, {
+      runId: "run-clone",
+      workspace: { ...workspaceSpec(), sshUrl: seed, retainedWorkspaces: 1 },
+      input: {},
+      adapter: SLOW_ADAPTER,
+    });
+    await waitFor(() => !isActive("run-clone"));
+
+    expect(existsSync(join(root, "workspaces", "run-clone"))).toBe(true);
+    expect(existsSync(join(root, "workspaces", "run-scratch-kept"))).toBe(true);
+    finish();
+  });
 });

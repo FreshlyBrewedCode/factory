@@ -19,6 +19,7 @@
 import { Database } from "bun:sqlite";
 import { Schema, SchemaParser } from "effect";
 import { RunEvent, type RunEventPayload } from "../events";
+import type { WorkspaceKind } from "../workflow";
 
 export function openStore(path: string): Database {
   const db = new Database(path, { create: true });
@@ -84,6 +85,8 @@ export interface RunSummary {
   readonly runId: string;
   readonly workflowId: string | undefined;
   readonly dir: string | undefined;
+  /** How `dir` was provisioned (issue #13). Pre-issue events default to clone. */
+  readonly workspaceKind: WorkspaceKind;
   readonly startedAt: number;
   readonly finishedAt: number | undefined;
   readonly status: RunStatus | "interrupted";
@@ -160,6 +163,7 @@ export function listRuns(db: Database): ReadonlyArray<RunSummary> {
       runId: row.run_id,
       workflowId: started?._tag === "RunStarted" ? started.workflowId : undefined,
       dir: started?._tag === "RunStarted" ? started.dir : undefined,
+      workspaceKind: started?._tag === "RunStarted" ? (started.workspaceKind ?? "clone") : "clone",
       startedAt: row.started_at,
       finishedAt: row.finished_at ?? undefined,
       status: row.status === null ? "interrupted" : (row.status as RunStatus),

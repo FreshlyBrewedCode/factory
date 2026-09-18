@@ -24,6 +24,7 @@ import type {
   AssertResult,
   WorkflowCtx,
   WorkflowDefinition,
+  WorkspaceKind,
   WriteBackCallOptions,
 } from "../workflow";
 import type { AgentAdapter } from "./agent-adapter";
@@ -56,6 +57,12 @@ export interface StartRunOptions {
   readonly adapter: AgentAdapter;
   /** Write-back environment (D32). Absent, a workflow's `ctx.writeBack` fails. */
   readonly repo?: RunRepo;
+  /**
+   * How `dir` was provisioned (issue #13). `"clone"` is the default; a
+   * scratch run differs only in `RunStarted.workspaceKind` and `ctx.writeBack`'s
+   * failure message.
+   */
+  readonly workspaceKind?: WorkspaceKind;
   readonly onEvent: (event: RunEvent) => void;
 }
 
@@ -120,6 +127,8 @@ export function startRun<I, O>(
   const nextStepId = makeIdCounter("step");
   const nextExecId = makeIdCounter("exec");
   const startedAt = Date.now();
+
+  const workspaceKind = options.workspaceKind ?? "clone";
 
   const execImpl = async (argv: ReadonlyArray<string>): Promise<ExecResult> => {
     if (cancelled) throw new RunCancelledSignal();
@@ -277,6 +286,22 @@ export function startRun<I, O>(
   const writeBackImpl = async (opts: WriteBackCallOptions): Promise<WriteBackResult> => {
     emit({ _tag: "WriteBackStarted", branch: opts.branch });
 
+    // Scratch has nothing to push (issue #13): the failure names the workspace
+    // kind, is recorded like any other write-back failure, and runs no git.
+    if (workspaceKind === "scratch") {
+      const message =
+        'ctx.writeBack is not available on a scratch workspace: the workspace kind is "scratch", so there is no clone to push';
+      emit({
+        _tag: "WriteBackFinished",
+        branch: opts.branch,
+        outcome: "failed",
+        cleanedArtifacts: [],
+        stagedPaths: [],
+        error: message,
+      });
+      throw new Error(message);
+    }
+
     if (options.repo === undefined) {
       const message =
         "ctx.writeBack needs run-repo config (slug/baseBranch) — this run was started without it";
@@ -361,6 +386,7 @@ export function startRun<I, O>(
       workflowId: workflow.id,
       dir: options.dir,
       input: decodedInput as never,
+      workspaceKind,
     });
 
     try {

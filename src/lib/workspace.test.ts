@@ -1,8 +1,9 @@
-import { existsSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, test } from "bun:test";
-import { allocateWorkspace } from "./workspace";
+import type { ExecResult } from "./exec";
+import { allocateWorkspace, evictOldWorkspaces } from "./workspace";
 import { writeBack } from "./writeback";
 import type { GitIdentity } from "./clone";
 import { hostExec } from "./exec";
@@ -267,6 +268,120 @@ describe("allocateWorkspace (D28)", () => {
     const dirs = listRuns(workspaceRoot).sort();
     expect(dirs).not.toContain("run-1");
     expect(dirs).toEqual(["run-3"]);
+    rmSync(root, { recursive: true, force: true });
+  });
+});
+
+describe("scratch workspaces (issue #13)", () => {
+  test("a scratch allocation is an empty directory: no mirror refresh, no clone", async () => {
+    const root = mkdtempSync(join(tmpdir(), "factory-workspace-scratch-test-"));
+    const workspaceRoot = join(root, "workspaces");
+    const seed = join(root, "seed-repo");
+    await seedRepo(seed, "one");
+
+    const dir = await allocateWorkspace({
+      runId: "run-scratch",
+      workspaceRoot,
+      sshUrl: seed,
+      identity: IDENTITY,
+      retainedWorkspaces: 10,
+      kind: "scratch",
+    });
+
+    expect(dir).toBe(join(workspaceRoot, "run-scratch"));
+    expect(existsSync(dir)).toBe(true);
+    expect(readdirSync(dir)).toEqual([]);
+    expect(existsSync(join(workspaceRoot, ".mirror.git"))).toBe(false);
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  test("a scratch allocation does not evict or count toward clone retention", async () => {
+    const root = mkdtempSync(join(tmpdir(), "factory-workspace-scratch-retain-test-"));
+    const workspaceRoot = join(root, "workspaces");
+    const seed = join(root, "seed-repo");
+    await seedRepo(seed, "one");
+
+    // Two failed-run scratch leftovers, plus one clone.
+    for (const runId of ["scratch-1", "scratch-2"]) {
+      await allocateWorkspace({
+        runId,
+        workspaceRoot,
+        sshUrl: seed,
+        identity: IDENTITY,
+        retainedWorkspaces: 10,
+        kind: "scratch",
+      });
+    }
+    await allocateWorkspace({
+      runId: "clone-1",
+      workspaceRoot,
+      sshUrl: seed,
+      identity: IDENTITY,
+      retainedWorkspaces: 2,
+      scratchEntries: new Set(["scratch-1", "scratch-2"]),
+    });
+
+    // retention=2 counted only the one clone: a scratch dir must not evict
+    // clone workspaces, and clone allocation must not evict a kept scratch dir.
+    expect(listRuns(workspaceRoot).sort()).toEqual(["clone-1", "scratch-1", "scratch-2"]);
+    expect(existsSync(join(workspaceRoot, ".mirror.git"))).toBe(true);
+    rmSync(root, { recursive: true, force: true });
+  });
+});
+
+describe("evictOldWorkspaces scratch exclusion (issue #13)", () => {
+  test("scratch entries are neither candidates nor counted toward retention", async () => {
+    const root = mkdtempSync(join(tmpdir(), "factory-workspace-evict-scratch-test-"));
+    const workspaceRoot = join(root, "workspace");
+    await Bun.$`mkdir -p ${workspaceRoot}`.quiet();
+    // Writes this close together can land on the same filesystem mtime tick,
+    // at which point ordering falls back to directory-enumeration order —
+    // unspecified, and observed to differ between local ext4 and CI's
+    // runner filesystem. Stamp explicit, strictly increasing mtimes so
+    // "clone-a is oldest" doesn't depend on either.
+    const base = Date.now() / 1000;
+    for (const [index, name] of ["clone-a", "clone-b", "scratch-a", "scratch-b"].entries()) {
+      const path = join(workspaceRoot, name);
+      writeFileSync(path, "x");
+      const mtime = base + index;
+      utimesSync(path, mtime, mtime);
+    }
+
+    const evicted = await evictOldWorkspaces(workspaceRoot, 2, [], new Set(["scratch-a"]));
+
+    expect(evicted).toEqual(["clone-a"]);
+    expect(listRuns(workspaceRoot).sort()).toEqual(["clone-b", "scratch-a", "scratch-b"]);
+    rmSync(root, { recursive: true, force: true });
+  });
+});
+
+describe("host exec injection (issue #13)", () => {
+  test("allocation reaches host command execution through an injected function", async () => {
+    const root = mkdtempSync(join(tmpdir(), "factory-workspace-exec-seam-test-"));
+    const workspaceRoot2 = join(root, "other");
+    const seed = join(root, "seed-repo");
+    await seedRepo(seed, "one");
+
+    const commands: Array<ReadonlyArray<string | null>> = [];
+    // A fake that spawns nothing: if `allocateWorkspace` still called
+    // `hostExec` directly, `git clone` would really run and contradict it.
+    const exit0: ExecResult = { command: "fake", exitCode: 0, stdout: "", stderr: "" };
+    const dir = await allocateWorkspace({
+      runId: "run-fake",
+      workspaceRoot: workspaceRoot2,
+      sshUrl: seed,
+      identity: IDENTITY,
+      retainedWorkspaces: 10,
+      exec: async (argv, opts) => {
+        commands.push([...argv, opts?.cwd ?? null]);
+        return exit0;
+      },
+    });
+
+    expect(dir).toBe(join(workspaceRoot2, "run-fake"));
+    expect(existsSync(dir)).toBe(false); // a fake exec spawns nothing, clones nothing
+    const flat = commands.flat();
+    expect(flat.filter((arg) => arg === "clone").length).toBe(2); // mirror + clone
     rmSync(root, { recursive: true, force: true });
   });
 });

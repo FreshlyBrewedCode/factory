@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, test } from "bun:test";
@@ -6,6 +6,7 @@ import { createSlowFakeAdapter } from "../replay/adapter";
 import { getRunEvents, openStore } from "../persistence/store";
 import { defineConfig, loadFactoryConfig } from "../config";
 import registryWorkflow from "../../test/fixtures/registry-workflow";
+import registryScratchWorkflow from "../../test/fixtures/registry-scratch-workflow";
 import { serve } from "./http";
 
 const ECHO_WORKFLOW = `${import.meta.dir}/../../test/fixtures/echo-workflow.ts`;
@@ -676,6 +677,78 @@ describe("POST /api/runs {workflowId, input} (D31)", () => {
         status: string;
       };
       expect(run.status).toBe("RunFinished");
+    } finally {
+      await server.stop(true);
+      db.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("a scratch workflow through POST /api/runs (issue #13)", () => {
+  test("a scratch run needs no mirror or clone: no ssh remote required; dir reaped on success; run detail reports the kind", async () => {
+    const root = mkdtempSync(join(tmpdir(), "factory-d31-scratch-"));
+    // Deliberately not a git repo — a clone workspace would fail mirror
+    // refresh at allocation and the run would never start; a scratch run
+    // needs no mirror refresh or clone at all.
+    const notARepo = join(root, "not-a-repo");
+    await Bun.$`mkdir ${notARepo}`.quiet();
+
+    const workspaceRoot = join(root, "workspaces");
+    const db = openStore(join(root, "factory.db"));
+    const adapter = createSlowFakeAdapter(
+      [
+        { type: "TEXT_MESSAGE_START" },
+        { type: "TEXT_MESSAGE_CONTENT", delta: "hi" },
+        { type: "TEXT_MESSAGE_END" },
+      ],
+      1,
+    );
+    const config = defineConfig({
+      repo: {
+        sshUrl: notARepo,
+        identity: { name: "Factory", email: "factory@factory.test" },
+        baseBranch: "main",
+        slug: "acme/widgets",
+      },
+      workflows: [registryScratchWorkflow],
+      workspaceRoot,
+      maxConcurrentRuns: 3,
+      retainedWorkspaces: 10,
+    });
+    const server = serve({ db, adapter, port: 0, config });
+    const base = `http://localhost:${server.port}`;
+
+    try {
+      const startRes = await fetch(`${base}/api/runs`, {
+        method: "POST",
+        body: JSON.stringify({ workflowId: "registry-scratch-test", input: {} }),
+      });
+      expect(startRes.status).toBe(201);
+      const { runId } = (await startRes.json()) as { runId: string };
+
+      // No clone instead of the real one: an erroring mirror refresh must
+      // not matter for a scratch run. Point the config away from git entirely
+      // by removing the seed — a clone workspace would fail allocation here.
+      await waitForTerminal(db, runId, 10_000);
+
+      const events = getRunEvents(db, runId);
+      const started = events.find((e) => e.payload._tag === "RunStarted");
+      expect(started?.payload).toMatchObject({ workspaceKind: "scratch" });
+
+      // Completed scratch runs are reaped: no dir, no mirror. The reap lands
+      // after the terminal event, so poll briefly.
+      const deadline = Date.now() + 5_000;
+      while (Date.now() < deadline && existsSync(join(workspaceRoot, runId))) {
+        await Bun.sleep(25);
+      }
+      expect(existsSync(join(workspaceRoot, runId))).toBe(false);
+      expect(existsSync(join(workspaceRoot, ".mirror.git"))).toBe(false);
+
+      const detail = (await fetch(`${base}/api/runs/${runId}`).then((r) => r.json())) as {
+        workspaceKind: string;
+      };
+      expect(detail.workspaceKind).toBe("scratch");
     } finally {
       await server.stop(true);
       db.close();

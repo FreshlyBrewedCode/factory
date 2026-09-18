@@ -80,3 +80,105 @@ describe("startRun cancellation", () => {
     }
   });
 });
+
+describe("startRun workspace kind (issue #13)", () => {
+  test("ctx.writeBack on a scratch workspace fails naming the kind, recorded like any other failure", async () => {
+    const events: Array<RunEvent> = [];
+    const workflow = defineWorkflow("scratch-wb", {
+      input: Schema.Struct({}),
+      run: async (ctx) => {
+        return await ctx.writeBack({
+          branch: "scratch/nothing",
+          commitMessage: "x",
+          prTitle: "x",
+          prBody: "x",
+        });
+      },
+    });
+
+    const handle = startRun(workflow, {
+      runId: "run-scratch-wb",
+      dir: "/tmp/nothing",
+      input: {},
+      adapter: createSlowFakeAdapter([]),
+      workspaceKind: "scratch",
+      repo: { slug: "owner/repo", baseBranch: "main" },
+      onEvent: (event) => events.push(event),
+    });
+
+    const outcome = await handle.result;
+    expect(outcome.outcome).toBe("failed");
+
+    const finished = events.find((e) => e.payload._tag === "WriteBackFinished");
+    expect(finished?.payload).toMatchObject({ outcome: "failed" });
+    expect(
+      finished?.payload._tag === "WriteBackFinished" && finished.payload.error?.includes("scratch"),
+    ).toBe(true);
+    // No git ran to reach the failure: no Exec events at all.
+    expect(events.some((e) => e.payload._tag === "ExecStarted")).toBe(false);
+  });
+
+  test("ctx.writeBack still behaves as before on a clone workspace", async () => {
+    const events: Array<RunEvent> = [];
+    const workflow = defineWorkflow("clone-wb", {
+      input: Schema.Struct({}),
+      run: async (ctx) =>
+        await ctx.writeBack({
+          branch: "clone/nothing",
+          commitMessage: "x",
+          prTitle: "x",
+          prBody: "x",
+        }),
+    });
+
+    const handle = startRun(workflow, {
+      runId: "run-clone-wb",
+      dir: "/tmp/nothing",
+      input: {},
+      adapter: createSlowFakeAdapter([]),
+      repo: { slug: "owner/repo", baseBranch: "main" },
+      onEvent: (event) => events.push(event),
+    });
+
+    await handle.result;
+    // Not the workspace-kind guard: write-back proceeds to git and fails there.
+    expect(
+      events.some(
+        (e) =>
+          e.payload._tag === "WriteBackFinished" && (e.payload.error ?? "").includes("scratch"),
+      ),
+    ).toBe(false);
+  });
+
+  test("RunStarted records the workspace kind, defaulting to clone", async () => {
+    const workflow = defineWorkflow("kind-echo", {
+      input: Schema.Struct({}),
+      run: async () => ({}),
+    });
+
+    const scratchEvents: Array<RunEvent> = [];
+    await startRun(workflow, {
+      runId: "run-kind-scratch",
+      dir: "/tmp/s",
+      input: {},
+      adapter: createSlowFakeAdapter([]),
+      workspaceKind: "scratch",
+      onEvent: (event) => scratchEvents.push(event),
+    }).result;
+    const cloneEvents: Array<RunEvent> = [];
+    await startRun(workflow, {
+      runId: "run-kind-clone",
+      dir: "/tmp/c",
+      input: {},
+      adapter: createSlowFakeAdapter([]),
+      onEvent: (event) => cloneEvents.push(event),
+    }).result;
+
+    expect(
+      scratchEvents[0]?.payload._tag === "RunStarted" && scratchEvents[0].payload.workspaceKind,
+    ).toBe("scratch");
+    expect(
+      cloneEvents[0]?.payload._tag === "RunStarted" && cloneEvents[0].payload.workspaceKind,
+    ).toBe("clone");
+  });
+});

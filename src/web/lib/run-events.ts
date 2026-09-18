@@ -316,6 +316,7 @@ export interface RunSession {
 export interface RunMeta {
   readonly workflowId: string | undefined;
   readonly dir: string | undefined;
+  readonly workspaceKind: "clone" | "scratch";
   readonly input: unknown;
   readonly output: unknown;
   readonly error: string | undefined;
@@ -330,6 +331,7 @@ export interface RunMeta {
 export function deriveRunMeta(events: ReadonlyArray<RunEvent>): RunMeta {
   let workflowId: string | undefined;
   let dir: string | undefined;
+  let workspaceKind: "clone" | "scratch" = "clone";
   let input: unknown;
   let output: unknown;
   let error: string | undefined;
@@ -345,6 +347,7 @@ export function deriveRunMeta(events: ReadonlyArray<RunEvent>): RunMeta {
         workflowId = event.payload.workflowId;
         dir = event.payload.dir;
         input = event.payload.input;
+        workspaceKind = event.payload.workspaceKind ?? "clone";
         break;
       case "RunFinished":
         output = event.payload.output;
@@ -377,6 +380,7 @@ export function deriveRunMeta(events: ReadonlyArray<RunEvent>): RunMeta {
   return {
     workflowId,
     dir,
+    workspaceKind,
     input,
     output,
     error,

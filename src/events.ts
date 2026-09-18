@@ -69,6 +69,11 @@ export const RunEventPayload = Schema.TaggedUnion({
     dir: Schema.String,
     /** Decoded and validated against the workflow's `input` schema (D5). */
     input: Schema.Json,
+    /**
+     * How `dir` was provisioned (issue #13). Optional so pre-issue events and
+     * the nine corpora still decode; a run without it is a `clone` workspace.
+     */
+    workspaceKind: Schema.optional(Schema.Literals(["clone", "scratch"])),
   },
 
   RunFinished: {
