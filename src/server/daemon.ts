@@ -24,7 +24,14 @@ import {
   type GitHubProjectsConfig,
   type ReadyItem,
 } from "./ready-source";
-import { activeRunIds, startTrackedRun } from "./runs";
+import { activeRunIds, startTrackedRun, type DispatchEnv, type WorkspaceSpec } from "./runs";
+import {
+  createSchedulerState,
+  makeScheduleFire,
+  runSchedulerLoop,
+  toRuntimeSchedules,
+  type SchedulerDeps,
+} from "./scheduler";
 
 export interface DispatchWiring {
   readonly github: GitHubProjectsConfig;
@@ -44,6 +51,8 @@ export interface DaemonOptions {
   readonly port?: number;
   readonly adapter?: AgentAdapter;
   readonly dispatch?: DispatchWiring;
+  /** Issue #16: the tick cadence of the config schedules, over the default. */
+  readonly schedulerIntervalMs?: number;
   /**
    * The run environment from `factory.config.ts` (D27). Present, every run —
    * manual and dispatched alike — gets a per-run working tree under the
@@ -56,7 +65,12 @@ export interface DaemonOptions {
 export interface DaemonHandle {
   readonly server: ReturnType<typeof serve>;
   readonly dispatchFiber: AnyFiber | undefined;
+  /** Issue #16: the loop that fires the config's schedules, when it has any. */
+  readonly schedulerFiber: AnyFiber | undefined;
 }
+
+/** Issue #16: how often the scheduler's due window check runs. */
+export const DEFAULT_SCHEDULER_INTERVAL_MS = 30_000;
 
 export async function startDaemon(options: DaemonOptions): Promise<DaemonHandle> {
   await mkdir(dirname(options.dbPath), { recursive: true });
@@ -156,5 +170,47 @@ export async function startDaemon(options: DaemonOptions): Promise<DaemonHandle>
     );
   }
 
-  return { server, dispatchFiber };
+  const schedulerFiber: AnyFiber | undefined =
+    options.config !== undefined && options.config.schedules.length > 0
+      ? (() => {
+          const config = options.config!;
+          const workspace: WorkspaceSpec = {
+            workspaceRoot: config.workspaceRoot,
+            sshUrl: config.repo.sshUrl,
+            identity: config.repo.identity,
+            retainedWorkspaces: config.retainedWorkspaces,
+          };
+          const repo = { slug: config.repo.slug, baseBranch: config.repo.baseBranch };
+          const maxConcurrentRuns = config.maxConcurrentRuns;
+          const dispatchEnv: DispatchEnv = {
+            workspace,
+            repo,
+            maxConcurrentRuns,
+            adapter,
+            maxDispatchDepth: config.maxDispatchDepth,
+            maxChildrenPerRun: config.maxChildrenPerRun,
+          };
+          const deps: SchedulerDeps = {
+            schedules: toRuntimeSchedules(config),
+            fire: makeScheduleFire({
+              db,
+              adapter,
+              maxConcurrentRuns,
+              workspace,
+              repo,
+              dispatchEnv,
+            }),
+          };
+          const state = createSchedulerState(deps);
+          return Effect.runFork(
+            runSchedulerLoop(
+              deps,
+              state,
+              options.schedulerIntervalMs ?? DEFAULT_SCHEDULER_INTERVAL_MS,
+            ),
+          );
+        })()
+      : undefined;
+
+  return { server, dispatchFiber, schedulerFiber };
 }

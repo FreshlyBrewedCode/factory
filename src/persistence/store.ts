@@ -95,6 +95,11 @@ export interface RunSummary {
   readonly input: unknown;
   /** Decoded from `RunFinished.output` when the run reached that tag — arbitrary, per-workflow. */
   readonly output: unknown;
+  /**
+   * Issue #16: the schedule that started this run, when any did — from
+   * `RunStarted.scheduleId`. A manual or dispatched run has no schedule.
+   */
+  readonly scheduleId: string | undefined;
 }
 
 interface RunSummaryRow {
@@ -170,6 +175,7 @@ export function listRuns(db: Database): ReadonlyArray<RunSummary> {
       eventCount: row.event_count,
       input: started?._tag === "RunStarted" ? started.input : undefined,
       output: terminal?._tag === "RunFinished" ? terminal.output : undefined,
+      scheduleId: started?._tag === "RunStarted" ? started.scheduleId : undefined,
     };
   });
 }

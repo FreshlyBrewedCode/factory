@@ -182,3 +182,103 @@ describe("startRun workspace kind (issue #13)", () => {
     ).toBe("clone");
   });
 });
+
+describe("startRun schedule trigger (issue #16)", () => {
+  test("RunStarted records the starting schedule when started by one", async () => {
+    const events: Array<RunEvent> = [];
+    const workflow = defineWorkflow("scheduled-echo", {
+      input: Schema.Struct({ issueNumber: Schema.Number }),
+      run: async (ctx) => {
+        const result = await ctx.agent("step", "irrelevant, replay ignores it");
+        return { finalText: result.finalText };
+      },
+    });
+    const handle = startRun(workflow, {
+      runId: "run-by-schedule",
+      dir: "/tmp",
+      input: { issueNumber: 7 },
+      adapter: createSlowFakeAdapter(SLOW_CHUNKS, 5),
+      scheduleId: "nightly",
+      onEvent: (event) => events.push(event),
+    });
+    await handle.result;
+    const started = events.find((e) => e.payload._tag === "RunStarted");
+    expect(started?.payload).toMatchObject({ scheduleId: "nightly" });
+  });
+
+  test("a run started without a schedule records none", async () => {
+    const events: Array<RunEvent> = [];
+    const workflow = defineWorkflow("unscheduled-echo", {
+      input: Schema.Struct({}),
+      run: async () => ({}),
+    });
+    const handle = startRun(workflow, {
+      runId: "run-manual",
+      dir: "/tmp",
+      input: {},
+      adapter: createSlowFakeAdapter([]),
+      onEvent: (event) => events.push(event),
+    });
+    await handle.result;
+    const started = events.find((e) => e.payload._tag === "RunStarted");
+    expect(started?.payload._tag === "RunStarted" && "scheduleId" in started.payload).toBe(false);
+  });
+});
+
+describe("startRun model precedence (issue #16)", () => {
+  test("an agent-level override from the schedule wins over the workflow default, and a per-call option over it", async () => {
+    const events: Array<RunEvent> = [];
+    const workflow = defineWorkflow("model-precedence", {
+      input: Schema.Struct({}),
+      agent: { model: "workflow-default" },
+      run: async (ctx) => {
+        await ctx.agent("scheduled-step", "irrelevant, replay ignores it");
+        await ctx.agent("explicit-step", "irrelevant, replay ignores it", {
+          model: "per-call-explicit",
+        });
+        return {};
+      },
+    });
+    const handle = startRun(workflow, {
+      runId: "run-models",
+      dir: "/tmp",
+      input: {},
+      adapter: createSlowFakeAdapter(SLOW_CHUNKS, 5),
+      agentOverrides: { model: "schedule-override" },
+      onEvent: (event) => events.push(event),
+    });
+    const outcome = await handle.result;
+    expect(outcome.outcome).toBe("completed");
+
+    const models = events
+      .filter((e) => e.payload._tag === "AgentStepStarted")
+      .map((e) => (e.payload._tag === "AgentStepStarted" ? e.payload.model : undefined));
+    // run request > schedule > workflow > config default
+    expect(models).toEqual(["schedule-override", "per-call-explicit"]);
+  });
+
+  test("without a schedule override, the workflow default applies as before", async () => {
+    const events: Array<RunEvent> = [];
+    const workflow = defineWorkflow("model-precedence-fallback", {
+      input: Schema.Struct({}),
+      agent: { model: "workflow-default" },
+      run: async (ctx) => {
+        await ctx.agent("step", "irrelevant, replay ignores it");
+        return {};
+      },
+    });
+    const handle = startRun(workflow, {
+      runId: "run-models-fallback",
+      dir: "/tmp",
+      input: {},
+      adapter: createSlowFakeAdapter(SLOW_CHUNKS, 5),
+      onEvent: (event) => events.push(event),
+    });
+    const outcome = await handle.result;
+    expect(outcome.outcome).toBe("completed");
+    const started = events.find((e) => e.payload._tag === "AgentStepStarted");
+    expect(started?.payload._tag === "AgentStepStarted" && started.payload.model).toBe(
+      "workflow-default",
+    );
+  });
+});

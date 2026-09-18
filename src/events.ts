@@ -89,6 +89,12 @@ export const RunEventPayload = Schema.TaggedUnion({
      * holds nothing.
      */
     dedupeKey: Schema.optional(Schema.String),
+    /**
+     * Issue #16: the schedule that started this run, present only on runs
+     * fired by the scheduler. Absent on manual, dispatched and CLI runs; the
+     * optional field keeps pre-issue events decodable.
+     */
+    scheduleId: Schema.optional(Schema.String),
   },
 
   RunFinished: {

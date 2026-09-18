@@ -7,6 +7,7 @@
  * with it).
  */
 
+import { Cron, Result, SchemaParser } from "effect";
 import type { GitIdentity } from "./lib/clone";
 import type { WorkflowDefinition } from "./workflow";
 
@@ -17,6 +18,13 @@ export const DEFAULT_RETAINED_WORKSPACES = 10;
 export const DEFAULT_MAX_DISPATCH_DEPTH = 5;
 /** Issue #14: how many children one run itself may dispatch. */
 export const DEFAULT_MAX_CHILDREN_PER_RUN = 20;
+
+/**
+ * The timezone a schedule without one is evaluated in: the system's resolved
+ * IANA zone. `Cron.parse` would use the same fallback, but an explicit constant
+ * keeps the resolved value visible in the config and the API.
+ */
+export const DEFAULT_SCHEDULE_TIMEZONE = Intl.DateTimeFormat().resolvedOptions().timeZone ?? "UTC";
 
 /**
  * Where `factory init` writes the project, and where every command looks when
@@ -41,6 +49,16 @@ export interface RepoConfig {
 export interface FactoryConfig {
   readonly repo: RepoConfig;
   readonly workflows: ReadonlyArray<WorkflowDefinition<any, any>>;
+  /**
+   * Issue #16: cron schedules, validated at load — a schedule is a workflow
+   * (by registry id), its input, and a cron expression in an optional
+   * timezone (default: the system's, `DEFAULT_SCHEDULE_TIMEZONE`).
+   * `defineConfig` validates everything a wrong value would
+   * otherwise break at 3am: unregistered workflow, input that fails the
+   * workflow's schema, and an unparsable cron expression all throw here,
+   * naming the offending schedule.
+   */
+  readonly schedules: ReadonlyArray<ScheduleConfig>;
   readonly workspaceRoot: string;
   readonly maxConcurrentRuns: number;
   readonly retainedWorkspaces: number;
@@ -53,6 +71,61 @@ export interface FactoryConfig {
   readonly maxChildrenPerRun: number;
 }
 
+/**
+ * Overlap policy: `"skip"` (the default) does not stack a second run while
+ * the previous one is still going; `"stack"` fires regardless. The skip is
+ * implemented with the schedule's own id as a dedupe key (issue #15), so the
+ * skipped window is observable the same way any dedupe collision is.
+ */
+export type ScheduleOverlapPolicy = "skip" | "stack";
+
+/** What the operator writes for one schedule in `factory.config.ts` (issue #16). */
+export interface ScheduleConfigInput {
+  /** Unique within the config — it keys the run's trigger record and the dedupe key. */
+  readonly id: string;
+  /** The workflow to run, by registry id (`config.workflows`). */
+  readonly workflow: string;
+  /** The input to pass the workflow. Validated against its schema at load. */
+  readonly input: unknown;
+  /**
+   * A cron expression, stored and validated as cron (5 or 6 fields — Effect's
+   * `Cron.parse`), never an opaque scheduling combinator: a next-fire time
+   * stays computable and a bad expression fails at load, not at fire time.
+   */
+  readonly cron: string;
+  /**
+   * The IANA timezone the expression is evaluated in. Optional — when omitted
+   * the daemon's system zone is used (`DEFAULT_SCHEDULE_TIMEZONE`). An
+   * explicitly wrong value still fails at load.
+   */
+  readonly timezone?: string;
+  /** Default `"skip"`. */
+  readonly overlap?: ScheduleOverlapPolicy;
+  /** Fire once when the daemon starts. Default `false`. */
+  readonly runOnStart?: boolean;
+  /**
+   * Schedule-level agent default, above the workflow's and below a per-call
+   * option's — precedence for anything a schedule can override follows the
+   * rule already used for agent options:
+   * run request > schedule > workflow > config default.
+   */
+  readonly agent?: {
+    readonly model?: string;
+  };
+}
+
+/** A schedule as the rest of the code sees it — defaults applied. */
+export interface ScheduleConfig {
+  readonly id: string;
+  readonly workflowId: string;
+  readonly input: unknown;
+  readonly cron: string;
+  readonly timezone: string;
+  readonly overlap: ScheduleOverlapPolicy;
+  readonly runOnStart: boolean;
+  readonly agent: { readonly model?: string } | undefined;
+}
+
 export interface FactoryConfigInput {
   readonly repo: RepoConfig;
   readonly workflows: ReadonlyArray<WorkflowDefinition<any, any>>;
@@ -61,6 +134,7 @@ export interface FactoryConfigInput {
   readonly retainedWorkspaces?: number;
   readonly maxDispatchDepth?: number;
   readonly maxChildrenPerRun?: number;
+  readonly schedules?: ReadonlyArray<ScheduleConfigInput>;
 }
 
 export function defineConfig(config: FactoryConfigInput): FactoryConfig {
@@ -88,9 +162,20 @@ export function defineConfig(config: FactoryConfigInput): FactoryConfig {
       `maxChildrenPerRun must be an integer >= 1 (got ${JSON.stringify(config.maxChildrenPerRun)})`,
     );
   }
+  validateSchedules(config.schedules ?? [], config.workflows);
   return {
     repo: config.repo,
     workflows: config.workflows,
+    schedules: (config.schedules ?? []).map((schedule) => ({
+      id: schedule.id,
+      workflowId: schedule.workflow,
+      input: schedule.input,
+      cron: schedule.cron,
+      timezone: schedule.timezone ?? DEFAULT_SCHEDULE_TIMEZONE,
+      overlap: schedule.overlap ?? "skip",
+      runOnStart: schedule.runOnStart ?? false,
+      agent: schedule.agent,
+    })),
     workspaceRoot: config.workspaceRoot ?? DEFAULT_WORKSPACE_ROOT,
     maxConcurrentRuns,
     retainedWorkspaces,
@@ -132,6 +217,62 @@ export async function findFactoryConfig(cwd: string = process.cwd()): Promise<st
     if (await Bun.file(path).exists()) return path;
   }
   return undefined;
+}
+
+/**
+ * Issue #16: every failure mode a schedule can have is caught at config load,
+ * each naming the offending schedule. A bad expression here would otherwise
+ * break at 3am, silently using the daemon's own zone, or fail the workflow's
+ * schema at first fire instead of at import time.
+ */
+export function validateSchedules(
+  schedules: ReadonlyArray<ScheduleConfigInput>,
+  workflows: ReadonlyArray<WorkflowDefinition<any, any>>,
+): void {
+  const ids = new Set<string>();
+  for (const schedule of schedules) {
+    if (typeof schedule.id !== "string" || schedule.id.length === 0) {
+      throw new Error(
+        `schedule id must be a non-empty string (got ${JSON.stringify(schedule.id)})`,
+      );
+    }
+    if (ids.has(schedule.id)) {
+      throw new Error(`duplicate schedule id "${schedule.id}"`);
+    }
+    ids.add(schedule.id);
+
+    const workflow =
+      workflows.find((w) => w.id === schedule.workflow) ??
+      (undefined as WorkflowDefinition<any, any> | undefined);
+    if (workflow === undefined) {
+      throw new Error(
+        `schedule "${schedule.id}" references workflow "${schedule.workflow}", which is not registered in config.workflows`,
+      );
+    }
+
+    if (typeof schedule.cron !== "string" || schedule.cron.length === 0) {
+      throw new Error(
+        `schedule "${schedule.id}" has an invalid cron expression ${JSON.stringify(schedule.cron)}`,
+      );
+    }
+    const resolvedTimezone = schedule.timezone ?? DEFAULT_SCHEDULE_TIMEZONE;
+    const parsed = Cron.parse(schedule.cron, resolvedTimezone);
+    if (Result.isFailure(parsed)) {
+      const reason = parsed.failure.message ?? String(schedule.cron);
+      throw new Error(
+        `schedule "${schedule.id}" has an invalid cron expression "${schedule.cron}" in timezone "${resolvedTimezone}": ${reason}`,
+      );
+    }
+
+    try {
+      SchemaParser.decodeUnknownSync(workflow.input)(schedule.input);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      throw new Error(
+        `schedule "${schedule.id}" has an input that fails workflow "${schedule.workflow}"'s schema: ${message}`,
+      );
+    }
+  }
 }
 
 export async function loadFactoryConfig(path?: string): Promise<FactoryConfig> {

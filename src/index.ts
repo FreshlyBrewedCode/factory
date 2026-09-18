@@ -45,7 +45,14 @@ export {
   defineConfig,
 } from "./config";
 
-export type { FactoryConfig, FactoryConfigInput, RepoConfig } from "./config";
+export type {
+  FactoryConfig,
+  FactoryConfigInput,
+  RepoConfig,
+  ScheduleConfig,
+  ScheduleConfigInput,
+  ScheduleOverlapPolicy,
+} from "./config";
 
 // --- Result types a workflow body observes ----------------------------------
 
