@@ -5,6 +5,10 @@
  * §5, D17): the boundary wiring is unchanged, only the chunk source and the
  * bookkeeping surface (now `ctx.agent`'s granular result, ADR 0002 §2) moved.
  *
+ * ADR 0012 §2: chunks are opaque here — the adapter interprets its own stream
+ * and yields each chunk alongside a normalized `AgentSignal`. This module
+ * records signals and forwards chunks; it never matches a vendor event name.
+ *
  * WHY THE EXPLICIT `abortController.abort()` IS NEEDED (0a-1/0a-2 findings):
  * closing the IO stream does not terminate the opencode process; only an
  * explicit abort does, and even that is indirect — `abort()` fires the
@@ -17,7 +21,7 @@
  */
 
 import { Effect, Schema, Stream } from "effect";
-import type { AgentAdapter } from "./agent-adapter";
+import type { AgentAdapter, AgentStreamItem } from "./agent-adapter";
 
 export class AgentStepChunkError extends Schema.TaggedError<AgentStepChunkError>()(
   "AgentStepChunkError",
@@ -75,7 +79,7 @@ export function buildAgentStepEffect(options: AgentStepEffectOptions): AgentStep
   });
 
   const rawStream = Stream.fromAsyncIterable(
-    iterable,
+    iterable as AsyncIterable<AgentStreamItem>,
     (cause) => new AgentStepChunkError({ cause }),
   );
 
@@ -88,29 +92,27 @@ export function buildAgentStepEffect(options: AgentStepEffectOptions): AgentStep
   // Plain closure mutation (not a `Ref`) is fine: this Effect never runs
   // concurrently with itself, and the callback always runs on the same
   // single-threaded event loop turn (mirrors the spike's finding exactly).
-  const processed = Stream.mapEffect(rawStream, (chunk) =>
+  const processed = Stream.mapEffect(rawStream, (item) =>
     Effect.sync(() => {
+      const chunk = item.chunk;
       partial.chunkCount += 1;
       options.onChunk(chunk);
 
-      const record = chunk as {
-        type?: unknown;
-        name?: unknown;
-        value?: unknown;
-        delta?: unknown;
-        message?: unknown;
-      };
-
-      if (record.type === "CUSTOM" && typeof record.name === "string") {
-        if (record.name === "structured-output.complete") {
-          const value = record.value as { object?: unknown } | undefined;
-          structuredOutput = value?.object;
-        } else if (record.name === "opencode.session-id") {
-          const value = record.value as { sessionId?: unknown } | undefined;
-          if (typeof value?.sessionId === "string") partial.sessionId = value.sessionId;
+      const signal = item.signal;
+      if (signal !== undefined) {
+        if (signal.kind === "session") {
+          partial.sessionId = signal.sessionId;
+        } else if (signal.kind === "structured-output") {
+          structuredOutput = signal.value;
+        } else {
+          runError = signal.message;
         }
       }
 
+      // TEXT_MESSAGE_* folding stays runtime-side: `finalText` is an AG-UI
+      // concept (ADR 0003 §2), not a vendor event name — it feeds tier 2 of
+      // structured-output resolution and the cancelled-step partial.
+      const record = chunk as { type?: unknown; delta?: unknown };
       if (record.type === "TEXT_MESSAGE_START") {
         currentMessageBuffer = "";
       } else if (record.type === "TEXT_MESSAGE_CONTENT") {
@@ -123,9 +125,6 @@ export function buildAgentStepEffect(options: AgentStepEffectOptions): AgentStep
           partial.finalText = currentMessageBuffer;
         }
         currentMessageBuffer = undefined;
-      } else if (record.type === "RUN_ERROR") {
-        const message = record.message;
-        runError = typeof message === "string" ? message : JSON.stringify(chunk);
       }
 
       return chunk;
