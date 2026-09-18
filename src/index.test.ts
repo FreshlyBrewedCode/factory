@@ -67,6 +67,7 @@ test("the barrel does not leak daemon internals", () => {
     "DedupeKeyError",
     "Schema",
     "defineConfig",
+    "defineSchedule",
     "defineWorkflow",
     "isTerminal",
   ]);

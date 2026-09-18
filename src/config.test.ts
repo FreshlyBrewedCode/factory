@@ -8,7 +8,9 @@ import {
   defineConfig,
   type ScheduleConfigInput,
 } from "./config";
-import type { WorkflowDefinition } from "./workflow";
+import { defineSchedule } from "./config";
+import type { ScheduleDefinition } from "./config";
+import { defineWorkflow, type WorkflowDefinition } from "./workflow";
 
 const ECHO_WORKFLOW = `${import.meta.dir}/../test/fixtures/echo-workflow.ts`;
 
@@ -172,5 +174,109 @@ describe("defineConfig schedules (issue #16)", () => {
       schedules: [scheduleInput(), scheduleInput()],
     };
     expect(() => defineConfig(config)).toThrow(/duplicate schedule id "nightly"/);
+  });
+});
+
+describe("defineSchedule", () => {
+  const ISSUE_WORKFLOW = defineWorkflow("issue-test", {
+    input: Schema.Struct({ issueNumber: Schema.Number }),
+    run: async () => ({}),
+  });
+
+  function scheduleDef(
+    overrides: Partial<
+      Pick<
+        ScheduleDefinition<never>,
+        "id" | "cron" | "timezone" | "overlap" | "runOnStart" | "agent"
+      >
+    > = {},
+  ) {
+    return defineSchedule(ISSUE_WORKFLOW, {
+      id: "nightly",
+      input: { issueNumber: 12 },
+      cron: "0 3 * * *",
+      timezone: "UTC",
+      ...overrides,
+    });
+  }
+
+  test("carries the workflow definition itself, not its id", () => {
+    const schedule = scheduleDef();
+    expect(schedule.workflow).toBe(ISSUE_WORKFLOW);
+    expect(schedule.id).toBe("nightly");
+    expect(schedule.input).toEqual({ issueNumber: 12 });
+    expect(schedule.cron).toBe("0 3 * * *");
+  });
+
+  test("defineConfig accepts a definition and normalizes it like the plain form", () => {
+    const withWorkflow = { ...baseInput(), workflows: [ISSUE_WORKFLOW as WorkflowDefinition] };
+    expect(defineConfig({ ...withWorkflow, schedules: [scheduleDef()] }).schedules).toEqual(
+      defineConfig({
+        ...withWorkflow,
+        schedules: [
+          {
+            id: "nightly",
+            workflow: "issue-test",
+            input: { issueNumber: 12 },
+            cron: "0 3 * * *",
+            timezone: "UTC",
+          },
+        ],
+      }).schedules,
+    );
+  });
+
+  test("a schedule definition whose workflow is not registered fails at load", () => {
+    expect(() => defineConfig({ ...baseInput(), schedules: [scheduleDef()] })).toThrow(
+      /schedule "nightly" references workflow "issue-test", which is not registered/,
+    );
+  });
+
+  test("a schedule definition's input is still validated against the schema at load", () => {
+    const withWorkflow = { ...baseInput(), workflows: [ISSUE_WORKFLOW as WorkflowDefinition] };
+    expect(() =>
+      defineConfig({
+        ...withWorkflow,
+        schedules: [
+          defineSchedule(ISSUE_WORKFLOW, {
+            id: "nightly",
+            input: { issueNumber: "twelve" as never },
+            cron: "0 3 * * *",
+            timezone: "UTC",
+          }),
+        ],
+      }),
+    ).toThrow(/schedule "nightly" has an input that fails workflow "issue-test"'s schema/);
+  });
+
+  // Not invoked — the marked compile error at the bottom of the file is the assertion.
+  test("defineSchedule infers the input type from the workflow definition", () => {
+    typeCheckScheduleDefinition(ISSUE_WORKFLOW);
+  });
+});
+
+const TYPED_WORKFLOW = defineWorkflow("issue-typed", {
+  input: Schema.Struct({ issueNumber: Schema.Number }),
+  run: async () => ({}),
+});
+
+// Not invoked — the marked compile error is the assertion.
+export function typeCheckScheduleDefinition(workflow: typeof TYPED_WORKFLOW): void {
+  defineSchedule(workflow, {
+    id: "typed",
+    // @ts-expect-error defineSchedule type-checks the input against the workflow's schema
+    input: { issueNumber: "twelve" },
+    cron: "0 3 * * *",
+  });
+  defineSchedule(workflow, {
+    id: "typed",
+    input: { issueNumber: 1 },
+    cron: "0 3 * * *",
+  });
+}
+
+describe("defineSchedule inference", () => {
+  test("the input type comes from the workflow definition", () => {
+    typeCheckScheduleDefinition(TYPED_WORKFLOW);
   });
 });

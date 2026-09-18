@@ -241,20 +241,27 @@ cron expression, and an explicit timezone — the daemon validates all of it at
 load and fires the workflow on the cron:
 
 ```ts
+import { defineSchedule } from "@frebreco/factory";
+
 export default defineConfig({
   // ...
   workflows: [readySweep, implementIssue],
   schedules: [
-    {
+    defineSchedule(readySweep, {
       id: "ready-sweep",
-      workflow: "ready-sweep",
       input: { owner: "<login>", projectNumber: 4 },
       cron: "0 * * * * *", // every minute (6 fields — seconds first)
       timezone: "UTC",
-    },
+    }),
   ],
 });
 ```
+
+Passing the workflow object itself rather than an id string means the
+schedule's `input` is type-checked against the workflow's input schema at
+definition site — the same inference `ctx.dispatch` gets at the call site. A
+plain object literal (`{ id, workflow: "ready-sweep", ... }`) is still
+accepted; its `input` is validated at config load instead of at compile time.
 
 The pattern for "watch a project board and run issues" is a scheduled
 **wrapper workflow**: `ready-sweep` runs on a scratch workspace (no clone),

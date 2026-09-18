@@ -114,6 +114,40 @@ export interface ScheduleConfigInput {
   };
 }
 
+/**
+ * What `defineSchedule` returns: the same shape the operator
+ * writes by hand, but with the workflow carried as a `WorkflowDefinition`
+ * object instead of an id — so the helper type-checks `input` against that
+ * workflow's input schema at the definition site.
+ */
+export interface ScheduleDefinition<I = unknown> {
+  readonly id: string;
+  /** The workflow to run, as the object `defineWorkflow` returned. */
+  readonly workflow: WorkflowDefinition<I, any>;
+  /** The input to pass the workflow. Validated against its schema at load. */
+  readonly input: I;
+  /** A cron expression (5 or 6 fields — Effect's `Cron.parse`). */
+  readonly cron: string;
+  readonly timezone?: string;
+  readonly overlap?: ScheduleOverlapPolicy;
+  readonly runOnStart?: boolean;
+  readonly agent?: {
+    readonly model?: string;
+  };
+}
+
+/**
+ * The typed authoring counterpart to the plain `ScheduleConfigInput` object
+ *: pass the workflow object itself and `input` is checked against
+ * the workflow's input type at definition site, before the daemon even loads.
+ */
+export function defineSchedule<I>(
+  workflow: WorkflowDefinition<I, any>,
+  schedule: Omit<ScheduleDefinition<I>, "workflow">,
+): ScheduleDefinition<I> {
+  return { workflow, ...schedule };
+}
+
 /** A schedule as the rest of the code sees it — defaults applied. */
 export interface ScheduleConfig {
   readonly id: string;
@@ -134,7 +168,7 @@ export interface FactoryConfigInput {
   readonly retainedWorkspaces?: number;
   readonly maxDispatchDepth?: number;
   readonly maxChildrenPerRun?: number;
-  readonly schedules?: ReadonlyArray<ScheduleConfigInput>;
+  readonly schedules?: ReadonlyArray<ScheduleConfigInput | ScheduleDefinition<any>>;
 }
 
 export function defineConfig(config: FactoryConfigInput): FactoryConfig {
@@ -162,11 +196,12 @@ export function defineConfig(config: FactoryConfigInput): FactoryConfig {
       `maxChildrenPerRun must be an integer >= 1 (got ${JSON.stringify(config.maxChildrenPerRun)})`,
     );
   }
-  validateSchedules(config.schedules ?? [], config.workflows);
+  const schedules = normalizeSchedules(config.schedules ?? []);
+  validateSchedules(schedules, config.workflows);
   return {
     repo: config.repo,
     workflows: config.workflows,
-    schedules: (config.schedules ?? []).map((schedule) => ({
+    schedules: schedules.map((schedule) => ({
       id: schedule.id,
       workflowId: schedule.workflow,
       input: schedule.input,
@@ -224,7 +259,32 @@ export async function findFactoryConfig(cwd: string = process.cwd()): Promise<st
  * each naming the offending schedule. A bad expression here would otherwise
  * break at 3am, silently using the daemon's own zone, or fail the workflow's
  * schema at first fire instead of at import time.
+ *
+ * Accepts both authoring forms — the plain object and the `defineSchedule`
+ * definition — after normalizing the latter to the plain form, so
+ * validation and the rest of the config pipeline stay single-shaped.
  */
+export function normalizeSchedules(
+  schedules: ReadonlyArray<ScheduleConfigInput | ScheduleDefinition<any>>,
+): Array<ScheduleConfigInput> {
+  return schedules.map((schedule) => {
+    const definition = schedule as ScheduleDefinition<any>;
+    if (typeof definition.workflow === "string") {
+      return schedule as ScheduleConfigInput;
+    }
+    return {
+      id: definition.id,
+      workflow: definition.workflow.id,
+      input: definition.input,
+      cron: definition.cron,
+      timezone: definition.timezone,
+      overlap: definition.overlap,
+      runOnStart: definition.runOnStart,
+      agent: definition.agent,
+    };
+  });
+}
+
 export function validateSchedules(
   schedules: ReadonlyArray<ScheduleConfigInput>,
   workflows: ReadonlyArray<WorkflowDefinition<any, any>>,
