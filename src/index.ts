@@ -65,6 +65,15 @@ export type { WriteBackResult } from "./lib/writeback";
 /** The git identity a config's `repo` block carries. */
 export type { GitIdentity } from "./lib/clone";
 
+/**
+ * The dedupe-key collision (issue #15's `DedupeKeyError`), exported so a
+ * wrapper workflow can catch `ctx.dispatch` collisions *by type* — per-item
+ * catch-and-record in a sweep, rather than message-matching. Its `key` and
+ * `holderRunId` members are the observable half (the runtime already emits
+ * `DispatchCollision` alongside, regardless of the catch).
+ */
+export { DedupeKeyError } from "./lib/dedupe";
+
 // --- The run event log (D3, ADR 0003) ---------------------------------------
 // Read-only for consumers: the shape `GET /api/runs/:id/events` streams, so a
 // script can type a custom client without reaching into `persistence/`.

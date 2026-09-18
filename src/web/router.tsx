@@ -1,15 +1,16 @@
 import { createRootRoute, createRoute, createRouter } from "@tanstack/react-router";
 import { AppShell } from "@/web/app-shell";
-import { DispatchPage } from "@/web/pages/dispatch";
+import { SchedulesPage } from "@/web/pages/schedules";
 import { RunDetailPage } from "@/web/pages/run-detail";
 import { RunsPage } from "@/web/pages/runs";
-import { SchedulesPage } from "@/web/pages/schedules";
 
 /**
  * Code-based routing (not file-based) so the scaffold carries no generator
  * step yet. `/` is the runs list, `/runs/:runId` the run detail; the
  * Workflows page was dropped in the rescope — starting runs lives in the
- * top bar's New-run dialog (phase 5 P4).
+ * top bar's New-run dialog (phase 5 P4). The Dispatch page came out with
+ * the legacy dispatcher (issue #18) — automatic dispatch is a scheduled
+ * wrapper workflow's job, monitored on the Schedules page.
  */
 const rootRoute = createRootRoute({ component: AppShell });
 
@@ -25,19 +26,13 @@ const runDetailRoute = createRoute({
   component: RunDetailPage,
 });
 
-const dispatchRoute = createRoute({
-  getParentRoute: () => rootRoute,
-  path: "/dispatch",
-  component: DispatchPage,
-});
-
 const schedulesRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/schedules",
   component: SchedulesPage,
 });
 
-const routeTree = rootRoute.addChildren([runsRoute, runDetailRoute, dispatchRoute, schedulesRoute]);
+const routeTree = rootRoute.addChildren([runsRoute, runDetailRoute, schedulesRoute]);
 
 export const router = createRouter({ routeTree });
 

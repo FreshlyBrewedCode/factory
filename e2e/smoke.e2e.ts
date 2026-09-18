@@ -22,7 +22,12 @@ test("the SPA shell renders and the same-origin API answers", async ({ page, req
 
 test("client-side nav reaches the other category pages through the router", async ({ page }) => {
   await page.goto("/");
-  await page.getByRole("link", { name: "Dispatch" }).click();
-  await expect(page).toHaveURL(/\/dispatch$/);
-  await expect(page.getByRole("heading", { name: "Dispatch" })).toBeVisible();
+  // The Dispatch page came out with the legacy dispatcher (issue #18): the nav
+  // now reaches Schedules, which reads the running config.
+  await page.getByRole("link", { name: "Schedules" }).click();
+  await expect(page).toHaveURL(/\/schedules$/);
+  await expect(page.getByTestId("schedules-page")).toBeVisible();
+  await page.getByRole("link", { name: "Runs", exact: true }).click();
+  await expect(page).toHaveURL(/\/$/);
+  await expect(page.getByTestId("runs-group-recent")).toBeVisible();
 });

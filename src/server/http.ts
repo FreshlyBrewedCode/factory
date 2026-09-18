@@ -2,7 +2,7 @@
  * Phase 3's HTTP API + SSE replay (D22: plain `Bun.serve`, not Effect — the
  * same reasoning as D21's `store.ts`, request/response handling here is
  * synchronous callback-shaped with nothing for Effect to bridge; Effect's
- * job in phase 3 is the dispatcher's scheduling loop, `src/server/dispatch.ts`).
+ * job in the daemon is the scheduler's loop, `src/server/scheduler.ts`).
  *
  * Routes:
  *   GET  /api/workflows          -> [{id, inputSchema}] from the config (D30)

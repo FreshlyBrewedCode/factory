@@ -9,6 +9,7 @@
 import { defineConfig } from "@frebreco/factory";
 
 import implementIssue from "./workflows/implement-issue.ts";
+import readySweep from "./workflows/ready-sweep.ts";
 
 export default defineConfig({
   repo: {
@@ -17,6 +18,20 @@ export default defineConfig({
     baseBranch: "main",
     slug: "FreshlyBrewedCode/factory-spike",
   },
-  workflows: [implementIssue],
+  workflows: [readySweep, implementIssue],
   maxConcurrentRuns: 2,
+  schedules: [
+    // The Ready sweep (issue #18): a cron on a *wrapper workflow* (which runs
+    // on a scratch workspace, reads the GitHub Project board and dispatches
+    // child runs) replaces the retired hardcoded dispatcher. `owner` /
+    // `projectNumber` name the project board the sweep sweeps; edit them for
+    // your own repo, then `factory serve`.
+    {
+      id: "ready-sweep",
+      workflow: "ready-sweep",
+      input: { owner: "FreshlyBrewedCode", projectNumber: 4 },
+      cron: "0 * * * * *",
+      timezone: "UTC",
+    },
+  ],
 });

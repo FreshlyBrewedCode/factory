@@ -259,15 +259,6 @@ const USAGE = [
   "        [--out <path>] [--db <path>]",
   "      Run one workflow file directly — no daemon, no UI.",
   "",
-  "  factory serve, with automatic dispatch from a GitHub Project (all required",
-  "  together):",
-  "    --dispatch-workflow <path> --dispatch-owner <login>",
-  "    --dispatch-project-number <n> --dispatch-project-id <id>",
-  "    --dispatch-status-field-id <id> --dispatch-in-progress-option-id <id>",
-  "    --dispatch-repo <owner/repo> --dispatch-base-branch <branch>",
-  "    --dispatch-clone <sshUrl> --dispatch-git-name <name>",
-  "    --dispatch-git-email <email> --dispatch-work-dir <path>",
-  "    [--dispatch-interval-ms <n>]",
 ].join("\n");
 
 function usageError(message: string): never {
@@ -365,21 +356,6 @@ function parseStartArgs(argv: ReadonlyArray<string>): StartCliOptions {
   };
 }
 
-const DISPATCH_FLAG_NAMES = [
-  "dispatch-workflow",
-  "dispatch-owner",
-  "dispatch-project-number",
-  "dispatch-project-id",
-  "dispatch-status-field-id",
-  "dispatch-in-progress-option-id",
-  "dispatch-repo",
-  "dispatch-base-branch",
-  "dispatch-clone",
-  "dispatch-git-name",
-  "dispatch-git-email",
-  "dispatch-work-dir",
-] as const;
-
 async function parseServeArgs(argv: ReadonlyArray<string>): Promise<DaemonOptions> {
   const flags = parseFlags(argv, 1);
   const dbPath = flags.get("db") ?? DEFAULT_DB_PATH;
@@ -393,44 +369,10 @@ async function parseServeArgs(argv: ReadonlyArray<string>): Promise<DaemonOption
   const configLoaded =
     configPath !== undefined ? loadFactoryConfig(configPath) : Promise.resolve(undefined);
 
-  const build = async (): Promise<DaemonOptions> => ({
-    dbPath,
-    port,
-    ...(configPath !== undefined ? { config: await configLoaded } : {}),
-  });
-
-  const present = DISPATCH_FLAG_NAMES.filter((name) => flags.has(name));
-  if (present.length === 0) return build();
-
-  const missing = DISPATCH_FLAG_NAMES.filter((name) => !flags.has(name));
-  if (missing.length > 0) {
-    usageError(`--dispatch-* flags given but missing: ${missing.map((m) => `--${m}`).join(", ")}`);
-  }
-
-  const get = (name: (typeof DISPATCH_FLAG_NAMES)[number]): string => flags.get(name) as string;
-
-  const config = await configLoaded;
-
   return {
     dbPath,
     port,
-    ...(config !== undefined ? { config } : {}),
-    dispatch: {
-      workflowPath: get("dispatch-workflow"),
-      repoSlug: get("dispatch-repo"),
-      baseBranch: get("dispatch-base-branch"),
-      workDirRoot: get("dispatch-work-dir"),
-      cloneSshUrl: get("dispatch-clone"),
-      gitIdentity: { name: get("dispatch-git-name"), email: get("dispatch-git-email") },
-      intervalMs: Number(flags.get("dispatch-interval-ms") ?? "60000"),
-      github: {
-        owner: get("dispatch-owner"),
-        projectNumber: Number(get("dispatch-project-number")),
-        projectId: get("dispatch-project-id"),
-        statusFieldId: get("dispatch-status-field-id"),
-        inProgressOptionId: get("dispatch-in-progress-option-id"),
-      },
-    },
+    ...(configPath !== undefined ? { config: await configLoaded } : {}),
   };
 }
 
@@ -467,12 +409,12 @@ if (import.meta.main) {
     process.exit(exitCode);
   } else if (argv[0] === "serve") {
     const daemonOptions = await parseServeArgs(argv);
-    const { server, dispatchFiber } = await startDaemon(daemonOptions);
+    const { server, schedulerFiber } = await startDaemon(daemonOptions);
     console.log(`factory serve: listening on http://localhost:${server.port}`);
     console.log(
-      dispatchFiber !== undefined
-        ? "dispatch loop: running"
-        : "dispatch loop: disabled (no --dispatch-* flags)",
+      schedulerFiber !== undefined
+        ? "scheduler: running (config schedules)"
+        : "scheduler: none (no schedules in config)",
     );
   } else {
     const options = parseArgs(argv);
