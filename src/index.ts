@@ -43,6 +43,7 @@ export {
   DEFAULT_RETAINED_WORKSPACES,
   DEFAULT_WORKSPACE_ROOT,
   defineConfig,
+  defineSchedule,
 } from "./config";
 
 export type {
@@ -51,6 +52,7 @@ export type {
   RepoConfig,
   ScheduleConfig,
   ScheduleConfigInput,
+  ScheduleDefinition,
   ScheduleOverlapPolicy,
 } from "./config";
 
