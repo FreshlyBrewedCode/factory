@@ -1,7 +1,13 @@
 import { Effect } from "effect";
 import { describe, expect, test } from "bun:test";
 import { buildAgentStepEffect } from "../runtime/agent-step";
-import { createCorpusReplayAdapter, createSlowFakeAdapter, loadCorpusBlocks } from "./adapter";
+import type { AgentAdapter, AgentAdapterOptions } from "../runtime/agent-adapter";
+import {
+  createCorpusReplayAdapter,
+  createFakeSignalAdapter,
+  createSlowFakeAdapter,
+  loadCorpusBlocks,
+} from "./adapter";
 
 const FULL_ROUND_TRIP_CORPUS = `${import.meta.dir}/../../test/corpus/run-1789308170212.ndjson`;
 
@@ -32,6 +38,7 @@ describe("createCorpusReplayAdapter", () => {
       prompt: "p",
       abortController: new AbortController(),
     };
+
 
     const step1 = adapter.stream(options);
     const step2 = adapter.stream(options);
@@ -65,6 +72,76 @@ describe("createCorpusReplayAdapter", () => {
     expect(outcome.finalText.length).toBeGreaterThan(0);
     expect(outcome.runError).toBeUndefined();
   });
+
+  test("supplies signals by interpreting recorded chunks, without imitating opencode shapes", async () => {
+    const adapter = createCorpusReplayAdapter(FULL_ROUND_TRIP_CORPUS);
+    const options = {
+      threadId: "t",
+      dir: "/tmp",
+      model: "m",
+      prompt: "p",
+      abortController: new AbortController(),
+    };
+
+    const items: Array<Awaited<ReturnType<(typeof iterator)[Symbol.asyncIterator]["next"]>>["value"]> =
+      [];
+    const iterator = adapter.stream(options)[Symbol.asyncIterator]();
+    for (let next = await iterator.next(); !next.done; next = await iterator.next()) {
+      items.push(next.value);
+    }
+    const signals = items
+      .map((item) => item.signal)
+      .filter((signal) => signal !== undefined);
+
+    // The recorded session id surfaces as a signal, and every signal is the
+    // normalized union — never a vendor event name.
+    expect(signals).toContainEqual({ kind: "session", sessionId: "ses_f64ec04acffeJ0tjsHSkjAEqZF" });
+    for (const signal of signals) {
+      expect(["session", "structured-output", "error"]).toContain(signal.kind);
+    }
+
+    // Chunks still ride through verbatim, one item per recorded chunk.
+    expect(items.length).toBe(39);
+    expect(items.every((item) => item.chunk !== undefined)).toBe(true);
+  });
+
+  test("a declarative signal-supplying adapter needs no opencode chunk shapes at all", async () => {
+    // The ADR's proof: a second adapter surfaces a session id and structured
+    // output through signals alone, with chunks that carry no vendor names.
+    const adapter = createFakeSignalAdapter({
+      sessionId: "ses_fresh",
+      structuredOutput: { ok: true },
+    });
+    const items: Array<Awaited<ReturnType<(typeof iterator)[Symbol.asyncIterator]["next"]>>["value"]> =
+      [];
+    const iterator = adapter.stream({
+      threadId: "t",
+      dir: "/tmp",
+      model: "m",
+      prompt: "p",
+      abortController: new AbortController(),
+    })[Symbol.asyncIterator]();
+    for (let next = await iterator.next(); !next.done; next = await iterator.next()) {
+      items.push(next.value);
+    }
+
+    expect(items.map((item) => item.signal)).toEqual([
+      { kind: "session", sessionId: "ses_fresh" },
+      { kind: "structured-output", value: { ok: true } },
+    ]);
+
+    const handle = buildAgentStepEffect({
+      threadId: "t",
+      dir: "/tmp",
+      model: "m",
+      prompt: "p",
+      adapter,
+      onChunk: () => {},
+    });
+    const outcome = await Effect.runPromise(handle.effect);
+    expect(outcome.sessionId).toBe("ses_fresh");
+    expect(outcome.structuredOutput).toEqual({ ok: true });
+  });
 });
 
 describe("createSlowFakeAdapter", () => {
@@ -91,4 +168,50 @@ describe("createSlowFakeAdapter", () => {
     expect(outcome.chunkCount).toBe(3);
     expect(outcome.finalText).toBe("hi");
   });
+
+  test("attaches declared signals to their chunks", async () => {
+    const adapter = createSlowFakeAdapter(
+      [
+        { type: "RUN_STARTED" },
+        { type: "TEXT_MESSAGE_START" },
+      ],
+      1,
+      [{ index: 0, signal: { kind: "session", sessionId: "ses_slow" } }],
+    );
+
+    const handle = buildAgentStepEffect({
+      threadId: "t",
+      dir: "/tmp",
+      model: "m",
+      prompt: "p",
+      adapter,
+      onChunk: () => {},
+    });
+
+    const outcome = await Effect.runPromise(handle.effect);
+    expect(outcome.chunkCount).toBe(2);
+    expect(outcome.sessionId).toBe("ses_slow");
+  });
 });
+
+/** Minimal stand-in for a second adapter: signals only, no vendor chunks. */
+function createFakeSignalAdapter(signals: {
+  sessionId?: string;
+  structuredOutput?: unknown;
+}): AgentAdapter {
+  return {
+    stream(_options: AgentAdapterOptions) {
+      return (async function* () {
+        if (signals.sessionId !== undefined) {
+          yield { chunk: { type: "RUN_STARTED" }, signal: { kind: "session", sessionId: signals.sessionId } };
+        }
+        if (signals.structuredOutput !== undefined) {
+          yield {
+            chunk: { type: "RUN_FINISHED" },
+            signal: { kind: "structured-output", value: signals.structuredOutput },
+          };
+        }
+      })();
+    },
+  };
+}
