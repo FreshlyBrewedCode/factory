@@ -10,6 +10,16 @@ deleted, and the Ready sweep now lives in the sample project's scheduled wrapper
 stands; D23/D24 are this ADR's retired machinery. Evidence for the retirement:
 `docs/findings/12-ready-sweep-live-leg.md`.
 
+**D22 reaffirmed, with one clarification, 2026-09-18** (ADR 0009 §5). The daemon grows an Effect
+composition root: services are resolved from context and wired with `Layer` in `server/daemon.ts`.
+That does **not** reopen D22. `server/http.ts`'s route handlers and `sseStream` stay plain
+functions over `Request`/`Response`/`ReadableStream` on `Bun.serve`; they read already-constructed
+services rather than becoming Effects themselves. Read D22 as "the HTTP handlers are not Effects,"
+not as "there is no Effect anywhere in the server" — the latter was never true (the scheduler loop)
+and is now visibly not true. `effect/unstable/http`'s `HttpApi` remains deferred rather than
+rejected; its trigger is the API surface growing past what `web/api.ts`'s hand-written client can
+mirror without drifting.
+
 Accepted, 2026-09-14. Validated against fakes end-to-end
 (`src/server/integration.test.ts`, `src/server/dispatch.test.ts`, `src/server/http.test.ts` —
 49/49 tests passing, repeated 4x with no flakiness, `typecheck`/`lint` clean), **and live**: a
