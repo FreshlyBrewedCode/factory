@@ -71,3 +71,11 @@ Conclusions → [`adr/0005-poc-manual-runs.md`](../adr/0005-poc-manual-runs.md) 
 
 Conclusions → [`adr/0006-raw-typescript-distribution.md`](../adr/0006-raw-typescript-distribution.md).
 
+
+## Epic #19 — scheduled workflows
+
+| Document | Subtask | Headline finding |
+|---|---|---|
+| [`12-ready-sweep-live-leg.md`](./12-ready-sweep-live-leg.md) | Issue #18: the Ready sweep as a scheduled wrapper workflow, proven against the real project board before the legacy dispatcher was deleted | Real board query + real at dispatch, per-issue `issue:1` dedupe key, `DispatchCollision` + a visible failed run on a second consecutive tick; the agent child's round trip itself was blocked by a provider-gateway opt-in wall out of session's control, and the leg surfaced a genuinely unresolvable cancel on a wedged stream (phase 6 candidate). |
+
+Conclusions → D43 ([`decisions.md`](../decisions.md)); ADR 0004 carries a supersession note.

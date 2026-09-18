@@ -1,5 +1,5 @@
 import { Link, Outlet } from "@tanstack/react-router";
-import { Activity, CalendarClock, GitBranch, ListTree, Menu, Moon, Plus, Sun } from "lucide-react";
+import { Activity, CalendarClock, ListTree, Menu, Moon, Plus, Sun } from "lucide-react";
 import { useEffect, useState } from "react";
 import { NewRunDialog } from "@/web/components/new-run-dialog";
 import { Button } from "@/web/components/ui/button";
@@ -10,7 +10,6 @@ import { cn } from "@/web/lib/utils";
 const NAV = [
   { to: "/", label: "Runs", icon: ListTree },
   { to: "/schedules", label: "Schedules", icon: CalendarClock },
-  { to: "/dispatch", label: "Dispatch", icon: GitBranch },
 ] as const;
 
 function NavItems({ onNavigate }: { readonly onNavigate?: () => void }) {

@@ -164,7 +164,9 @@ describe("phase 4 SPA serving", () => {
       expect(await rootRes.text()).toContain('id="root"');
 
       // A client-side route that the server never sees on a fresh load still
-      // has to return the SPA shell, not a 404.
+      // has to return the SPA shell, not a 404. Also: a *deleted* client-side
+      // route (the Dispatch page, retired with the legacy dispatcher in
+      // issue #18) falls back to the SPA shell like any other path.
       const deepRes = await fetch(`${base}/dispatch`);
       expect(deepRes.status).toBe(200);
       expect(deepRes.headers.get("content-type")).toContain("text/html");

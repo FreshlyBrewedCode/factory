@@ -7,7 +7,13 @@
 
 import { expect, test } from "bun:test";
 import * as factory from "@frebreco/factory";
-import { defineConfig, defineWorkflow, isTerminal, Schema } from "@frebreco/factory";
+import {
+  DedupeKeyError,
+  defineConfig,
+  defineWorkflow,
+  isTerminal,
+  Schema,
+} from "@frebreco/factory";
 
 test("the barrel exports the authoring surface a project imports", () => {
   expect(typeof defineWorkflow).toBe("function");
@@ -17,12 +23,19 @@ test("the barrel exports the authoring surface a project imports", () => {
 });
 
 test("defineWorkflow round-trips through the package specifier", () => {
-  const workflow = defineWorkflow("hello", {
+  const roundTrip = defineWorkflow("hello", {
     input: Schema.Struct({ name: Schema.String }),
     run: async (_ctx, input) => input.name,
   });
-  expect(workflow.id).toBe("hello");
-  expect(typeof workflow.run).toBe("function");
+  expect(roundTrip.id).toBe("hello");
+  expect(typeof roundTrip.run).toBe("function");
+});
+
+test("DedupeKeyError is catchable by type through the barrel (issue #18)", () => {
+  const err = new DedupeKeyError("issue:1", "run-holder");
+  expect(err instanceof Error).toBe(true);
+  expect(err.key).toBe("issue:1");
+  expect(err.holderRunId).toBe("run-holder");
 });
 
 test("defineConfig applies its documented defaults", () => {
@@ -51,6 +64,7 @@ test("the barrel does not leak daemon internals", () => {
     "DEFAULT_MAX_DISPATCH_DEPTH",
     "DEFAULT_RETAINED_WORKSPACES",
     "DEFAULT_WORKSPACE_ROOT",
+    "DedupeKeyError",
     "Schema",
     "defineConfig",
     "defineWorkflow",
