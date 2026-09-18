@@ -228,6 +228,7 @@ describe("Factory lifecycle events", () => {
       "ExecStarted",
       "LogRecorded",
       "RunCancelled",
+      "RunDispatched",
       "RunFailed",
       "RunFinished",
       "RunStarted",
@@ -346,6 +347,47 @@ describe("Factory lifecycle events", () => {
       });
 
       expect(event.payload).toMatchObject({ _tag: "RunStarted" });
+    });
+
+    test("records the parent run id on a child run's start (issue #14)", () => {
+      const event = decodeRunEvent({
+        runId: "r1",
+        seq: 0,
+        ts: 1789300000000,
+        payload: {
+          _tag: "RunStarted",
+          workflowId: "implement-issue",
+          dir: "/tmp/x",
+          input: {},
+          parentId: "run-parent",
+        },
+      });
+
+      expect(event.payload._tag === "RunStarted" && event.payload.parentId).toBe("run-parent");
+    });
+  });
+
+  describe("RunDispatched (issue #14)", () => {
+    test("decodes with the child's run id, workflow id and input", () => {
+      const event = decodeRunEvent({
+        runId: "run-parent",
+        seq: 3,
+        ts: 1789300000000,
+        payload: {
+          _tag: "RunDispatched",
+          childRunId: "run-child",
+          childWorkflowId: "implement-issue",
+          input: { issueNumber: 7 },
+        },
+      });
+
+      expect(event.payload).toMatchObject({
+        _tag: "RunDispatched",
+        childRunId: "run-child",
+        childWorkflowId: "implement-issue",
+        input: { issueNumber: 7 },
+      });
+      expect(isTerminal(event.payload)).toBe(false);
     });
   });
 });

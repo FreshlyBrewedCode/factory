@@ -239,3 +239,48 @@ describe("deriveRunMeta.workspaceKind (issue #13)", () => {
     expect(legacy.workspaceKind).toBe("clone");
   });
 });
+
+describe("parent/child navigation (issue #14)", () => {
+  test("deriveRunMeta reads the child's parentId", () => {
+    const child = deriveRunMeta([
+      event(0, {
+        _tag: "RunStarted",
+        workflowId: "wf",
+        dir: "/tmp/wf",
+        input: {},
+        parentId: "run-parent",
+      }),
+    ]);
+    const topLevel = deriveRunMeta([STARTED]);
+
+    expect(child.parentId).toBe("run-parent");
+    expect(topLevel.parentId).toBeUndefined();
+  });
+
+  test("deriveRunMeta collects the parent's dispatched children", () => {
+    const meta = deriveRunMeta([
+      STARTED,
+      event(1, { _tag: "RunDispatched", childRunId: "run-a", childWorkflowId: "wf", input: {} }),
+      event(2, { _tag: "RunDispatched", childRunId: "run-b", childWorkflowId: "wf", input: {} }),
+    ]);
+
+    expect(meta.dispatched).toEqual([
+      { childRunId: "run-a", childWorkflowId: "wf" },
+      { childRunId: "run-b", childWorkflowId: "wf" },
+    ]);
+    expect(deriveRunMeta([STARTED]).dispatched).toEqual([]);
+  });
+
+  test("summarizeEvent names the dispatched child", () => {
+    expect(
+      summarizeEvent(
+        event(1, {
+          _tag: "RunDispatched",
+          childRunId: "run-a",
+          childWorkflowId: "wf",
+          input: {},
+        }),
+      ),
+    ).toContain("wf");
+  });
+});

@@ -74,6 +74,13 @@ export const RunEventPayload = Schema.TaggedUnion({
      * the nine corpora still decode; a run without it is a `clone` workspace.
      */
     workspaceKind: Schema.optional(Schema.Literals(["clone", "scratch"])),
+    /**
+     * The run context this run was started by, via `ctx.dispatch` (issue #14).
+     * Present on child runs only — a top-level run has no parent. Cancelling
+     * the parent does **not** cascade (D-epic 19); the link is for the UI's
+     * parent ↔ child navigation and nothing else.
+     */
+    parentId: Schema.optional(Schema.String),
   },
 
   RunFinished: {
@@ -91,6 +98,20 @@ export const RunEventPayload = Schema.TaggedUnion({
 
   RunCancelled: {
     durationMs: DurationMs,
+  },
+
+  /**
+   * The parent's record of one `ctx.dispatch` call (issue #14). The child's
+   * own log carries the mirror link — `RunStarted.parentId` — so run detail
+   * can navigate both directions from events alone, with no second table.
+   * Fire-and-forget by design: dispatch resolves to the child's run id and
+   * never waits for it (D-epic 19 — an awaited child holding a concurrency
+   * slot deadlocks the pool).
+   */
+  RunDispatched: {
+    childRunId: Schema.String,
+    childWorkflowId: Schema.String,
+    input: Schema.Json,
   },
 
   // ---- ctx.agent(name, prompt, opts?) --------------------------------

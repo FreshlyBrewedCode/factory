@@ -38,13 +38,17 @@ test("defineConfig applies its documented defaults", () => {
   expect(config.maxConcurrentRuns).toBe(factory.DEFAULT_MAX_CONCURRENT_RUNS);
   expect(config.retainedWorkspaces).toBe(factory.DEFAULT_RETAINED_WORKSPACES);
   expect(config.workspaceRoot).toBe(factory.DEFAULT_WORKSPACE_ROOT);
+  expect(config.maxDispatchDepth).toBe(factory.DEFAULT_MAX_DISPATCH_DEPTH);
+  expect(config.maxChildrenPerRun).toBe(factory.DEFAULT_MAX_CHILDREN_PER_RUN);
 });
 
 test("the barrel does not leak daemon internals", () => {
   // Widening this list is a design decision (see src/index.ts's header), so it
   // should be a deliberate edit here rather than a silent export.
   expect(Object.keys(factory).toSorted()).toEqual([
+    "DEFAULT_MAX_CHILDREN_PER_RUN",
     "DEFAULT_MAX_CONCURRENT_RUNS",
+    "DEFAULT_MAX_DISPATCH_DEPTH",
     "DEFAULT_RETAINED_WORKSPACES",
     "DEFAULT_WORKSPACE_ROOT",
     "Schema",
