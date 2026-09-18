@@ -1,7 +1,16 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 import type { RunEvent } from "../events";
-import { cancelRun, fetchRun, fetchRuns, fetchWorkflows, startRun, subscribeToRun } from "./api";
+import {
+  cancelRun,
+  fetchRun,
+  fetchRuns,
+  fetchSchedules,
+  fetchWorkflows,
+  runScheduleNow,
+  startRun,
+  subscribeToRun,
+} from "./api";
 
 /** The runs list; polls cheaply (S1 made summaries SQL aggregates) so new runs appear. */
 export function useRuns() {
@@ -26,6 +35,32 @@ export function useRun(runId: string) {
 /** The workflow registry (D30), for the New-run dialog. */
 export function useWorkflows() {
   return useQuery({ queryKey: ["workflows"], queryFn: fetchWorkflows });
+}
+
+/**
+ * The config's schedules (issue #17), read from the same source the daemon
+ * runs — polled slowly, since the only thing that moves between polls is a
+ * fired run or a passing minute of `nextFireAt`.
+ */
+export function useSchedules() {
+  return useQuery({ queryKey: ["schedules"], queryFn: fetchSchedules, refetchInterval: 5_000 });
+}
+
+/**
+ * "Run now" (issue #17): starts the schedule's workflow with its configured
+ * input. Resolves to the new run's id — the caller navigates to it. Server
+ * refusals (409 collision, 404) come through as `ApiError`s for the row to
+ * render rather than doing nothing.
+ */
+export function useRunScheduleNow() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: runScheduleNow,
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["schedules"] });
+      void queryClient.invalidateQueries({ queryKey: ["runs"] });
+    },
+  });
 }
 
 /** Starts a run via D31's `{workflowId, input}` and refreshes the runs list. */

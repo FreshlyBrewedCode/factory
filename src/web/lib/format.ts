@@ -30,3 +30,33 @@ export function formatAgo(ts: number, now: number = Date.now()): string {
 export function shortRunId(runId: string): string {
   return runId.startsWith("run-") ? `…${runId.slice(-8)}` : runId;
 }
+
+/**
+ * An absolute stamp rendered in the timezone named — the schedules page shows
+ * a cron's next fire the way the schedule will actually observe it (issue
+ * #17), never the viewing machine's zone. `Intl` throws for a bad zone; the
+ * config load already validated every timezone, so clients can treat this as
+ * a server contract.
+ */
+export function formatInZone(ts: number, timezone: string): string {
+  return new Intl.DateTimeFormat("en-GB", {
+    timeZone: timezone,
+    day: "2-digit",
+    month: "short",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).format(new Date(ts));
+}
+
+/** Relative label for a future instant — the sibling of `formatAgo`. */
+export function formatAhead(ts: number, now: number = Date.now()): string {
+  const seconds = Math.max(0, Math.round((ts - now) / 1000));
+  if (seconds < 60) return `in ${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `in ${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `in ${hours}h ${minutes % 60}m`;
+  const days = Math.floor(hours / 24);
+  return `in ${days}d ${hours % 24}h`;
+}

@@ -38,6 +38,50 @@ export async function fetchWorkflows(): Promise<ReadonlyArray<WorkflowSummary>> 
 }
 
 /**
+ * Issue #17: one schedule as the daemon actually carries it — read straight
+ * from the config it runs, with the next fire computed from the stored cron
+ * and the schedule's most recent run (scheduled or manually triggered).
+ */
+export interface ScheduleSummary {
+  readonly id: string;
+  readonly workflowId: string;
+  readonly input: unknown;
+  readonly cron: string;
+  readonly timezone: string;
+  readonly overlap: "skip" | "stack";
+  readonly runOnStart: boolean;
+  /** Epoch ms of the cron's next fire. */
+  readonly nextFireAt: number;
+  readonly lastRun:
+    | { readonly runId: string; readonly status: string; readonly startedAt: number }
+    | undefined;
+}
+
+export async function fetchSchedules(): Promise<ReadonlyArray<ScheduleSummary>> {
+  const res = await fetch("/api/schedules");
+  if (!res.ok) throw new Error(`GET /api/schedules returned ${res.status}`);
+  return (await res.json()) as ReadonlyArray<ScheduleSummary>;
+}
+
+/**
+ * Issue #17: fires a schedule by hand — its workflow, its configured input,
+ * respecting its overlap policy (under `"skip"` a collision is a 409 that
+ * names the run holding the schedule's key). Returns the new run's id; the
+ * caller navigates.
+ */
+export async function runScheduleNow(scheduleId: string): Promise<string> {
+  const res = await fetch(`/api/schedules/${encodeURIComponent(scheduleId)}/run`, {
+    method: "POST",
+  });
+  if (res.status === 404 || res.status === 409) {
+    throw await errorFrom(res, `POST /api/schedules/${scheduleId}/run returned ${res.status}`);
+  }
+  if (!res.ok) throw new Error(`POST /api/schedules/${scheduleId}/run returned ${res.status}`);
+  const { runId } = (await res.json()) as { runId: string };
+  return runId;
+}
+
+/**
  * The API's error surface for a start/cancel that the *server* refused —
  * distinct from a transport failure, because the body carries the operator
  * hint (404's `see GET /api/workflows`, 400's schema message, 409's limit).

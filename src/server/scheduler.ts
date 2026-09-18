@@ -58,6 +58,16 @@ export function scheduleDedupeKey(schedule: RuntimeSchedule): string {
   return `schedule:${schedule.id}`;
 }
 
+/**
+ * Issue #17: when the schedule fires next, computed from the stored cron as
+ * of `now` — the concrete payoff for keeping cron as a cron string. The same
+ * `Cron.next` the loop itself uses, exposed for `GET /api/schedules` and the
+ * UI's next-fire display.
+ */
+export function nextFireAt(schedule: RuntimeSchedule, now: number): number {
+  return Cron.next(schedule.cron, new Date(now)).getTime();
+}
+
 /** Resolves config's schedules (already validated at load) against the registry and parses each cron. */
 export function toRuntimeSchedules(config: FactoryConfig): ReadonlyArray<RuntimeSchedule> {
   return config.schedules.map((schedule) => {

@@ -1,5 +1,12 @@
 import { describe, expect, test } from "bun:test";
-import { formatAgo, formatClock, formatDuration, shortRunId } from "./format";
+import {
+  formatAgo,
+  formatAhead,
+  formatClock,
+  formatDuration,
+  formatInZone,
+  shortRunId,
+} from "./format";
 
 describe("formatDuration", () => {
   test("seconds below a minute, m/padded-s above", () => {
@@ -36,5 +43,25 @@ describe("shortRunId", () => {
   test("keeps a stable tail for both timestamp and uuid run ids", () => {
     expect(shortRunId("run-1789381260241")).toBe("…81260241");
     expect(shortRunId("run-1a2b3c4d-5e6f-7890-abcd-ef1234567890")).toBe("…34567890");
+  });
+});
+
+describe("formatInZone (issue #17)", () => {
+  const ts = Date.UTC(2026, 0, 10, 3, 30, 0);
+
+  test("renders the instant in the schedule's own timezone, not the machine's", () => {
+    // 03:30 UTC is 04:30 in January in Europe/Berlin (UTC+1).
+    expect(formatInZone(ts, "Europe/Berlin")).toBe("10 Jan, 04:30");
+    expect(formatInZone(ts, "UTC")).toBe("10 Jan, 03:30");
+  });
+});
+
+describe("formatAhead (issue #17)", () => {
+  const now = 1_000_000_000;
+  test("doubles as an 'until next fire' label", () => {
+    expect(formatAhead(now + 42_000, now)).toBe("in 42s");
+    expect(formatAhead(now + 90_000, now)).toBe("in 1m");
+    expect(formatAhead(now + 3 * 3_600_000 + 60_000, now)).toBe("in 3h 1m");
+    expect(formatAhead(now + 27 * 3_600_000, now)).toBe("in 1d 3h");
   });
 });

@@ -48,6 +48,29 @@ import {
   type DispatchEnv,
   type StartTrackedRunOptions,
 } from "./runs";
+import { nextFireAt, toRuntimeSchedules } from "./scheduler";
+
+/**
+ * Issue #17: what `GET /api/schedules` serves for one schedule — the config's
+ * own record (id, workflow, input, cron, timezone, overlap, run-on-start),
+ * the next fire time computed from the stored cron, and the most recent run
+ * that carries the schedule's id.
+ */
+export interface ScheduleSummary {
+  readonly id: string;
+  readonly workflowId: string;
+  readonly input: unknown;
+  readonly cron: string;
+  readonly timezone: string;
+  readonly overlap: "skip" | "stack";
+  readonly runOnStart: boolean;
+  /** Epoch ms of the cron's next fire after now. */
+  readonly nextFireAt: number;
+  /** The schedule's latest run — scheduled *or* manually triggered. */
+  readonly lastRun:
+    | { readonly runId: string; readonly status: string; readonly startedAt: number }
+    | undefined;
+}
 
 export interface ServerOptions {
   readonly db: Database;
@@ -121,6 +144,38 @@ function dispatchEnvFor(config: FactoryConfig, adapter: AgentAdapter): DispatchE
     adapter,
     maxDispatchDepth: config.maxDispatchDepth,
     maxChildrenPerRun: config.maxChildrenPerRun,
+  };
+}
+
+/**
+ * The start options every config-backed `startTrackedRun` shares: D28's
+ * workspace allocation, the run environment, D29's admission limit and #14's
+ * dispatch env. Used by the registry POST path and, since issue #17, by the
+ * manual schedule trigger.
+ */
+function configRunOptions(
+  config: FactoryConfig,
+  adapter: AgentAdapter,
+  maxConcurrentRuns: number | undefined,
+  extra: {
+    readonly scheduleId?: string;
+    readonly dedupeKey?: string;
+    readonly agentOverrides?: { readonly model?: string };
+  } = {},
+): Omit<StartTrackedRunOptions, "input" | "adapter"> {
+  return {
+    workspace: {
+      workspaceRoot: config.workspaceRoot,
+      sshUrl: config.repo.sshUrl,
+      identity: config.repo.identity,
+      retainedWorkspaces: config.retainedWorkspaces,
+    },
+    repo: { slug: config.repo.slug, baseBranch: config.repo.baseBranch },
+    maxConcurrentRuns,
+    dispatchEnv: dispatchEnvFor(config, adapter),
+    ...(extra.scheduleId !== undefined ? { scheduleId: extra.scheduleId } : {}),
+    ...(extra.dedupeKey !== undefined ? { dedupeKey: extra.dedupeKey } : {}),
+    ...(extra.agentOverrides !== undefined ? { agentOverrides: extra.agentOverrides } : {}),
   };
 }
 
@@ -313,7 +368,8 @@ export function createHandler(options: ServerOptions): (req: Request) => Promise
         }
         const registry = options.config?.workflows ?? [];
         const workflow = registry.find((w) => w.id === body.workflowId);
-        if (workflow === undefined) {
+        const runEnv = options.config;
+        if (workflow === undefined || runEnv === undefined) {
           return json(
             { error: `unknown workflow id: ${body.workflowId} (see GET /api/workflows)` },
             { status: 404 },
@@ -332,25 +388,11 @@ export function createHandler(options: ServerOptions): (req: Request) => Promise
         }
 
         const startOptions: StartTrackedRunOptions = {
-          ...(options.config !== undefined
-            ? {
-                workspace: {
-                  workspaceRoot: options.config.workspaceRoot,
-                  sshUrl: options.config.repo.sshUrl,
-                  identity: options.config.repo.identity,
-                  retainedWorkspaces: options.config.retainedWorkspaces,
-                },
-                repo: {
-                  slug: options.config.repo.slug,
-                  baseBranch: options.config.repo.baseBranch,
-                },
-                maxConcurrentRuns,
-                dispatchEnv: dispatchEnvFor(options.config, options.adapter),
-              }
-            : {}),
+          ...configRunOptions(runEnv, options.adapter, maxConcurrentRuns, {
+            dedupeKey: typeof body.dedupeKey === "string" ? body.dedupeKey : undefined,
+          }),
           input: decodedInput,
           adapter: options.adapter,
-          ...(typeof body.dedupeKey === "string" ? { dedupeKey: body.dedupeKey } : {}),
         };
         let runId: string;
         try {
@@ -422,6 +464,107 @@ export function createHandler(options: ServerOptions): (req: Request) => Promise
       let runId: string;
       try {
         runId = await startTrackedRun(options.db, workflow, startOptions);
+      } catch (err) {
+        if (err instanceof ConcurrencyLimitError) {
+          return json({ error: err.message }, { status: 409 });
+        }
+        if (err instanceof DedupeKeyError) {
+          return json(
+            { error: err.message, dedupeKey: err.key, holderRunId: err.holderRunId },
+            { status: 409 },
+          );
+        }
+        throw err;
+      }
+      return json({ runId }, { status: 201 });
+    }
+
+    /**
+     * Issue #17: the schedules exactly as the running daemon carries them —
+     * read from `options.config`, the same object the scheduler loop rides on,
+     * never a separate persisted copy. Next fire computed from the stored cron
+     * (the payoff for keeping cron as cron), the last run matched on the
+     * schedule id recorded in `RunStarted`.
+     */
+    if (req.method === "GET" && url.pathname === "/api/schedules") {
+      const config = options.config;
+      const schedules = config?.schedules ?? [];
+      // `listRuns` is newest-first, so the first hit per schedule id is its
+      // most recent run.
+      const lastRunBySchedule = new Map<string, RunSummary>();
+      for (const run of listRuns(options.db)) {
+        if (run.scheduleId !== undefined && !lastRunBySchedule.has(run.scheduleId)) {
+          lastRunBySchedule.set(run.scheduleId, run);
+        }
+      }
+      const parsed =
+        config !== undefined && schedules.length > 0
+          ? new Map(toRuntimeSchedules(config).map((s) => [s.id, s] as const))
+          : undefined;
+      return json(
+        schedules.map((schedule): ScheduleSummary => {
+          const lastRun = lastRunBySchedule.get(schedule.id);
+          const runtime = parsed!.get(schedule.id)!;
+
+          return {
+            id: schedule.id,
+            workflowId: schedule.workflowId,
+            input: schedule.input,
+            cron: schedule.cron,
+            timezone: schedule.timezone,
+            overlap: schedule.overlap,
+            runOnStart: schedule.runOnStart,
+            nextFireAt: nextFireAt(runtime, Date.now()),
+            ...(lastRun !== undefined
+              ? {
+                  lastRun: {
+                    runId: lastRun.runId,
+                    status: lastRun.status,
+                    startedAt: lastRun.startedAt,
+                  },
+                }
+              : { lastRun: undefined }),
+          };
+        }),
+      );
+    }
+
+    const scheduleRunMatch = /^\/api\/schedules\/([^/]+)\/run$/.exec(url.pathname);
+    if (req.method === "POST" && scheduleRunMatch) {
+      const scheduleId = decodeURIComponent(scheduleRunMatch[1] as string);
+      if (options.config === undefined) return json({ error: "not found" }, { status: 404 });
+      const schedule = (options.config?.schedules ?? []).find((s) => s.id === scheduleId);
+      if (schedule === undefined) {
+        return json({ error: `unknown schedule id: ${scheduleId}` }, { status: 404 });
+      }
+      const workflow = options.config!.workflows.find((w) => w.id === schedule.workflowId)!;
+
+      // D29 admission, checked here exactly like POST /api/runs so a manual
+      // trigger over the limit is a visible 409 rather than a surprise.
+      const maxConcurrentRuns = options.config.maxConcurrentRuns;
+      if (!admitRun(maxConcurrentRuns, activeRunIds().length)) {
+        return json(
+          { error: `concurrency limit reached (max ${maxConcurrentRuns} concurrent runs)` },
+          { status: 409 },
+        );
+      }
+
+      // Overlap policy (the epic's dispatch decision): under `"skip"` the
+      // manual run takes the schedule's own dedupe key, so a trigger while
+      // another run holds it throws `DedupeKeyError` — surfaced as a 409
+      // naming the key and the holder, never a silent no-op. Under `"stack"`
+      // it fires regardless.
+      let runId: string;
+      try {
+        runId = await startTrackedRun(options.db, workflow, {
+          ...configRunOptions(options.config, options.adapter, maxConcurrentRuns, {
+            scheduleId: schedule.id,
+            ...(schedule.overlap === "skip" ? { dedupeKey: `schedule:${schedule.id}` } : {}),
+            ...(schedule.agent !== undefined ? { agentOverrides: schedule.agent } : {}),
+          }),
+          input: schedule.input,
+          adapter: options.adapter,
+        });
       } catch (err) {
         if (err instanceof ConcurrencyLimitError) {
           return json({ error: err.message }, { status: 409 });

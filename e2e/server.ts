@@ -265,6 +265,19 @@ async function main(): Promise<void> {
     workspaceRoot: join(root, "workspaces"),
     maxConcurrentRuns: 5,
     retainedWorkspaces: 10,
+    // Issue #17: one schedule for the Schedules page — never due inside a test
+    // session (Jan 1, 04:30 UTC/day*), run-on-start off, so the page proves the
+    // config display and manual trigger without the scheduler interfering.
+    // `registry-test` clones the local remote, so Run now is fully real.
+    schedules: [
+      {
+        id: "e2e-nightly",
+        workflow: "registry-test",
+        input: { issueNumber: 3 },
+        cron: "30 4 1 1 *",
+        timezone: "UTC",
+      },
+    ],
   });
   const { server } = await startDaemon({ dbPath, port, adapter, config });
   console.log(`factory e2e: listening on http://localhost:${server.port}`);

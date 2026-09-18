@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, test } from "bun:test";
 import { Schema } from "effect";
-import { defineWorkflow } from "../workflow";
+import { defineWorkflow, type WorkflowDefinition } from "../workflow";
 import { createSlowFakeAdapter } from "../replay/adapter";
 import { getRunEvents, openStore } from "../persistence/store";
 import { defineConfig, loadFactoryConfig } from "../config";
@@ -844,6 +844,439 @@ describe("ctx.dispatch through POST /api/runs (issue #14)", () => {
           ? childStarted.payload.input
           : "missing",
       ).toEqual({ n: 3 });
+    } finally {
+      await server.stop(true);
+      db.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("GET /api/schedules (issue #17)", () => {
+  function schedulesConfig(
+    root: string,
+    workflow: WorkflowDefinition<any, any>,
+  ): ReturnType<typeof defineConfig> {
+    return defineConfig({
+      repo: {
+        sshUrl: join(root, "seed-not-used"),
+        identity: { name: "Factory", email: "factory@factory.test" },
+        baseBranch: "main",
+        slug: "acme/widgets",
+      },
+      workflows: [workflow],
+      workspaceRoot: join(root, "workspaces"),
+      retainedWorkspaces: 10,
+      schedules: [
+        {
+          id: "nightly-check",
+          workflow: workflow.id,
+          input: { issueNumber: 5 },
+          cron: "30 4 * * *",
+          timezone: "Europe/Berlin",
+        },
+      ],
+    });
+  }
+
+  test("lists id, workflow, input, cron, timezone, next fire time and no last run yet", async () => {
+    const root = mkdtempSync(join(tmpdir(), "factory-schedules-test-"));
+    const db = openStore(join(root, "factory.db"));
+    const workflow = defineWorkflow("scheduled-list-test", {
+      input: Schema.Struct({ issueNumber: Schema.Number }),
+      workspace: { kind: "scratch" },
+      run: async () => ({}),
+    });
+    const server = serve({
+      db,
+      adapter: createSlowFakeAdapter([], 1),
+      port: 0,
+      config: schedulesConfig(root, workflow),
+    });
+    const base = `http://localhost:${server.port}`;
+
+    try {
+      const res = await fetch(`${base}/api/schedules`);
+      expect(res.status).toBe(200);
+      const schedules = (await res.json()) as Array<{
+        id: string;
+        workflowId: string;
+        input: unknown;
+        cron: string;
+        timezone: string;
+        overlap: string;
+        runOnStart: boolean;
+        nextFireAt: number;
+        lastRun: unknown;
+      }>;
+      expect(schedules).toHaveLength(1);
+      const schedule = schedules[0]!;
+      expect(schedule.id).toBe("nightly-check");
+      expect(schedule.workflowId).toBe(workflow.id);
+      expect(schedule.input).toEqual({ issueNumber: 5 });
+      expect(schedule.cron).toBe("30 4 * * *");
+      expect(schedule.timezone).toBe("Europe/Berlin");
+      expect(schedule.overlap).toBe("skip");
+      expect(schedule.runOnStart).toBe(false);
+      // The next fire is a computable future instant derived from the cron.
+      expect(schedule.nextFireAt).toBeGreaterThan(Date.now());
+    } finally {
+      await server.stop(true);
+      db.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("nextFireAt is computed in the schedule's timezone, not the daemon's", async () => {
+    const root = mkdtempSync(join(tmpdir(), "factory-schedules-zone-test-"));
+    const db = openStore(join(root, "factory.db"));
+    const workflow = defineWorkflow("scheduled-zone-test", {
+      input: Schema.Struct({}),
+      workspace: { kind: "scratch" },
+      run: async () => ({}),
+    });
+    // 04:30 Europe/Berlin daily. In January that is 03:30 UTC.
+    const config = defineConfig({
+      repo: {
+        sshUrl: join(root, "seed-not-used"),
+        identity: { name: "Factory", email: "factory@factory.test" },
+        baseBranch: "main",
+        slug: "acme/widgets",
+      },
+      workflows: [workflow],
+      workspaceRoot: join(root, "workspaces"),
+      retainedWorkspaces: 10,
+      schedules: [
+        {
+          id: "berlin-morning",
+          workflow: workflow.id,
+          input: {},
+          cron: "30 4 * * *",
+          timezone: "Europe/Berlin",
+        },
+      ],
+    });
+    const server = serve({ db, adapter: createSlowFakeAdapter([], 1), port: 0, config });
+    const base = `http://localhost:${server.port}`;
+
+    const { Cron } = await import("effect");
+    try {
+      // Advance now to 2026-01-10T12:00:00Z, just before midnight Berlin.
+      const res = await fetch(`${base}/api/schedules`);
+      const schedules = (await res.json()) as Array<{ nextFireAt: number }>;
+      const { nextFireAt } = schedules[0]!;
+      expect(nextFireAt).toBe(Cron.next(Cron.parseUnsafe("30 4 * * *", "Europe/Berlin")).getTime());
+      expect(nextFireAt).toBeGreaterThan(Date.now());
+    } finally {
+      await server.stop(true);
+      db.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("serves an empty list on a legacy no-config server", async () => {
+    const root = mkdtempSync(join(tmpdir(), "factory-schedules-empty-test-"));
+    const db = openStore(join(root, "factory.db"));
+    const server = serve({ db, adapter: createSlowFakeAdapter([], 1), port: 0 });
+    const base = `http://localhost:${server.port}`;
+
+    try {
+      const res = await fetch(`${base}/api/schedules`);
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual([]);
+    } finally {
+      await server.stop(true);
+      db.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("lastRun reports the most recent run that carries the schedule's id", async () => {
+    const root = mkdtempSync(join(tmpdir(), "factory-schedules-lastrun-test-"));
+    const db = openStore(join(root, "factory.db"));
+    const workflow = defineWorkflow("scheduled-lastrun-test", {
+      input: Schema.Struct({}),
+      workspace: { kind: "scratch" },
+      run: async () => ({}),
+    });
+    const config = defineConfig({
+      repo: {
+        sshUrl: join(root, "seed-not-used"),
+        identity: { name: "Factory", email: "factory@factory.test" },
+        baseBranch: "main",
+        slug: "acme/widgets",
+      },
+      workflows: [workflow],
+      workspaceRoot: join(root, "workspaces"),
+      retainedWorkspaces: 10,
+      schedules: [
+        {
+          id: "evening-check",
+          workflow: workflow.id,
+          input: {},
+          cron: "* * * * *",
+          timezone: "UTC",
+        },
+      ],
+    });
+    const server = serve({ db, adapter: createSlowFakeAdapter([], 1), port: 0, config });
+    const base = `http://localhost:${server.port}`;
+
+    try {
+      const insertEvent = (
+        runId: string,
+        seq: number,
+        ts: number,
+        tag: string,
+        payload: unknown,
+      ): void => {
+        db.query(`INSERT INTO events (run_id, seq, ts, tag, payload) VALUES (?, ?, ?, ?, ?)`).run(
+          runId,
+          seq,
+          ts,
+          tag,
+          JSON.stringify(payload),
+        );
+      };
+      // Seed a fired run (older) and a later finished run with this scheduleId.
+      const older = Date.now() - 10_000;
+      const newer = Date.now() - 5_000;
+      insertEvent("run-sched-old", 0, older, "RunStarted", {
+        _tag: "RunStarted",
+        workflowId: workflow.id,
+        dir: "somewhere",
+        input: {},
+        scheduleId: "evening-check",
+      });
+      insertEvent("run-sched-old", 1, older + 10, "RunFailed", {
+        _tag: "RunFailed",
+        error: { _tag: "ExecError" },
+      });
+      insertEvent("run-sched-new", 0, newer, "RunStarted", {
+        _tag: "RunStarted",
+        workflowId: workflow.id,
+        dir: "somewhere",
+        input: {},
+        scheduleId: "evening-check",
+      });
+      insertEvent("run-sched-new", 1, newer + 10, "RunFinished", { _tag: "RunFinished" });
+      insertEvent("run-unrelated", 0, newer, "RunStarted", {
+        _tag: "RunStarted",
+        workflowId: workflow.id,
+        dir: "somewhere",
+        input: {},
+      });
+      insertEvent("run-unrelated", 1, newer + 10, "RunFinished", { _tag: "RunFinished" });
+
+      const res = await fetch(`${base}/api/schedules`);
+      const schedules = (await res.json()) as Array<{
+        lastRun: { runId: string; status: string; startedAt: number } | undefined;
+      }>;
+      const { lastRun } = schedules[0]!;
+      expect(lastRun).toMatchObject({ runId: "run-sched-new", status: "RunFinished" });
+      expect(lastRun!.startedAt).toBe(newer);
+    } finally {
+      await server.stop(true);
+      db.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("POST /api/schedules/:id/run (issue #17)", () => {
+  test("starts the schedule's workflow with its configured input and the schedule's id", async () => {
+    const root = mkdtempSync(join(tmpdir(), "factory-schedules-runnow-test-"));
+    const db = openStore(join(root, "factory.db"));
+    const workflow = defineWorkflow("scheduled-runnow-test", {
+      input: Schema.Struct({ issueNumber: Schema.Number }),
+      workspace: { kind: "scratch" },
+      run: async (ctx) => {
+        await ctx.exec(["sh", "-c", "true"]);
+        return {};
+      },
+    });
+    const config = defineConfig({
+      repo: {
+        sshUrl: join(root, "seed-not-used"),
+        identity: { name: "Factory", email: "factory@factory.test" },
+        baseBranch: "main",
+        slug: "acme/widgets",
+      },
+      workflows: [workflow],
+      workspaceRoot: join(root, "workspaces"),
+      retainedWorkspaces: 10,
+      schedules: [
+        {
+          id: "nightly-run",
+          workflow: workflow.id,
+          input: { issueNumber: 12 },
+          cron: "0 3 * * *",
+          timezone: "UTC",
+        },
+      ],
+    });
+    const server = serve({ db, adapter: createSlowFakeAdapter([], 1), port: 0, config });
+    const base = `http://localhost:${server.port}`;
+
+    try {
+      const res = await fetch(`${base}/api/schedules/nightly-run/run`, { method: "POST" });
+      expect(res.status).toBe(201);
+      const { runId } = (await res.json()) as { runId: string };
+      await waitForTerminal(db, runId, 10_000);
+
+      const started = getRunEvents(db, runId).find((e) => e.payload._tag === "RunStarted");
+      expect(
+        started !== undefined && started.payload._tag === "RunStarted"
+          ? started.payload.input
+          : "missing",
+      ).toEqual({ issueNumber: 12 });
+      expect(
+        started !== undefined && started.payload._tag === "RunStarted"
+          ? started.payload.scheduleId
+          : "missing",
+      ).toBe("nightly-run");
+    } finally {
+      await server.stop(true);
+      db.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("404s for an unknown schedule id", async () => {
+    const root = mkdtempSync(join(tmpdir(), "factory-schedules-404-test-"));
+    const db = openStore(join(root, "factory.db"));
+    const workflow = defineWorkflow("scheduled-404-test", {
+      input: Schema.Struct({}),
+      workspace: { kind: "scratch" },
+      run: async () => ({}),
+    });
+    const config = defineConfig({
+      repo: {
+        sshUrl: join(root, "seed-not-used"),
+        identity: { name: "Factory", email: "factory@factory.test" },
+        baseBranch: "main",
+        slug: "acme/widgets",
+      },
+      workflows: [workflow],
+      workspaceRoot: join(root, "workspaces"),
+      retainedWorkspaces: 10,
+      schedules: [
+        { id: "nightly-run", workflow: workflow.id, input: {}, cron: "0 3 * * *", timezone: "UTC" },
+      ],
+    });
+    const server = serve({ db, adapter: createSlowFakeAdapter([], 1), port: 0, config });
+    const base = `http://localhost:${server.port}`;
+
+    try {
+      const res = await fetch(`${base}/api/schedules/nope/run`, { method: "POST" });
+      expect(res.status).toBe(404);
+    } finally {
+      await server.stop(true);
+      db.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("a manual trigger under overlap 'skip' surfaces a collision as a 409, naming the holder", async () => {
+    const root = mkdtempSync(join(tmpdir(), "factory-schedules-collision-test-"));
+    const db = openStore(join(root, "factory.db"));
+    const workflow = defineWorkflow("scheduled-slow-test", {
+      input: Schema.Struct({}),
+      workspace: { kind: "scratch" },
+      run: async (ctx) => {
+        await ctx.exec(["sh", "-c", "sleep 0.5"]);
+        return {};
+      },
+    });
+    const config = defineConfig({
+      repo: {
+        sshUrl: join(root, "seed-not-used"),
+        identity: { name: "Factory", email: "factory@factory.test" },
+        baseBranch: "main",
+        slug: "acme/widgets",
+      },
+      workflows: [workflow],
+      workspaceRoot: join(root, "workspaces"),
+      retainedWorkspaces: 10,
+      schedules: [
+        { id: "slow-skip", workflow: workflow.id, input: {}, cron: "0 3 * * *", timezone: "UTC" },
+      ],
+    });
+    const server = serve({ db, adapter: createSlowFakeAdapter([], 1), port: 0, config });
+    const base = `http://localhost:${server.port}`;
+
+    try {
+      const first = await fetch(`${base}/api/schedules/slow-skip/run`, { method: "POST" });
+      expect(first.status).toBe(201);
+      const { runId: holderRunId } = (await first.json()) as { runId: string };
+
+      const second = await fetch(`${base}/api/schedules/slow-skip/run`, { method: "POST" });
+      expect(second.status).toBe(409);
+      const collision = (await second.json()) as {
+        error: string;
+        dedupeKey: string;
+        holderRunId: string;
+      };
+      expect(collision.dedupeKey).toBe("schedule:slow-skip");
+      expect(collision.holderRunId).toBe(holderRunId);
+      expect(collision.error).toContain("schedule:slow-skip");
+      expect(collision.error).toContain(holderRunId);
+
+      await waitForTerminal(db, holderRunId, 10_000);
+    } finally {
+      await server.stop(true);
+      db.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("a manual trigger under overlap 'stack' fires even while another run holds the key", async () => {
+    const root = mkdtempSync(join(tmpdir(), "factory-schedules-stack-test-"));
+    const db = openStore(join(root, "factory.db"));
+    const workflow = defineWorkflow("scheduled-stack-test", {
+      input: Schema.Struct({}),
+      workspace: { kind: "scratch" },
+      run: async (ctx) => {
+        await ctx.exec(["sh", "-c", "sleep 0.5"]);
+        return {};
+      },
+    });
+    const config = defineConfig({
+      repo: {
+        sshUrl: join(root, "seed-not-used"),
+        identity: { name: "Factory", email: "factory@factory.test" },
+        baseBranch: "main",
+        slug: "acme/widgets",
+      },
+      workflows: [workflow],
+      workspaceRoot: join(root, "workspaces"),
+      retainedWorkspaces: 10,
+      schedules: [
+        {
+          id: "slow-stack",
+          workflow: workflow.id,
+          input: {},
+          cron: "0 3 * * *",
+          timezone: "UTC",
+          overlap: "stack",
+        },
+      ],
+    });
+    const server = serve({ db, adapter: createSlowFakeAdapter([], 1), port: 0, config });
+    const base = `http://localhost:${server.port}`;
+
+    try {
+      const first = await fetch(`${base}/api/schedules/slow-stack/run`, { method: "POST" });
+      expect(first.status).toBe(201);
+      const { runId: firstRunId } = (await first.json()) as { runId: string };
+
+      const second = await fetch(`${base}/api/schedules/slow-stack/run`, { method: "POST" });
+      expect(second.status).toBe(201);
+      const { runId: secondRunId } = (await second.json()) as { runId: string };
+      expect(secondRunId).not.toBe(firstRunId);
+
+      await waitForTerminal(db, firstRunId, 10_000);
+      await waitForTerminal(db, secondRunId, 10_000);
     } finally {
       await server.stop(true);
       db.close();
