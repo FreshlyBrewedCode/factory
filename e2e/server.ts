@@ -8,7 +8,7 @@
  *   - **Static corpus.** `createCorpusReplayAdapter` turns a committed
  *     `test/corpus/*.ndjson` into a real event log with no AI in the loop. The
  *     rich one is the implement-issue round trip, run against a local bare
- *     `origin` and a fake `gh` (the same fixture `implement-issue.test.ts`
+ *     `origin` and a fake `gh` (the same fixture `e2e/implement-issue.test.ts`
  *     uses); a second, small run adds ordering/status variety.
  *   - **Live.** The daemon serves with `createSlowFakeAdapter`, so a
  *     `POST /api/runs` from a test yields a run whose steps arrive over SSE on
@@ -28,7 +28,7 @@ import { defineWorkflow, Schema } from "../src/workflow";
 import echoWorkflow from "../test/fixtures/echo-workflow";
 import registryWorkflow from "../test/fixtures/registry-workflow";
 import slowWorkflow from "../test/fixtures/slow-workflow";
-import implementIssue from "../workflows/implement-issue";
+import implementIssue from "./implement-issue";
 
 /**
  * The POC registry the New-run dialog reads (phase 5 P4): one workflow with
