@@ -25,6 +25,7 @@ import type {
   AgentSignal,
   AgentStreamItem,
 } from "../runtime/agent-adapter";
+import { interpretOpencodeChunk } from "../runtime/opencode-adapter";
 
 export interface CorpusStepBlock {
   readonly step: string;
@@ -55,38 +56,13 @@ export function loadCorpusBlocks(path: string): ReadonlyArray<CorpusStepBlock> {
 }
 
 /**
- * Interpret one recorded chunk into `{chunk, signal}` — the same mapping the
- * live opencode adapter performs, kept deliberately in step with it: both
- * read the recorded AG-UI stream's vendor CUSTOM names and `RUN_ERROR`.
+ * Interpret one recorded chunk into `{chunk, signal}`. A corpus is a
+ * recorded opencode stream, so its chunks are interpreted by the live
+ * adapter's own interpreter — one mapping, kept in step by construction; the
+ * replay adapter adds no interpretation rules of its own.
  */
 export function interpretRecordedChunk(chunk: unknown): AgentStreamItem {
-  const record = chunk as {
-    type?: unknown;
-    name?: unknown;
-    value?: unknown;
-    message?: unknown;
-  };
-
-  if (record.type === "CUSTOM" && typeof record.name === "string") {
-    if (record.name === "structured-output.complete") {
-      const value = record.value as { object?: unknown } | undefined;
-      return { chunk, signal: { kind: "structured-output", value: value?.object } };
-    }
-    if (record.name === "opencode.session-id") {
-      const value = record.value as { sessionId?: unknown } | undefined;
-      if (typeof value?.sessionId === "string") {
-        return { chunk, signal: { kind: "session", sessionId: value.sessionId } };
-      }
-    }
-  }
-
-  if (record.type === "RUN_ERROR") {
-    const message =
-      typeof record.message === "string" ? record.message : JSON.stringify(chunk);
-    return { chunk, signal: { kind: "error", message } };
-  }
-
-  return { chunk };
+  return interpretOpencodeChunk(chunk);
 }
 
 /**
@@ -149,7 +125,9 @@ export function createSlowFakeAdapter(
           for (let index = 0; index < chunks.length; index++) {
             await new Promise<void>((resolve) => setTimeout(resolve, delayMs));
             const signal = byIndex.get(index);
-            yield signal === undefined ? { chunk: chunks[index] } : { chunk: chunks[index], signal };
+            yield signal === undefined
+              ? { chunk: chunks[index] }
+              : { chunk: chunks[index], signal };
           }
         },
       };

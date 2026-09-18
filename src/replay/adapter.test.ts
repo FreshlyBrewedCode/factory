@@ -1,13 +1,15 @@
 import { Effect } from "effect";
 import { describe, expect, test } from "bun:test";
 import { buildAgentStepEffect } from "../runtime/agent-step";
-import type { AgentAdapter, AgentAdapterOptions } from "../runtime/agent-adapter";
-import {
-  createCorpusReplayAdapter,
-  createFakeSignalAdapter,
-  createSlowFakeAdapter,
-  loadCorpusBlocks,
-} from "./adapter";
+import type { AgentAdapter, AgentAdapterOptions, AgentStreamItem } from "../runtime/agent-adapter";
+import { createCorpusReplayAdapter, createSlowFakeAdapter, loadCorpusBlocks } from "./adapter";
+
+/** Drains an adapter stream to an array (for-of over async iterables is fine; this keeps types explicit). */
+async function drain(stream: AsyncIterable<AgentStreamItem>): Promise<Array<AgentStreamItem>> {
+  const items: Array<AgentStreamItem> = [];
+  for await (const item of stream) items.push(item);
+  return items;
+}
 
 const FULL_ROUND_TRIP_CORPUS = `${import.meta.dir}/../../test/corpus/run-1789308170212.ndjson`;
 
@@ -38,7 +40,6 @@ describe("createCorpusReplayAdapter", () => {
       prompt: "p",
       abortController: new AbortController(),
     };
-
 
     const step1 = adapter.stream(options);
     const step2 = adapter.stream(options);
@@ -83,19 +84,15 @@ describe("createCorpusReplayAdapter", () => {
       abortController: new AbortController(),
     };
 
-    const items: Array<Awaited<ReturnType<(typeof iterator)[Symbol.asyncIterator]["next"]>>["value"]> =
-      [];
-    const iterator = adapter.stream(options)[Symbol.asyncIterator]();
-    for (let next = await iterator.next(); !next.done; next = await iterator.next()) {
-      items.push(next.value);
-    }
-    const signals = items
-      .map((item) => item.signal)
-      .filter((signal) => signal !== undefined);
+    const items = await drain(adapter.stream(options));
+    const signals = items.map((item) => item.signal).filter((signal) => signal !== undefined);
 
     // The recorded session id surfaces as a signal, and every signal is the
     // normalized union — never a vendor event name.
-    expect(signals).toContainEqual({ kind: "session", sessionId: "ses_f64ec04acffeJ0tjsHSkjAEqZF" });
+    expect(signals).toContainEqual({
+      kind: "session",
+      sessionId: "ses_f64ec04acffeJ0tjsHSkjAEqZF",
+    });
     for (const signal of signals) {
       expect(["session", "structured-output", "error"]).toContain(signal.kind);
     }
@@ -112,18 +109,15 @@ describe("createCorpusReplayAdapter", () => {
       sessionId: "ses_fresh",
       structuredOutput: { ok: true },
     });
-    const items: Array<Awaited<ReturnType<(typeof iterator)[Symbol.asyncIterator]["next"]>>["value"]> =
-      [];
-    const iterator = adapter.stream({
-      threadId: "t",
-      dir: "/tmp",
-      model: "m",
-      prompt: "p",
-      abortController: new AbortController(),
-    })[Symbol.asyncIterator]();
-    for (let next = await iterator.next(); !next.done; next = await iterator.next()) {
-      items.push(next.value);
-    }
+    const items = await drain(
+      adapter.stream({
+        threadId: "t",
+        dir: "/tmp",
+        model: "m",
+        prompt: "p",
+        abortController: new AbortController(),
+      }),
+    );
 
     expect(items.map((item) => item.signal)).toEqual([
       { kind: "session", sessionId: "ses_fresh" },
@@ -171,10 +165,7 @@ describe("createSlowFakeAdapter", () => {
 
   test("attaches declared signals to their chunks", async () => {
     const adapter = createSlowFakeAdapter(
-      [
-        { type: "RUN_STARTED" },
-        { type: "TEXT_MESSAGE_START" },
-      ],
+      [{ type: "RUN_STARTED" }, { type: "TEXT_MESSAGE_START" }],
       1,
       [{ index: 0, signal: { kind: "session", sessionId: "ses_slow" } }],
     );
@@ -200,10 +191,13 @@ function createFakeSignalAdapter(signals: {
   structuredOutput?: unknown;
 }): AgentAdapter {
   return {
-    stream(_options: AgentAdapterOptions) {
+    stream(_options: AgentAdapterOptions): AsyncIterable<AgentStreamItem> {
       return (async function* () {
         if (signals.sessionId !== undefined) {
-          yield { chunk: { type: "RUN_STARTED" }, signal: { kind: "session", sessionId: signals.sessionId } };
+          yield {
+            chunk: { type: "RUN_STARTED" },
+            signal: { kind: "session", sessionId: signals.sessionId },
+          };
         }
         if (signals.structuredOutput !== undefined) {
           yield {

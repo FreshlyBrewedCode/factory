@@ -47,6 +47,14 @@ async function freePort(): Promise<number> {
 }
 
 /**
+ * The vendor CUSTOM event names this adapter decodes. Exported so the
+ * adapter's test can name them without re-spelling the literals — the strings
+ * themselves live here and nowhere else (issue #35 acceptance criterion).
+ */
+export const OPENCODE_SESSION_ID_EVENT = "opencode.session-id";
+export const STRUCTURED_OUTPUT_COMPLETE_EVENT = "structured-output.complete";
+
+/**
  * Interpret one raw opencode-stream chunk into `{chunk, signal}`.
  *
  * `structured-output.complete` is not a provider capability: the opencode
@@ -65,24 +73,26 @@ export function interpretOpencodeChunk(chunk: unknown): AgentStreamItem {
   };
 
   if (record.type === "CUSTOM" && typeof record.name === "string") {
-    if (record.name === "structured-output.complete") {
+    if (record.name === STRUCTURED_OUTPUT_COMPLETE_EVENT) {
       const value = record.value as { object?: unknown } | undefined;
       return {
         chunk,
         signal: { kind: "structured-output", value: value?.object } satisfies AgentSignal,
       };
     }
-    if (record.name === "opencode.session-id") {
+    if (record.name === OPENCODE_SESSION_ID_EVENT) {
       const value = record.value as { sessionId?: unknown } | undefined;
       if (typeof value?.sessionId === "string") {
-        return { chunk, signal: { kind: "session", sessionId: value.sessionId } satisfies AgentSignal };
+        return {
+          chunk,
+          signal: { kind: "session", sessionId: value.sessionId } satisfies AgentSignal,
+        };
       }
     }
   }
 
   if (record.type === "RUN_ERROR") {
-    const message =
-      typeof record.message === "string" ? record.message : JSON.stringify(chunk);
+    const message = typeof record.message === "string" ? record.message : JSON.stringify(chunk);
     return { chunk, signal: { kind: "error", message } satisfies AgentSignal };
   }
 

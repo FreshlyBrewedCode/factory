@@ -33,7 +33,10 @@ function agentWorkflow(outputSchema?: Schema.Codec<any, any>) {
   });
 }
 
-async function runWith(chunks: ReadonlyArray<unknown>, signals: Parameters<typeof createSlowFakeAdapter>[2]) {
+async function runWith(
+  chunks: ReadonlyArray<unknown>,
+  signals: Parameters<typeof createSlowFakeAdapter>[2],
+) {
   const events: Array<RunEvent> = [];
   const handle = startRun(agentWorkflow(), {
     runId: "run-signals",
@@ -69,10 +72,7 @@ describe("signals populate AgentStepFinished as before (issue #35)", () => {
       dir: "/tmp",
       input: {},
       adapter: createSlowFakeAdapter(
-        [
-          ...TEXT_CHUNKS,
-          { type: "CUSTOM", name: "anything-at-all" },
-        ],
+        [...TEXT_CHUNKS, { type: "CUSTOM", name: "anything-at-all" }],
         1,
         [{ index: 3, signal: { kind: "structured-output", value: { where: "from-signal" } } }],
       ),
@@ -100,9 +100,10 @@ describe("signals populate AgentStepFinished as before (issue #35)", () => {
   });
 
   test("an error signal fails the step and lands on AgentStepFinished.error", async () => {
-    const { outcome, events } = await runWith([...TEXT_CHUNKS, { type: "RUN_FINISHED" }], [
-      { index: 3, signal: { kind: "error", message: "sandbox vanished" } },
-    ]);
+    const { outcome, events } = await runWith(
+      [...TEXT_CHUNKS, { type: "RUN_FINISHED" }],
+      [{ index: 3, signal: { kind: "error", message: "sandbox vanished" } }],
+    );
     expect(outcome.outcome).toBe("failed");
 
     const finished = stepFinished(events);
