@@ -81,6 +81,14 @@ export const RunEventPayload = Schema.TaggedUnion({
      * parent ↔ child navigation and nothing else.
      */
     parentId: Schema.optional(Schema.String),
+    /**
+     * The run's dedupe key (issue #15), present only when the run was started
+     * with one. While this run is non-terminal, no other run can start with
+     * the same key; the record here is for observability — the holder is
+     * named in any `DispatchCollision` raised against it. Absent, the run
+     * holds nothing.
+     */
+    dedupeKey: Schema.optional(Schema.String),
   },
 
   RunFinished: {
@@ -112,6 +120,24 @@ export const RunEventPayload = Schema.TaggedUnion({
     childRunId: Schema.String,
     childWorkflowId: Schema.String,
     input: Schema.Json,
+    /**
+     * The child's dedupe key (issue #15), present only when the dispatch
+     * carried one.
+     */
+    dedupeKey: Schema.optional(Schema.String),
+  },
+
+  /**
+   * The parent's record of a `ctx.dispatch` call rejected on a dedupe-key
+   * collision (issue #15). The throw fails the parent visibly — this event is
+   * the log-side record the run-detail UI surfaces, with the holding run
+   * reachable from `holderRunId`. A collision is never a silent no-op.
+   */
+  DispatchCollision: {
+    key: Schema.String,
+    /** The run currently holding `key` (non-terminal — it is holding). */
+    holderRunId: Schema.String,
+    childWorkflowId: Schema.String,
   },
 
   // ---- ctx.agent(name, prompt, opts?) --------------------------------

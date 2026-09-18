@@ -90,6 +90,8 @@ function MetaTable({
   note,
   parentId,
   dispatched,
+  dedupeKey,
+  collisions,
 }: {
   readonly runId: string;
   readonly workflowId: string | undefined;
@@ -105,6 +107,12 @@ function MetaTable({
   readonly parentId: string | undefined;
   readonly dispatched: ReadonlyArray<{
     readonly childRunId: string;
+    readonly childWorkflowId: string;
+  }>;
+  readonly dedupeKey: string | undefined;
+  readonly collisions: ReadonlyArray<{
+    readonly key: string;
+    readonly holderRunId: string;
     readonly childWorkflowId: string;
   }>;
 }) {
@@ -145,6 +153,41 @@ function MetaTable({
                 <span key={child.childRunId}>
                   <span className="text-muted-foreground">{child.childWorkflowId}</span>{" "}
                   {runLink(child.childRunId)}
+                </span>
+              ))}
+            </span>
+          ) : (
+            <span className="text-muted-foreground">—</span>
+          ),
+          false,
+        )}
+        {/*
+         * Dedupe keys (issue #15): this run's own key, and every `ctx.dispatch`
+         * call that lost the race — never rendered silent. A collision's
+         * holding run is one link away, straight to its run detail.
+         */}
+        {metaRow(
+          "dedupe",
+          dedupeKey !== undefined ? (
+            <code className="font-mono text-[11px]">{dedupeKey}</code>
+          ) : (
+            <span className="text-muted-foreground">—</span>
+          ),
+          true,
+        )}
+        {metaRow(
+          "conflicts",
+          collisions.length > 0 ? (
+            <span className="flex flex-wrap gap-x-3 gap-y-0.5">
+              {collisions.map((collision) => (
+                <span
+                  key={`${collision.key}:${collision.holderRunId}`}
+                  data-testid="dispatch-collision"
+                >
+                  <span className="text-muted-foreground">
+                    {collision.childWorkflowId} · {collision.key}
+                  </span>{" "}
+                  held by {runLink(collision.holderRunId)}
                 </span>
               ))}
             </span>
@@ -857,6 +900,8 @@ function RunDetailView({ runId }: { readonly runId: string }) {
             note={status === "interrupted" ? "no terminal event — process died mid-run" : undefined}
             parentId={meta.parentId}
             dispatched={meta.dispatched}
+            dedupeKey={meta.dedupeKey}
+            collisions={meta.collisions}
           />
         </header>
 

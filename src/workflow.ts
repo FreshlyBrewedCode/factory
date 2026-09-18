@@ -60,6 +60,16 @@ export interface WriteBackCallOptions {
   readonly prBody: string;
 }
 
+export interface DispatchChildOptions {
+  /**
+   * Issue #15: a dedupe key for the child run. While the child (or another
+   * run) is non-terminal holding that key, a second dispatch with the same
+   * key throws a `DedupeKeyError` naming the key and the holding run —
+   * collisions fail the parent visibly, they never silently no-op.
+   */
+  readonly dedupeKey?: string;
+}
+
 /**
  * The context service behind `ctx.dispatch` (issue #14), injected by the
  * runtime. It starts a child run of `child` with `input` and resolves to the
@@ -68,7 +78,11 @@ export interface WriteBackCallOptions {
  * outcome is observable in its own log and the UI, not in the parent.
  */
 export interface DispatchChildFn {
-  (child: WorkflowDefinition<any, any>, input: unknown): Promise<string>;
+  (
+    child: WorkflowDefinition<any, any>,
+    input: unknown,
+    opts?: DispatchChildOptions,
+  ): Promise<string>;
 }
 
 /**
@@ -101,10 +115,16 @@ export interface WorkflowCtx {
    *
    * Throws, never silently drops, when the child is invalid (caps, concurrency
    * limit) or when the run is executing without a daemon — in-process
-   * execution is legacy, dispatch is a daemon feature. Resolves to the
+   * execution is legacy, dispatch is a daemon feature. Throws on a dedupe-key
+   * collision (issue #15): the throw is recorded in the parent's event log as
+   * `DispatchCollision`, with the holding run named. Resolves to the
    * child's run id; observe the child's outcome in its own log and the UI.
    */
-  dispatch<I2>(child: WorkflowDefinition<I2, any>, input: I2): Promise<string>;
+  dispatch<I2>(
+    child: WorkflowDefinition<I2, any>,
+    input: I2,
+    opts?: DispatchChildOptions,
+  ): Promise<string>;
 }
 
 export interface WorkflowAgentDefaults {

@@ -224,6 +224,7 @@ describe("Factory lifecycle events", () => {
       "AgentStepFinished",
       "AgentStepStarted",
       "AssertionRecorded",
+      "DispatchCollision",
       "ExecFinished",
       "ExecStarted",
       "LogRecorded",

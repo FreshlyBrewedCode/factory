@@ -21,6 +21,7 @@ import type { RunRepo } from "../runtime/run";
 import { startRun, type RunHandle } from "../runtime/run";
 import type { GitIdentity } from "../lib/clone";
 import { allocateWorkspace } from "../lib/workspace";
+import { dedupeRegistry, type DedupeRegistry } from "../lib/dedupe";
 import type { AgentAdapter } from "../runtime/agent-adapter";
 import type { DispatchChildFn, WorkflowDefinition, WorkspaceKind } from "../workflow";
 import { publish } from "./pubsub";
@@ -129,6 +130,25 @@ export interface StartTrackedRunOptions {
    * recorded on `RunStarted.parentId` so the UI can navigate child → parent.
    */
   readonly parentRunId?: string;
+  /**
+   * Issue #15: this run's dedupe key. Claimed synchronously at start (before
+   * any await) in the run's own registry slot manner — two near-simultaneous
+   * starts with the same key cannot both slip through the check-then-claim —
+   * and released the moment the run settles in any terminal state, including
+   * a failed startup. Absent, the run claims nothing.
+   */
+  readonly dedupeKey?: string;
+  /**
+   * Issue #15: `true` when a caller (the dispatch path) already claimed the
+   * key synchronously before handing the start over, so the claim must not be
+   * re-asserted here. Release still happens here, keyed to this run id.
+   */
+  readonly dedupeKeyClaimed?: boolean;
+  /**
+   * Issue #15: injectable holder registry, for tests. Absent, the daemon's
+   * shared process-wide registry (`lib/dedupe.ts`) is used.
+   */
+  readonly dedupeRegistry?: DedupeRegistry;
 }
 
 /**
@@ -146,6 +166,8 @@ export interface DispatchEnv {
   /** Issue #14: dispatch depth / per-run child caps, over the defaults. */
   readonly maxDispatchDepth?: number;
   readonly maxChildrenPerRun?: number;
+  /** Issue #15: injectable holder registry, over the daemon's shared one. */
+  readonly dedupeRegistry?: DedupeRegistry;
 }
 
 /**
@@ -189,9 +211,11 @@ async function dispatchChildRun(
   parentRunId: string,
   child: WorkflowDefinition<any, any>,
   input: unknown,
+  opts?: { readonly dedupeKey?: string },
 ): Promise<string> {
   const maxDepth = env.maxDispatchDepth ?? DEFAULT_MAX_DISPATCH_DEPTH;
   const maxChildren = env.maxChildrenPerRun ?? DEFAULT_MAX_CHILDREN_PER_RUN;
+  const registry = env.dedupeRegistry ?? dedupeRegistry;
 
   if (
     env.maxConcurrentRuns !== undefined &&
@@ -214,23 +238,35 @@ async function dispatchChildRun(
     );
   }
 
+  // Issue #15: the collision check is synchronous with the child id in hand
+  // and *before* the fire-and-forget start, so a collision throws into the
+  // parent here instead of being swallowed by the un-awaited start's catch.
   const childRunId = `run-${crypto.randomUUID()}`;
+  if (opts?.dedupeKey !== undefined) registry.claim(opts.dedupeKey, childRunId);
 
-  void startTrackedRun(db, child, {
-    runId: childRunId,
-    ...(env.workspace !== undefined ? { workspace: env.workspace } : {}),
-    ...(env.repo !== undefined ? { repo: env.repo } : {}),
-    ...(env.maxConcurrentRuns !== undefined ? { maxConcurrentRuns: env.maxConcurrentRuns } : {}),
-    input,
-    adapter: env.adapter,
-    parentRunId,
-    dispatchEnv: env,
-  }).catch((err: unknown) => {
-    console.error(
-      `nested run start failed (parent ${parentRunId}, child ${childRunId}):` +
-        `${err instanceof Error ? err.message : String(err)}`,
-    );
-  });
+  void (async () => {
+    await startTrackedRun(db, child, {
+      runId: childRunId,
+      ...(env.workspace !== undefined ? { workspace: env.workspace } : {}),
+      ...(env.repo !== undefined ? { repo: env.repo } : {}),
+      ...(env.maxConcurrentRuns !== undefined ? { maxConcurrentRuns: env.maxConcurrentRuns } : {}),
+      input,
+      adapter: env.adapter,
+      parentRunId,
+      dispatchEnv: env,
+      ...(opts?.dedupeKey !== undefined ? { dedupeKey: opts.dedupeKey } : {}),
+      ...(opts?.dedupeKey !== undefined ? { dedupeKeyClaimed: true } : {}),
+      ...(env.dedupeRegistry !== undefined ? { dedupeRegistry: env.dedupeRegistry } : {}),
+    }).catch((err: unknown) => {
+      if (opts?.dedupeKey !== undefined) {
+        (env.dedupeRegistry ?? dedupeRegistry).release(opts.dedupeKey, childRunId);
+      }
+      console.error(
+        `nested run start failed (parent ${parentRunId}, child ${childRunId}):` +
+          `${err instanceof Error ? err.message : String(err)}`,
+      );
+    });
+  })();
 
   return childRunId;
 }
@@ -255,6 +291,15 @@ export async function startTrackedRun(
   const existing = active.get(runId);
   if (existing !== undefined && !isReserved(existing)) {
     throw new Error(`run ${runId} is already active`);
+  }
+
+  // Issue #15: claim the dedupe key synchronously — check-then-claim with no
+  // `await` in between, the same atomicity the registry slot reservation has —
+  // so two near-simultaneous starts on the same key cannot both slip past. A
+  // collision throws before anything is started, leaving no trace.
+  const registry = options.dedupeRegistry ?? dedupeRegistry;
+  if (options.dedupeKey !== undefined && options.dedupeKeyClaimed !== true) {
+    registry.claim(options.dedupeKey, runId);
   }
   if (existing === undefined && options.maxConcurrentRuns !== undefined) {
     if (!admitRun(options.maxConcurrentRuns, active.size)) {
@@ -303,7 +348,8 @@ export async function startTrackedRun(
     const dispatch: DispatchChildFn | undefined =
       options.dispatchEnv === undefined
         ? undefined
-        : (child, input) => dispatchChildRun(db, options.dispatchEnv!, runId, child, input);
+        : (child, input, opts) =>
+            dispatchChildRun(db, options.dispatchEnv!, runId, child, input, opts);
 
     const handle = startRun(workflow, {
       runId,
@@ -312,6 +358,7 @@ export async function startTrackedRun(
       workspaceKind: kind,
       ...(dispatch !== undefined ? { dispatch } : {}),
       ...(options.parentRunId !== undefined ? { parentRunId: options.parentRunId } : {}),
+      ...(options.dedupeKey !== undefined ? { dedupeKey: options.dedupeKey } : {}),
       input: options.input,
       adapter: options.adapter,
       onEvent: (event) => {
@@ -332,6 +379,11 @@ export async function startTrackedRun(
 
     void handle.result.finally(() => {
       if (active.get(runId) === handle) active.delete(runId);
+      // Issue #15: any terminal state — completed, failed, cancelled —
+      // releases the run's key. (An interrupted run — process death — is
+      // covered by the registry being per-process: the new process holds
+      // nothing.)
+      if (options.dedupeKey !== undefined) registry.release(options.dedupeKey, runId);
     });
 
     // Issue #13: a scratch dir is reaped when the run succeeds — there is no
@@ -348,6 +400,7 @@ export async function startTrackedRun(
 
     return runId;
   } catch (err) {
+    if (options.dedupeKey !== undefined) registry.release(options.dedupeKey, runId);
     const current = active.get(runId);
     if (current === undefined || isReserved(current)) active.delete(runId);
     throw err;

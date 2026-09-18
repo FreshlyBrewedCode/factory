@@ -332,6 +332,18 @@ export interface RunMeta {
     readonly childRunId: string;
     readonly childWorkflowId: string;
   }>;
+  /** This run's dedupe key, when it was started with one (issue #15). */
+  readonly dedupeKey: string | undefined;
+  /**
+   * The `ctx.dispatch` calls this run attempted that lost the dedupe-key
+   * race (issue #15). Visible on run detail with the holding run reachable
+   * from them — a collision is never a silent no-op.
+   */
+  readonly collisions: ReadonlyArray<{
+    readonly key: string;
+    readonly holderRunId: string;
+    readonly childWorkflowId: string;
+  }>;
 }
 
 /** Run-overview fields that only exist in events, not in `RunSummary`. */
@@ -349,6 +361,8 @@ export function deriveRunMeta(events: ReadonlyArray<RunEvent>): RunMeta {
   const sessions: Array<RunSession> = [];
   let parentId: string | undefined;
   const dispatched: Array<{ childRunId: string; childWorkflowId: string }> = [];
+  let dedupeKey: string | undefined;
+  const collisions: Array<{ key: string; holderRunId: string; childWorkflowId: string }> = [];
 
   for (const event of events) {
     switch (event.payload._tag) {
@@ -358,6 +372,14 @@ export function deriveRunMeta(events: ReadonlyArray<RunEvent>): RunMeta {
         input = event.payload.input;
         workspaceKind = event.payload.workspaceKind ?? "clone";
         parentId = event.payload.parentId;
+        dedupeKey = event.payload.dedupeKey;
+        break;
+      case "DispatchCollision":
+        collisions.push({
+          key: event.payload.key,
+          holderRunId: event.payload.holderRunId,
+          childWorkflowId: event.payload.childWorkflowId,
+        });
         break;
       case "RunDispatched":
         dispatched.push({
@@ -407,6 +429,8 @@ export function deriveRunMeta(events: ReadonlyArray<RunEvent>): RunMeta {
     sessions,
     parentId,
     dispatched,
+    dedupeKey,
+    collisions,
   };
 }
 
@@ -417,7 +441,9 @@ export function summarizeEvent(event: RunEvent): string {
     case "RunStarted":
       return `${payload.workflowId} · ${payload.dir}`;
     case "RunDispatched":
-      return `dispatched ${payload.childWorkflowId} · ${payload.childRunId}`;
+      return `dispatched ${payload.childWorkflowId} · ${payload.childRunId}${payload.dedupeKey !== undefined ? ` · key ${payload.dedupeKey}` : ""}`;
+    case "DispatchCollision":
+      return `collision · ${payload.key} held by ${payload.holderRunId}`;
     case "RunFinished":
       return `finished · ${payload.durationMs}ms`;
     case "RunFailed":

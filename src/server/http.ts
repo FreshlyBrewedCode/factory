@@ -38,6 +38,7 @@ import type { AgentAdapter } from "../runtime/agent-adapter";
 import index from "../web/index.html";
 import { admitRun } from "./admission";
 import { subscribe } from "./pubsub";
+import { DedupeKeyError } from "../lib/dedupe";
 import {
   ConcurrencyLimitError,
   activeRunIds,
@@ -127,6 +128,12 @@ interface StartRunBody {
   readonly workflowId?: unknown;
   readonly workflowPath?: unknown;
   readonly input?: unknown;
+  /**
+   * Issue #15: an optional dedupe key. While a non-terminal run holds it,
+   * another start with the same key is a 409 conflict naming the key and the
+   * holding run — never a silently dropped duplicate.
+   */
+  readonly dedupeKey?: unknown;
   readonly dir?: string;
   readonly clone?: { readonly sshUrl: string; readonly identity: GitIdentity };
 }
@@ -298,6 +305,12 @@ export function createHandler(options: ServerOptions): (req: Request) => Promise
         return json({ error: "invalid JSON body" }, { status: 400 });
       }
       if (typeof body.workflowId === "string") {
+        if (
+          body.dedupeKey !== undefined &&
+          (typeof body.dedupeKey !== "string" || body.dedupeKey === "")
+        ) {
+          return json({ error: "dedupeKey must be a non-empty string" }, { status: 400 });
+        }
         const registry = options.config?.workflows ?? [];
         const workflow = registry.find((w) => w.id === body.workflowId);
         if (workflow === undefined) {
@@ -337,6 +350,7 @@ export function createHandler(options: ServerOptions): (req: Request) => Promise
             : {}),
           input: decodedInput,
           adapter: options.adapter,
+          ...(typeof body.dedupeKey === "string" ? { dedupeKey: body.dedupeKey } : {}),
         };
         let runId: string;
         try {
@@ -345,6 +359,15 @@ export function createHandler(options: ServerOptions): (req: Request) => Promise
           if (err instanceof ConcurrencyLimitError) {
             return json({ error: err.message }, { status: 409 });
           }
+          // Issue #15: the key collision surfaces as a conflict that names both
+          // the key and the run holding it, so a client can see exactly whom it
+          // raced with.
+          if (err instanceof DedupeKeyError) {
+            return json(
+              { error: err.message, dedupeKey: err.key, holderRunId: err.holderRunId },
+              { status: 409 },
+            );
+          }
           throw err;
         }
         return json({ runId }, { status: 201 });
@@ -352,6 +375,12 @@ export function createHandler(options: ServerOptions): (req: Request) => Promise
 
       if (typeof body.workflowPath !== "string") {
         return json({ error: "workflowPath (string) is required" }, { status: 400 });
+      }
+      if (
+        body.dedupeKey !== undefined &&
+        (typeof body.dedupeKey !== "string" || body.dedupeKey === "")
+      ) {
+        return json({ error: "dedupeKey must be a non-empty string" }, { status: 400 });
       }
       if (typeof body.dir !== "string" && options.config === undefined) {
         return json({ error: "dir (string) is required" }, { status: 400 });
@@ -388,6 +417,7 @@ export function createHandler(options: ServerOptions): (req: Request) => Promise
         ...(runEnv !== undefined ? { dispatchEnv: dispatchEnvFor(runEnv, options.adapter) } : {}),
         input: body.input,
         adapter: options.adapter,
+        ...(typeof body.dedupeKey === "string" ? { dedupeKey: body.dedupeKey } : {}),
       };
       let runId: string;
       try {
@@ -395,6 +425,12 @@ export function createHandler(options: ServerOptions): (req: Request) => Promise
       } catch (err) {
         if (err instanceof ConcurrencyLimitError) {
           return json({ error: err.message }, { status: 409 });
+        }
+        if (err instanceof DedupeKeyError) {
+          return json(
+            { error: err.message, dedupeKey: err.key, holderRunId: err.holderRunId },
+            { status: 409 },
+          );
         }
         throw err;
       }
