@@ -9,6 +9,7 @@ function makeYield(chunk: unknown, signal?: AgentSignal): AgentAdapterYield {
 
 function signalAdapter(yields: ReadonlyArray<AgentAdapterYield>) {
   return {
+    async prepareWorkspace(_dir: string): Promise<void> {},
     stream() {
       return {
         async *[Symbol.asyncIterator]() {
