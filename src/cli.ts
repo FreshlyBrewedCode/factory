@@ -16,20 +16,25 @@
 
 import { mkdir } from "node:fs/promises";
 import { dirname } from "node:path";
-import { Effect, FileSystem, Layer, Path, Stdio, Terminal } from "effect";
+import { Effect, FileSystem, Layer, ManagedRuntime, Path, Stdio, Terminal } from "effect";
 import { ChildProcessSpawner } from "effect/unstable/process";
 import { CliError, Command } from "effect/unstable/cli";
 import type { RunEvent } from "./events";
-import { loadFactoryConfig } from "./config";
+import { findFactoryConfig, loadFactoryConfig } from "./config";
+import { initCli } from "./init";
 import type { RunRepo } from "./runtime/run";
-import type { GitIdentity } from "./lib/clone";
-import { resetClone } from "./lib/clone";
+import { resetClone, type GitIdentity } from "./lib/clone";
 import { loadWorkflow } from "./lib/load-workflow";
 import { streamSse } from "./lib/sse-client";
 import { appendEvent, getRunEvents, listRuns, openStore } from "./persistence/store";
 import type { AgentAdapter } from "./runtime/agent-adapter";
+import { opencodeAdapter } from "./runtime/opencode-adapter";
+import { AgentRuntimeLayer } from "./runtime/agent-runtime";
 import { startRun } from "./runtime/run";
-import { factoryCommand } from "./cli-commands";
+import { startDaemon, type DaemonOptions } from "./server/daemon";
+
+const DEFAULT_DB_PATH = ".factory/factory.db";
+const DEFAULT_DAEMON_URL = "http://localhost:3000";
 
 export interface CliOptions {
   readonly workflowPath: string;
@@ -38,7 +43,11 @@ export interface CliOptions {
   readonly clone?: { readonly sshUrl: string; readonly identity: GitIdentity };
   readonly outPath: string;
   readonly dbPath: string;
-  readonly adapter: AgentAdapter;
+  /**
+   * Injectable agent adapter for tests. When omitted, `runCli` falls back to
+   * `factory.config.ts`'s `agent.adapter` (or the live opencode adapter).
+   */
+  readonly adapter?: AgentAdapter;
 }
 
 function formatEvent(event: RunEvent): string {
@@ -61,18 +70,19 @@ export async function runCli(options: CliOptions): Promise<number> {
 
   const runId = `run-${Date.now()}`;
   let repo: RunRepo | undefined;
+  let adapter = options.adapter ?? opencodeAdapter;
   try {
     const config = await loadFactoryConfig();
     repo = { slug: config.repo.slug, baseBranch: config.repo.baseBranch };
+    adapter = options.adapter ?? config.agent.adapter;
   } catch {
     repo = undefined;
   }
-  const handle = startRun(workflow, {
+  const runtime = ManagedRuntime.make(AgentRuntimeLayer(adapter));
+  const handle = await startRun(workflow, runtime, {
     runId,
     dir: options.dir,
     input: options.input,
-    adapter: options.adapter,
-    prepareWorkspace: options.clone !== undefined,
     ...(repo !== undefined ? { repo } : {}),
     onEvent: (event) => {
       console.log(formatEvent(event));

@@ -1,138 +1,127 @@
-import { Effect } from "effect";
+/**
+ * Pins the runtime side of the adapter seam (ADR 0012 §2): normalized signals
+ * arrive from the adapter, the runtime records them, and it never interprets
+ * a vendor chunk name itself. Chunks stay opaque and ride through verbatim.
+ */
+
+import { Effect, ManagedRuntime } from "effect";
 import { describe, expect, test } from "bun:test";
-import type { AgentAdapterYield, AgentSignal } from "./agent-adapter";
+import type { AgentAdapter, AgentAdapterOptions, AgentStreamItem } from "./agent-adapter";
+import { AgentRuntimeLayer } from "./agent-runtime";
 import { buildAgentStepEffect } from "./agent-step";
 
-function makeYield(chunk: unknown, signal?: AgentSignal): AgentAdapterYield {
-  return signal !== undefined ? { chunk, signal } : { chunk };
-}
-
-function signalAdapter(yields: ReadonlyArray<AgentAdapterYield>) {
+function scriptedAdapter(items: ReadonlyArray<AgentStreamItem>): AgentAdapter {
   return {
-    async prepareWorkspace(_dir: string): Promise<void> {},
-    stream() {
-      return {
-        async *[Symbol.asyncIterator]() {
-          for (const y of yields) yield y;
-        },
-      };
+    stream(_options: AgentAdapterOptions): AsyncIterable<AgentStreamItem> {
+      return (async function* () {
+        yield* items;
+      })();
     },
   };
 }
 
-describe("buildAgentStepEffect signal extraction", () => {
-  test("extracts sessionId from a sessionId signal", async () => {
-    const adapter = signalAdapter([
-      makeYield({ type: "TEXT_MESSAGE_START" }),
-      makeYield({ type: "TEXT_MESSAGE_CONTENT", delta: "hello" }),
-      makeYield({ type: "TEXT_MESSAGE_END" }),
-      makeYield(
-        { type: "CUSTOM", name: "opencode.session-id", value: { sessionId: "ses_abc" } },
-        { _tag: "sessionId", value: "ses_abc" },
-      ),
-    ]);
+const TEXT_CHUNKS = [
+  { type: "TEXT_MESSAGE_START", messageId: "m1" },
+  { type: "TEXT_MESSAGE_CONTENT", delta: "hello" },
+  { type: "TEXT_MESSAGE_END", messageId: "m1" },
+];
 
-    const handle = buildAgentStepEffect({
+async function runStep(adapter: AgentAdapter, options: Parameters<typeof buildAgentStepEffect>[0]) {
+  const runtime = ManagedRuntime.make(AgentRuntimeLayer(adapter));
+  const handle = await runtime.runPromise(buildAgentStepEffect(options));
+  const outcome = await Effect.runPromise(handle.effect);
+  await runtime.dispose();
+  return outcome;
+}
+
+describe("buildAgentStepEffect over the signal seam (ADR 0012 §2)", () => {
+  test("records adapter signals; chunks reach onChunk verbatim", async () => {
+    const seen: Array<unknown> = [];
+    const items: ReadonlyArray<AgentStreamItem> = [
+      { chunk: { type: "RUN_STARTED" } },
+      {
+        chunk: { type: "CUSTOM", name: "vendor.session", value: { id: "ses_x" } },
+        signal: { kind: "session", sessionId: "ses_x" },
+      },
+      ...TEXT_CHUNKS.map((chunk) => ({ chunk })),
+      {
+        chunk: { type: "CUSTOM", name: "vendor.output", value: { object: { answer: 42 } } },
+        signal: { kind: "structured-output", value: { answer: 42 } },
+      },
+      { chunk: { type: "RUN_FINISHED" } },
+    ];
+
+    const outcome = await runStep(scriptedAdapter(items), {
       threadId: "t",
       dir: "/tmp",
       model: "m",
       prompt: "p",
-      adapter,
-      onChunk: () => {},
+      onChunk: (chunk) => seen.push(chunk),
     });
 
-    const outcome = await Effect.runPromise(handle.effect);
-    expect(outcome.sessionId).toBe("ses_abc");
+    expect(outcome.chunkCount).toBe(7);
+    expect(outcome.sessionId).toBe("ses_x");
+    expect(outcome.structuredOutput).toEqual({ answer: 42 });
     expect(outcome.finalText).toBe("hello");
-    expect(outcome.chunkCount).toBe(4);
+    expect(outcome.runError).toBeUndefined();
+    expect(seen).toEqual(items.map((item) => item.chunk));
   });
 
-  test("extracts structuredOutput from a structuredOutput signal", async () => {
-    const outputObject = { title: "test", body: "content" };
-    const adapter = signalAdapter([
-      makeYield({ type: "TEXT_MESSAGE_START" }),
-      makeYield({ type: "TEXT_MESSAGE_CONTENT", delta: "done" }),
-      makeYield({ type: "TEXT_MESSAGE_END" }),
-      makeYield(
-        { type: "CUSTOM", name: "structured-output.complete", value: { object: outputObject } },
-        { _tag: "structuredOutput", value: outputObject },
-      ),
-    ]);
+  test("an error signal surfaces as runError", async () => {
+    const outcome = await runStep(
+      scriptedAdapter([
+        {
+          chunk: { type: "RUN_ERROR", message: "boom" },
+          signal: { kind: "error", message: "boom" },
+        },
+      ]),
+      {
+        threadId: "t",
+        dir: "/tmp",
+        model: "m",
+        prompt: "p",
+        onChunk: () => {},
+      },
+    );
 
-    const handle = buildAgentStepEffect({
-      threadId: "t",
-      dir: "/tmp",
-      model: "m",
-      prompt: "p",
-      adapter,
-      onChunk: () => {},
-    });
-
-    const outcome = await Effect.runPromise(handle.effect);
-    expect(outcome.structuredOutput).toEqual(outputObject);
+    expect(outcome.chunkCount).toBe(1);
+    expect(outcome.runError).toBe("boom");
   });
 
-  test("extracts runError from a runError signal", async () => {
-    const adapter = signalAdapter([
-      makeYield(
-        { type: "RUN_ERROR", message: "something broke" },
-        { _tag: "runError", value: "something broke" },
-      ),
-    ]);
+  test("the runtime records signals, it does not interpret vendor chunk names", async () => {
+    // A raw CUSTOM chunk with no signal attached is opaque bookkeeping now.
+    const outcome = await runStep(
+      scriptedAdapter([
+        { chunk: { type: "CUSTOM", name: "vendor.session", value: { sessionId: "ses_raw" } } },
+      ]),
+      {
+        threadId: "t",
+        dir: "/tmp",
+        model: "m",
+        prompt: "p",
+        onChunk: () => {},
+      },
+    );
 
-    const handle = buildAgentStepEffect({
-      threadId: "t",
-      dir: "/tmp",
-      model: "m",
-      prompt: "p",
-      adapter,
-      onChunk: () => {},
-    });
-
-    const outcome = await Effect.runPromise(handle.effect);
-    expect(outcome.runError).toBe("something broke");
-  });
-
-  test("onChunk receives the raw opaque chunk, not the signal wrapper", async () => {
-    const rawChunk = { type: "TEXT_MESSAGE_START" };
-    const adapter = signalAdapter([makeYield(rawChunk)]);
-
-    const chunks: Array<unknown> = [];
-    const handle = buildAgentStepEffect({
-      threadId: "t",
-      dir: "/tmp",
-      model: "m",
-      prompt: "p",
-      adapter,
-      onChunk: (chunk) => chunks.push(chunk),
-    });
-
-    await Effect.runPromise(handle.effect);
-    expect(chunks).toHaveLength(1);
-    expect(chunks[0]).toBe(rawChunk);
-  });
-
-  test("yields without signals pass through without error", async () => {
-    const adapter = signalAdapter([
-      makeYield({ type: "TEXT_MESSAGE_START" }),
-      makeYield({ type: "TEXT_MESSAGE_CONTENT", delta: "no signals here" }),
-      makeYield({ type: "TEXT_MESSAGE_END" }),
-    ]);
-
-    const handle = buildAgentStepEffect({
-      threadId: "t",
-      dir: "/tmp",
-      model: "m",
-      prompt: "p",
-      adapter,
-      onChunk: () => {},
-    });
-
-    const outcome = await Effect.runPromise(handle.effect);
-    expect(outcome.chunkCount).toBe(3);
-    expect(outcome.finalText).toBe("no signals here");
     expect(outcome.sessionId).toBeUndefined();
     expect(outcome.structuredOutput).toBeUndefined();
-    expect(outcome.runError).toBeUndefined();
+  });
+
+  test("the service is resolved from context, not passed as an option", async () => {
+    const fake = scriptedAdapter([{ chunk: { type: "RUN_FINISHED" } }]);
+    const program = Effect.gen(function* () {
+      const handle = yield* buildAgentStepEffect({
+        threadId: "t",
+        dir: "/tmp",
+        model: "m",
+        prompt: "p",
+        onChunk: () => {},
+      });
+      return yield* handle.effect;
+    });
+    const runtime = ManagedRuntime.make(AgentRuntimeLayer(fake));
+    const outcome = await runtime.runPromise(program);
+    expect(outcome.chunkCount).toBe(1);
+    await runtime.dispose();
   });
 });
