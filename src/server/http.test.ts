@@ -12,6 +12,10 @@ import { defineConfig, loadFactoryConfig } from "../config";
 import registryWorkflow from "../../test/fixtures/registry-workflow";
 import registryScratchWorkflow from "../../test/fixtures/registry-scratch-workflow";
 import { serve } from "./http";
+import { createRunRegistry } from "./runs";
+import { createPubSub } from "./pubsub";
+import { createDedupeRegistry } from "../lib/dedupe";
+import { createRefreshGates } from "../lib/workspace";
 
 const ECHO_WORKFLOW = `${import.meta.dir}/../../test/fixtures/echo-workflow.ts`;
 const QUIET_GAP_WORKFLOW = `${import.meta.dir}/../../test/fixtures/quiet-gap-workflow.ts`;
@@ -90,8 +94,16 @@ describe("GET /api/workflows (D30)", () => {
     const dir = mkdtempSync(join(tmpdir(), "factory-workflows-test-"));
     const db = openStore(join(dir, "factory.db"));
     const adapter = createSlowFakeAdapter([], 1);
+    const runtime = makeAgentRuntime(adapter);
     const config = await loadFactoryConfig(FIXTURE_CONFIG);
-    const server = serve({ db, runtime: makeAgentRuntime(adapter), port: 0, config });
+    const services = createTestServices();
+    const server = serve({
+      runtime,
+      services,
+      db,
+      port: 0,
+      config,
+    });
     const base = `http://localhost:${server.port}`;
 
     try {
@@ -116,7 +128,14 @@ describe("GET /api/workflows (D30)", () => {
     const dir = mkdtempSync(join(tmpdir(), "factory-workflows-empty-test-"));
     const db = openStore(join(dir, "factory.db"));
     const adapter = createSlowFakeAdapter([], 1);
-    const server = serve({ db, runtime: makeAgentRuntime(adapter), port: 0 });
+    const runtime = makeAgentRuntime(adapter);
+    const services = createTestServices();
+    const server = serve({
+      runtime,
+      services,
+      db,
+      port: 0,
+    });
     const base = `http://localhost:${server.port}`;
 
     try {
@@ -136,7 +155,14 @@ describe("GET /api/workflows (D30)", () => {
     const dir = mkdtempSync(join(tmpdir(), "factory-workflows-empty-test-"));
     const db = openStore(join(dir, "factory.db"));
     const adapter = createSlowFakeAdapter([], 1);
-    const server = serve({ db, runtime: makeAgentRuntime(adapter), port: 0 });
+    const runtime = makeAgentRuntime(adapter);
+    const services = createTestServices();
+    const server = serve({
+      runtime,
+      services,
+      db,
+      port: 0,
+    });
     const base = `http://localhost:${server.port}`;
 
     try {
@@ -156,7 +182,14 @@ describe("phase 4 SPA serving", () => {
     const dir = mkdtempSync(join(tmpdir(), "factory-spa-test-"));
     const db = openStore(join(dir, "factory.db"));
     const adapter = createSlowFakeAdapter([{ type: "TEXT_MESSAGE_START" }], 1);
-    const server = serve({ db, runtime: makeAgentRuntime(adapter), port: 0 });
+    const services = createTestServices();
+    const runtime = makeAgentRuntime(adapter);
+    const server = serve({
+      runtime,
+      services,
+      db,
+      port: 0,
+    });
     const base = `http://localhost:${server.port}`;
 
     try {
@@ -239,7 +272,15 @@ describe("SSE keepalive", () => {
     const dir = mkdtempSync(join(tmpdir(), "factory-sse-keepalive-test-"));
     const db = openStore(join(dir, "factory.db"));
     const adapter = createSlowFakeAdapter([], 1);
-    const server = serve({ db, runtime: makeAgentRuntime(adapter), port: 0, sseKeepaliveMs: 25 });
+    const runtime = makeAgentRuntime(adapter);
+    const services = createTestServices();
+    const server = serve({
+      runtime,
+      services,
+      db,
+      port: 0,
+      sseKeepaliveMs: 25,
+    });
     const base = `http://localhost:${server.port}`;
 
     try {
@@ -275,7 +316,15 @@ describe("SSE keepalive", () => {
     const dir = mkdtempSync(join(tmpdir(), "factory-sse-keepalive-stop-test-"));
     const db = openStore(join(dir, "factory.db"));
     const adapter = createSlowFakeAdapter([], 1);
-    const server = serve({ db, runtime: makeAgentRuntime(adapter), port: 0, sseKeepaliveMs: 10 });
+    const runtime = makeAgentRuntime(adapter);
+    const services = createTestServices();
+    const server = serve({
+      runtime,
+      services,
+      db,
+      port: 0,
+      sseKeepaliveMs: 10,
+    });
     const base = `http://localhost:${server.port}`;
 
     try {
@@ -315,7 +364,14 @@ describe("phase 3 HTTP API + SSE", () => {
       ],
       1,
     );
-    const server = serve({ db, runtime: makeAgentRuntime(adapter), port: 0 });
+    const services = createTestServices();
+    const runtime = makeAgentRuntime(adapter);
+    const server = serve({
+      runtime,
+      services,
+      db,
+      port: 0,
+    });
     const base = `http://localhost:${server.port}`;
 
     try {
@@ -364,7 +420,14 @@ describe("phase 3 HTTP API + SSE", () => {
       ],
       500,
     );
-    const server = serve({ db, runtime: makeAgentRuntime(adapter), port: 0 });
+    const services = createTestServices();
+    const runtime = makeAgentRuntime(adapter);
+    const server = serve({
+      runtime,
+      services,
+      db,
+      port: 0,
+    });
     const base = `http://localhost:${server.port}`;
 
     try {
@@ -400,7 +463,14 @@ describe("phase 3 HTTP API + SSE", () => {
       ],
       60,
     );
-    const server = serve({ db, runtime: makeAgentRuntime(adapter), port: 0 });
+    const services = createTestServices();
+    const runtime = makeAgentRuntime(adapter);
+    const server = serve({
+      runtime,
+      services,
+      db,
+      port: 0,
+    });
     const base = `http://localhost:${server.port}`;
 
     try {
@@ -439,7 +509,14 @@ describe("phase 3 HTTP API + SSE", () => {
       ],
       400,
     );
-    const server = serve({ db, runtime: makeAgentRuntime(adapter), port: 0 });
+    const services = createTestServices();
+    const runtime = makeAgentRuntime(adapter);
+    const server = serve({
+      runtime,
+      services,
+      db,
+      port: 0,
+    });
     const base = `http://localhost:${server.port}`;
 
     try {
@@ -477,7 +554,14 @@ describe("phase 3 HTTP API + SSE", () => {
       ],
       1,
     );
-    const server = serve({ db, runtime: makeAgentRuntime(adapter), port: 0 });
+    const services = createTestServices();
+    const runtime = makeAgentRuntime(adapter);
+    const server = serve({
+      runtime,
+      services,
+      db,
+      port: 0,
+    });
     const base = `http://localhost:${server.port}`;
 
     try {
@@ -523,7 +607,15 @@ describe("POST /api/runs {workflowId, input} (D31)", () => {
       1,
     );
     const config = await loadFactoryConfig(FIXTURE_CONFIG);
-    const server = serve({ db, runtime: makeAgentRuntime(adapter), port: 0, config });
+    const services = createTestServices();
+    const runtime = makeAgentRuntime(adapter);
+    const server = serve({
+      runtime,
+      services,
+      db,
+      port: 0,
+      config,
+    });
     const base = `http://localhost:${server.port}`;
 
     try {
@@ -548,8 +640,16 @@ describe("POST /api/runs {workflowId, input} (D31)", () => {
     const dir = mkdtempSync(join(tmpdir(), "factory-d31-unknown-"));
     const db = openStore(join(dir, "factory.db"));
     const adapter = createSlowFakeAdapter([], 1);
+    const runtime = makeAgentRuntime(adapter);
     const config = await loadFactoryConfig(FIXTURE_CONFIG);
-    const server = serve({ db, runtime: makeAgentRuntime(adapter), port: 0, config });
+    const services = createTestServices();
+    const server = serve({
+      runtime,
+      services,
+      db,
+      port: 0,
+      config,
+    });
     const base = `http://localhost:${server.port}`;
 
     try {
@@ -595,7 +695,15 @@ describe("POST /api/runs {workflowId, input} (D31)", () => {
       maxConcurrentRuns: 1,
       retainedWorkspaces: 10,
     });
-    const server = serve({ db, runtime: makeAgentRuntime(adapter), port: 0, config });
+    const services = createTestServices();
+    const runtime = makeAgentRuntime(adapter);
+    const server = serve({
+      runtime,
+      services,
+      db,
+      port: 0,
+      config,
+    });
     const base = `http://localhost:${server.port}`;
 
     try {
@@ -658,7 +766,15 @@ describe("POST /api/runs {workflowId, input} (D31)", () => {
       maxConcurrentRuns: 3,
       retainedWorkspaces: 10,
     });
-    const server = serve({ db, runtime: makeAgentRuntime(adapter), port: 0, config });
+    const services = createTestServices();
+    const runtime = makeAgentRuntime(adapter);
+    const server = serve({
+      runtime,
+      services,
+      db,
+      port: 0,
+      config,
+    });
     const base = `http://localhost:${server.port}`;
 
     try {
@@ -725,7 +841,15 @@ describe("a scratch workflow through POST /api/runs (issue #13)", () => {
       maxConcurrentRuns: 3,
       retainedWorkspaces: 10,
     });
-    const server = serve({ db, runtime: makeAgentRuntime(adapter), port: 0, config });
+    const services = createTestServices();
+    const runtime = makeAgentRuntime(adapter);
+    const server = serve({
+      runtime,
+      services,
+      db,
+      port: 0,
+      config,
+    });
     const base = `http://localhost:${server.port}`;
 
     try {
@@ -796,9 +920,12 @@ describe("ctx.dispatch through POST /api/runs (issue #14)", () => {
       },
     });
 
+    const services = createTestServices();
+    const runtime = makeAgentRuntime(adapter);
     const server = serve({
+      runtime,
+      services,
       db,
-      runtime: makeAgentRuntime(adapter),
       port: 0,
       config: defineConfig({
         repo: {
@@ -894,9 +1021,12 @@ describe("GET /api/schedules (issue #17)", () => {
       workspace: { kind: "scratch" },
       run: async () => ({}),
     });
+    const services = createTestServices();
+    const runtime = makeAgentRuntime(createSlowFakeAdapter([], 1));
     const server = serve({
+      runtime,
+      services,
       db,
-      runtime: makeAgentRuntime(createSlowFakeAdapter([], 1)),
       port: 0,
       config: schedulesConfig(root, workflow),
     });
@@ -963,9 +1093,12 @@ describe("GET /api/schedules (issue #17)", () => {
         },
       ],
     });
+    const services = createTestServices();
+    const runtime = makeAgentRuntime(createSlowFakeAdapter([], 1));
     const server = serve({
+      runtime,
+      services,
       db,
-      runtime: makeAgentRuntime(createSlowFakeAdapter([], 1)),
       port: 0,
       config,
     });
@@ -989,7 +1122,14 @@ describe("GET /api/schedules (issue #17)", () => {
   test("serves an empty list on a legacy no-config server", async () => {
     const root = mkdtempSync(join(tmpdir(), "factory-schedules-empty-test-"));
     const db = openStore(join(root, "factory.db"));
-    const server = serve({ db, runtime: makeAgentRuntime(createSlowFakeAdapter([], 1)), port: 0 });
+    const services = createTestServices();
+    const runtime = makeAgentRuntime(createSlowFakeAdapter([], 1));
+    const server = serve({
+      runtime,
+      services,
+      db,
+      port: 0,
+    });
     const base = `http://localhost:${server.port}`;
 
     try {
@@ -1031,9 +1171,12 @@ describe("GET /api/schedules (issue #17)", () => {
         },
       ],
     });
+    const services = createTestServices();
+    const runtime = makeAgentRuntime(createSlowFakeAdapter([], 1));
     const server = serve({
+      runtime,
+      services,
       db,
-      runtime: makeAgentRuntime(createSlowFakeAdapter([], 1)),
       port: 0,
       config,
     });
@@ -1132,9 +1275,12 @@ describe("POST /api/schedules/:id/run (issue #17)", () => {
         },
       ],
     });
+    const services = createTestServices();
+    const runtime = makeAgentRuntime(createSlowFakeAdapter([], 1));
     const server = serve({
+      runtime,
+      services,
       db,
-      runtime: makeAgentRuntime(createSlowFakeAdapter([], 1)),
       port: 0,
       config,
     });
@@ -1186,9 +1332,12 @@ describe("POST /api/schedules/:id/run (issue #17)", () => {
         { id: "nightly-run", workflow: workflow.id, input: {}, cron: "0 3 * * *", timezone: "UTC" },
       ],
     });
+    const services = createTestServices();
+    const runtime = makeAgentRuntime(createSlowFakeAdapter([], 1));
     const server = serve({
+      runtime,
+      services,
       db,
-      runtime: makeAgentRuntime(createSlowFakeAdapter([], 1)),
       port: 0,
       config,
     });
@@ -1229,9 +1378,12 @@ describe("POST /api/schedules/:id/run (issue #17)", () => {
         { id: "slow-skip", workflow: workflow.id, input: {}, cron: "0 3 * * *", timezone: "UTC" },
       ],
     });
+    const services = createTestServices();
+    const runtime = makeAgentRuntime(createSlowFakeAdapter([], 1));
     const server = serve({
+      runtime,
+      services,
       db,
-      runtime: makeAgentRuntime(createSlowFakeAdapter([], 1)),
       port: 0,
       config,
     });
@@ -1294,9 +1446,12 @@ describe("POST /api/schedules/:id/run (issue #17)", () => {
         },
       ],
     });
+    const services = createTestServices();
+    const runtime = makeAgentRuntime(createSlowFakeAdapter([], 1));
     const server = serve({
+      runtime,
+      services,
       db,
-      runtime: makeAgentRuntime(createSlowFakeAdapter([], 1)),
       port: 0,
       config,
     });
@@ -1321,6 +1476,15 @@ describe("POST /api/schedules/:id/run (issue #17)", () => {
     }
   });
 });
+
+function createTestServices() {
+  return {
+    registry: createRunRegistry(),
+    pubsub: createPubSub(),
+    dedupeRegistry: createDedupeRegistry(),
+    refreshGates: createRefreshGates(),
+  };
+}
 
 /**
  * #37 / #24: the legacy `{dir, clone}` POST resets a clone on `dir`, so the
