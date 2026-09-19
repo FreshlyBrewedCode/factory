@@ -399,14 +399,19 @@ export function createHandler(options: ServerOptions): (req: Request) => Promise
           runId = await startTrackedRun(options.db, workflow, startOptions);
         } catch (err) {
           if (err instanceof ConcurrencyLimitError) {
-            return json({ error: err.message }, { status: 409 });
-          }
-          // Issue #15: the key collision surfaces as a conflict that names both
-          // the key and the run holding it, so a client can see exactly whom it
-          // raced with.
-          if (err instanceof DedupeKeyError) {
             return json(
-              { error: err.message, dedupeKey: err.key, holderRunId: err.holderRunId },
+              { error: `concurrency limit reached (max ${err.maxConcurrentRuns} concurrent runs)` },
+              { status: 409 },
+            );
+          }
+          if (err instanceof Error && (err as { _tag?: string })._tag === "DedupeKeyError") {
+            const dedupeErr = err as DedupeKeyError;
+            return json(
+              {
+                error: `dedupe key held: "${dedupeErr.key}" is currently held by run ${dedupeErr.holderRunId}`,
+                dedupeKey: dedupeErr.key,
+                holderRunId: dedupeErr.holderRunId,
+              },
               { status: 409 },
             );
           }
@@ -466,11 +471,19 @@ export function createHandler(options: ServerOptions): (req: Request) => Promise
         runId = await startTrackedRun(options.db, workflow, startOptions);
       } catch (err) {
         if (err instanceof ConcurrencyLimitError) {
-          return json({ error: err.message }, { status: 409 });
-        }
-        if (err instanceof DedupeKeyError) {
           return json(
-            { error: err.message, dedupeKey: err.key, holderRunId: err.holderRunId },
+            { error: `concurrency limit reached (max ${err.maxConcurrentRuns} concurrent runs)` },
+            { status: 409 },
+          );
+        }
+        if (err instanceof Error && (err as { _tag?: string })._tag === "DedupeKeyError") {
+          const dedupeErr = err as DedupeKeyError;
+          return json(
+            {
+              error: `dedupe key held: "${dedupeErr.key}" is currently held by run ${dedupeErr.holderRunId}`,
+              dedupeKey: dedupeErr.key,
+              holderRunId: dedupeErr.holderRunId,
+            },
             { status: 409 },
           );
         }
@@ -567,11 +580,19 @@ export function createHandler(options: ServerOptions): (req: Request) => Promise
         });
       } catch (err) {
         if (err instanceof ConcurrencyLimitError) {
-          return json({ error: err.message }, { status: 409 });
-        }
-        if (err instanceof DedupeKeyError) {
           return json(
-            { error: err.message, dedupeKey: err.key, holderRunId: err.holderRunId },
+            { error: `concurrency limit reached (max ${err.maxConcurrentRuns} concurrent runs)` },
+            { status: 409 },
+          );
+        }
+        if (err instanceof Error && (err as { _tag?: string })._tag === "DedupeKeyError") {
+          const dedupeErr = err as DedupeKeyError;
+          return json(
+            {
+              error: `dedupe key held: "${dedupeErr.key}" is currently held by run ${dedupeErr.holderRunId}`,
+              dedupeKey: dedupeErr.key,
+              holderRunId: dedupeErr.holderRunId,
+            },
             { status: 409 },
           );
         }
