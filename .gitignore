@@ -54,3 +54,7 @@ playwright-report/
 **/factory.db-wal
 .factory/workspaces/
 .factory/runs/
+
+# tanstack sandbox projected state
+.tanstack-projected-*
+data/
