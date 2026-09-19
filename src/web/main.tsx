@@ -18,3 +18,15 @@ createRoot(container).render(
     </QueryClientProvider>
   </StrictMode>,
 );
+
+/**
+ * Agentation's click-to-annotate overlay, dev-only. Dynamically imported so
+ * it never lands in the initial bundle — `factory serve`'s Bun-bundled
+ * production build has no `FACTORY_AGENTATION` set and never fetches it.
+ */
+if (["1", "true"].includes(import.meta.env.FACTORY_AGENTATION ?? "")) {
+  void import("agentation").then(({ Agentation }) => {
+    const mount = document.body.appendChild(document.createElement("div"));
+    createRoot(mount).render(<Agentation />);
+  });
+}
