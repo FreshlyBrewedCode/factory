@@ -207,12 +207,9 @@ export default defineWorkflow("ready-sweep", {
         await ctx.log("dispatched", { issueNumber: item.issueNumber, childRunId });
         dispatches.push({ issueNumber: item.issueNumber, childRunId });
       } catch (err) {
-        // A collision is never a silent no-op (the epic's dispatch decision):
-        // the runtime records `DispatchCollision` on this run's log either
-        // way; recorded here too, the remaining items still dispatch, and the
-        // run fails with the summary below instead of quietly dropping.
-        if (err instanceof DedupeKeyError) {
-          collisions.push({ key: err.key, holderRunId: err.holderRunId });
+        if (err instanceof Error && (err as { _tag?: string })._tag === "DedupeKeyError") {
+          const dedupeErr = err as DedupeKeyError;
+          collisions.push({ key: dedupeErr.key, holderRunId: dedupeErr.holderRunId });
           continue;
         }
         throw err;
