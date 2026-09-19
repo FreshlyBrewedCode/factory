@@ -55,6 +55,47 @@ describe("deriveSteps", () => {
     expect(step.sessionId).toBe("ses-1");
   });
 
+  test("an agent step picks up totalTokens from a harness RUN_FINISHED chunk's usage", () => {
+    const events: ReadonlyArray<RunEvent> = [
+      STARTED,
+      event(1, {
+        _tag: "AgentStepStarted",
+        stepId: "step-0",
+        name: "implement",
+        model: "m",
+        prompt: "do it",
+        structured: false,
+      }),
+      event(2, {
+        _tag: "AgentChunk",
+        stepId: "step-0",
+        chunkType: "TEXT_MESSAGE_START",
+        chunk: {},
+      }),
+      event(3, {
+        _tag: "AgentChunk",
+        stepId: "step-0",
+        chunkType: "RUN_FINISHED",
+        chunk: { usage: { promptTokens: 2037, completionTokens: 1611, totalTokens: 3648 } },
+      }),
+      event(4, {
+        _tag: "AgentStepFinished",
+        stepId: "step-0",
+        name: "implement",
+        outcome: "completed",
+        chunkCount: 2,
+        durationMs: 42,
+        finalText: "done",
+        sessionId: "ses-1",
+      }),
+    ];
+
+    const steps = deriveSteps(events);
+    const step = steps[0]!;
+    if (step.kind !== "agent") throw new Error("unreachable");
+    expect(step.totalTokens).toBe(3648);
+  });
+
   test("an agent step is running until its finished event arrives", () => {
     const startedOnly = deriveSteps([
       STARTED,

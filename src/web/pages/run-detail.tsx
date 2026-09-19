@@ -12,7 +12,7 @@ import {
   MessageScrollerViewport,
 } from "@/web/components/ui/message-scroller";
 import { useRun, useRunEvents, useTickingNow } from "@/web/hooks";
-import { formatAgo, formatClock, formatDuration } from "@/web/lib/format";
+import { formatAgo, formatClock, formatDuration, formatTokenCount } from "@/web/lib/format";
 import {
   deriveRunMeta,
   deriveSteps,
@@ -220,6 +220,13 @@ function stepKindLabel(step: StepView): string {
   return step.kind;
 }
 
+function stepMeta(step: StepView): string {
+  if (step.kind === "agent" && step.totalTokens !== undefined) {
+    return `${step.descriptor} · ${formatTokenCount(step.totalTokens)} tok`;
+  }
+  return step.descriptor;
+}
+
 /*
  * The step row: six columns >559px pane-width (status | kind | time | name |
  * descriptor | chevron), stacked full-width lines below that. The pane is a
@@ -319,13 +326,13 @@ function StepRow({
           {step.name}
         </span>
         <span
-          title={step.descriptor}
+          title={stepMeta(step)}
           className={cn(
             "max-w-[32ch] min-w-0 overflow-hidden text-right font-mono text-[11px] whitespace-nowrap text-ellipsis text-muted-foreground",
             STEP_AREA_META,
           )}
         >
-          {step.descriptor}
+          {stepMeta(step)}
         </span>
         <span className={STEP_CHEVRON}>›</span>
       </button>

@@ -4,8 +4,10 @@ import type { RunEvent } from "../../events";
  * S3's read-only projection of the typed event spine (`src/events.ts`) for the
  * steps list, run overview and events tab. Pure and framework-free so it is
  * unit-testable in `bun test` without a DOM. It deliberately stops at typed
- * Factory payloads — `AgentChunk` is counted, never decoded. The transcript
- * reducer is S4.
+ * Factory payloads — `AgentChunk` is counted, never decoded, save for peeking
+ * `usage.totalTokens` off the harness's `RUN_FINISHED` chunk so the steps
+ * list can show a token total without a second pass over the transcript. The
+ * transcript reducer is S4.
  */
 
 export type StepStatus =
@@ -40,6 +42,8 @@ export interface AgentStepView extends StepBase {
   readonly finalText: string | undefined;
   readonly output: unknown;
   readonly error: string | undefined;
+  /** `usage.totalTokens` off the harness's `RUN_FINISHED` chunk, once it arrives. */
+  readonly totalTokens: number | undefined;
 }
 
 export interface ExecStepView extends StepBase {
@@ -78,6 +82,20 @@ export type StepView =
   | AssertStepView
   | WriteBackStepView
   | LogStepView;
+
+/**
+ * `usage.totalTokens` off a harness `RUN_FINISHED` chunk (see `AgentChunk`'s
+ * doc comment in `src/events.ts` — not Factory's own `RunFinished`). Every
+ * other chunk type returns `undefined`; the chunk itself stays opaque JSON.
+ */
+function totalTokensFromChunk(chunkType: string, chunk: unknown): number | undefined {
+  if (chunkType !== "RUN_FINISHED") return undefined;
+  if (typeof chunk !== "object" || chunk === null) return undefined;
+  const usage = (chunk as { usage?: unknown }).usage;
+  if (typeof usage !== "object" || usage === null) return undefined;
+  const totalTokens = (usage as { totalTokens?: unknown }).totalTokens;
+  return typeof totalTokens === "number" ? totalTokens : undefined;
+}
 
 function execStatus(
   exitCode: number | undefined,
@@ -142,6 +160,7 @@ export function deriveSteps(
           finalText: undefined,
           output: undefined,
           error: undefined,
+          totalTokens: undefined,
         };
         agentIndex.set(payload.stepId, steps.length);
         steps.push(step);
@@ -151,7 +170,12 @@ export function deriveSteps(
         const index = agentIndex.get(payload.stepId);
         const current = index === undefined ? undefined : steps[index];
         if (index !== undefined && current?.kind === "agent") {
-          steps[index] = { ...current, chunkCount: current.chunkCount + 1 };
+          steps[index] = {
+            ...current,
+            chunkCount: current.chunkCount + 1,
+            totalTokens:
+              totalTokensFromChunk(payload.chunkType, payload.chunk) ?? current.totalTokens,
+          };
         }
         break;
       }
@@ -181,6 +205,7 @@ export function deriveSteps(
           finalText: payload.finalText,
           output: payload.output,
           error: payload.error,
+          totalTokens: base?.totalTokens,
         });
         break;
       }

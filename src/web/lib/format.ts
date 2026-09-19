@@ -49,6 +49,14 @@ export function formatInZone(ts: number, timezone: string): string {
   }).format(new Date(ts));
 }
 
+/** `3648` -> `3.6k`, `10_000` -> `10k`, `1_500_000` -> `1.5m`, `999` -> `999`. */
+export function formatTokenCount(n: number): string {
+  const trimmed = (value: number) => value.toFixed(1).replace(/\.0$/, "");
+  if (n < 1_000) return String(n);
+  if (n < 1_000_000) return `${trimmed(n / 1_000)}k`;
+  return `${trimmed(n / 1_000_000)}m`;
+}
+
 /** Relative label for a future instant — the sibling of `formatAgo`. */
 export function formatAhead(ts: number, now: number = Date.now()): string {
   const seconds = Math.max(0, Math.round((ts - now) / 1000));
