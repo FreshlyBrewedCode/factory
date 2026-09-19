@@ -66,6 +66,13 @@ export interface StartRunOptions {
    */
   readonly workspaceKind?: WorkspaceKind;
   /**
+   * ADR 0012 §3 (#37): when true, the runtime calls `adapter.prepareWorkspace`
+   * before the workflow runs. The caller sets this when it allocated a clone
+   * workspace (daemon's `allocateWorkspace` or legacy `resetClone`). Absent,
+   * no preparation happens (explicit caller-managed dirs, scratch).
+   */
+  readonly prepareWorkspace?: boolean;
+  /**
    * The context service behind `ctx.dispatch` (issue #14). Absent, the ctx
    * member is still present but throws — in-process execution is legacy and
    * cannot start nested runs.
@@ -469,6 +476,10 @@ export function startRun<I, O>(
     });
 
     try {
+      if (options.prepareWorkspace === true) {
+        await options.adapter.prepareWorkspace(options.dir);
+      }
+
       const output = await workflow.run(ctx, decodedInput);
 
       if (workflow.output !== undefined) {

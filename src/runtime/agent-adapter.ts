@@ -46,4 +46,11 @@ export interface AgentAdapterYield {
 
 export interface AgentAdapter {
   stream(options: AgentAdapterOptions): AsyncIterable<AgentAdapterYield>;
+  /**
+   * ADR 0012 §3: the adapter prepares its own workspace before the first
+   * agent step. The opencode adapter writes `opencode.json` with a
+   * never-ask permission policy (#24) and excludes it from staging. Other
+   * adapters may no-op (replay, scratch).
+   */
+  prepareWorkspace(dir: string): Promise<void>;
 }

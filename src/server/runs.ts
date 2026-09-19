@@ -159,6 +159,13 @@ export interface StartTrackedRunOptions {
    * through to the run's model precedence chain.
    */
   readonly agentOverrides?: { readonly model?: string };
+  /**
+   * ADR 0012 §3 (#37): when true, the runtime calls `adapter.prepareWorkspace`
+   * before the workflow runs. The caller sets this when it has done a
+   * `resetClone` on `dir`. Combined with the daemon's own allocation check,
+   * this covers both clone paths.
+   */
+  readonly prepareWorkspace?: boolean;
 }
 
 /**
@@ -366,6 +373,8 @@ export async function startTrackedRun(
       dir,
       ...(options.repo !== undefined ? { repo: options.repo } : {}),
       workspaceKind: kind,
+      prepareWorkspace:
+        options.prepareWorkspace === true || (workspaceAllocated && kind === "clone"),
       ...(dispatch !== undefined ? { dispatch } : {}),
       ...(options.parentRunId !== undefined ? { parentRunId: options.parentRunId } : {}),
       ...(options.dedupeKey !== undefined ? { dedupeKey: options.dedupeKey } : {}),
