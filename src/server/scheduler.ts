@@ -29,12 +29,7 @@ import type { Database } from "bun:sqlite";
 import type { FactoryConfig } from "../config";
 import { dedupeRegistry, type DedupeRegistry } from "../lib/dedupe";
 import type { WorkflowDefinition } from "../workflow";
-import {
-  startTrackedRun,
-  ConcurrencyLimitError,
-  type DispatchEnv,
-  type WorkspaceSpec,
-} from "./runs";
+import { startTrackedRun, type DispatchEnv, type WorkspaceSpec } from "./runs";
 import type { RunRepo } from "../runtime/run";
 import type { AgentAdapter } from "../runtime/agent-adapter";
 
@@ -166,11 +161,18 @@ export async function tickOnce(
       const runId = await deps.fire(schedule);
       results.push({ scheduleId: schedule.id, action: "fired", runId });
     } catch (err) {
-      if (err instanceof ConcurrencyLimitError) {
-        results.push({ scheduleId: schedule.id, action: "skipped-concurrency" });
-      } else {
-        console.error(`[scheduler] schedule "${schedule.id}" fire failed:`, err);
-        results.push({ scheduleId: schedule.id, action: "fire-failed" });
+      const tag = err instanceof Error ? (err as { _tag?: string })._tag : undefined;
+      switch (tag) {
+        case "ConcurrencyLimitError":
+          results.push({ scheduleId: schedule.id, action: "skipped-concurrency" });
+          break;
+        case "DedupeKeyError":
+        case "DispatchCapError":
+        case "RunCancelledSignal":
+        case undefined:
+          console.error(`[scheduler] schedule "${schedule.id}" fire failed:`, err);
+          results.push({ scheduleId: schedule.id, action: "fire-failed" });
+          break;
       }
     }
   }
