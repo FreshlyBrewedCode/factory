@@ -5,6 +5,11 @@
  * §5, D17): the boundary wiring is unchanged, only the chunk source and the
  * bookkeeping surface (now `ctx.agent`'s granular result, ADR 0002 §2) moved.
  *
+ * ADR 0012 §2: the runtime consumes `AgentSignal`s from the adapter and never
+ * string-matches vendor event names. AG-UI standard types (`TEXT_MESSAGE_*`)
+ * are still interpreted here for `finalText` accumulation — these are part
+ * of the open AG-UI protocol, not vendor-specific.
+ *
  * WHY THE EXPLICIT `abortController.abort()` IS NEEDED (0a-1/0a-2 findings):
  * closing the IO stream does not terminate the opencode process; only an
  * explicit abort does, and even that is indirect — `abort()` fires the
@@ -17,7 +22,7 @@
  */
 
 import { Effect, Schema, Stream } from "effect";
-import type { AgentAdapter } from "./agent-adapter";
+import type { AgentAdapter, AgentAdapterYield } from "./agent-adapter";
 
 export class AgentStepChunkError extends Schema.TaggedError<AgentStepChunkError>()(
   "AgentStepChunkError",
@@ -88,28 +93,29 @@ export function buildAgentStepEffect(options: AgentStepEffectOptions): AgentStep
   // Plain closure mutation (not a `Ref`) is fine: this Effect never runs
   // concurrently with itself, and the callback always runs on the same
   // single-threaded event loop turn (mirrors the spike's finding exactly).
-  const processed = Stream.mapEffect(rawStream, (chunk) =>
+  const processed = Stream.mapEffect(rawStream, (yieldItem: AgentAdapterYield) =>
     Effect.sync(() => {
       partial.chunkCount += 1;
-      options.onChunk(chunk);
+      options.onChunk(yieldItem.chunk);
 
-      const record = chunk as {
-        type?: unknown;
-        name?: unknown;
-        value?: unknown;
-        delta?: unknown;
-        message?: unknown;
-      };
-
-      if (record.type === "CUSTOM" && typeof record.name === "string") {
-        if (record.name === "structured-output.complete") {
-          const value = record.value as { object?: unknown } | undefined;
-          structuredOutput = value?.object;
-        } else if (record.name === "opencode.session-id") {
-          const value = record.value as { sessionId?: unknown } | undefined;
-          if (typeof value?.sessionId === "string") partial.sessionId = value.sessionId;
+      if (yieldItem.signal !== undefined) {
+        switch (yieldItem.signal._tag) {
+          case "sessionId":
+            partial.sessionId = yieldItem.signal.value;
+            break;
+          case "structuredOutput":
+            structuredOutput = yieldItem.signal.value;
+            break;
+          case "runError":
+            runError = yieldItem.signal.value;
+            break;
         }
       }
+
+      const record = yieldItem.chunk as {
+        type?: unknown;
+        delta?: unknown;
+      };
 
       if (record.type === "TEXT_MESSAGE_START") {
         currentMessageBuffer = "";
@@ -123,12 +129,9 @@ export function buildAgentStepEffect(options: AgentStepEffectOptions): AgentStep
           partial.finalText = currentMessageBuffer;
         }
         currentMessageBuffer = undefined;
-      } else if (record.type === "RUN_ERROR") {
-        const message = record.message;
-        runError = typeof message === "string" ? message : JSON.stringify(chunk);
       }
 
-      return chunk;
+      return yieldItem;
     }),
   );
 
