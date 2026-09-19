@@ -1,8 +1,13 @@
-import { Effect } from "effect";
+import { Effect, ManagedRuntime } from "effect";
 import { describe, expect, test } from "bun:test";
 import { buildAgentStepEffect } from "../runtime/agent-step";
 import type { AgentAdapter, AgentAdapterOptions, AgentStreamItem } from "../runtime/agent-adapter";
+import { AgentRuntimeLayer } from "../runtime/agent-runtime";
 import { createCorpusReplayAdapter, createSlowFakeAdapter, loadCorpusBlocks } from "./adapter";
+
+function runtimeFor(adapter: AgentAdapter) {
+  return ManagedRuntime.make(AgentRuntimeLayer(adapter));
+}
 
 /** Drains an adapter stream to an array (for-of over async iterables is fine; this keeps types explicit). */
 async function drain(stream: AsyncIterable<AgentStreamItem>): Promise<Array<AgentStreamItem>> {
@@ -56,14 +61,16 @@ describe("createCorpusReplayAdapter", () => {
     const adapter = createCorpusReplayAdapter(FULL_ROUND_TRIP_CORPUS);
     const chunks: Array<unknown> = [];
 
-    const handle = buildAgentStepEffect({
-      threadId: "t",
-      dir: "/tmp",
-      model: "opencode-go/deepseek-v4.1-flash",
-      prompt: "irrelevant, replay ignores it",
-      adapter,
-      onChunk: (chunk) => chunks.push(chunk),
-    });
+    const runtime = runtimeFor(adapter);
+    const handle = await runtime.runPromise(
+      buildAgentStepEffect({
+        threadId: "t",
+        dir: "/tmp",
+        model: "opencode-go/deepseek-v4.1-flash",
+        prompt: "irrelevant, replay ignores it",
+        onChunk: (chunk) => chunks.push(chunk),
+      }),
+    );
 
     const outcome = await Effect.runPromise(handle.effect);
 
@@ -124,14 +131,16 @@ describe("createCorpusReplayAdapter", () => {
       { kind: "structured-output", value: { ok: true } },
     ]);
 
-    const handle = buildAgentStepEffect({
-      threadId: "t",
-      dir: "/tmp",
-      model: "m",
-      prompt: "p",
-      adapter,
-      onChunk: () => {},
-    });
+    const runtime2 = runtimeFor(adapter);
+    const handle = await runtime2.runPromise(
+      buildAgentStepEffect({
+        threadId: "t",
+        dir: "/tmp",
+        model: "m",
+        prompt: "p",
+        onChunk: () => {},
+      }),
+    );
     const outcome = await Effect.runPromise(handle.effect);
     expect(outcome.sessionId).toBe("ses_fresh");
     expect(outcome.structuredOutput).toEqual({ ok: true });
@@ -149,14 +158,16 @@ describe("createSlowFakeAdapter", () => {
       1,
     );
 
-    const handle = buildAgentStepEffect({
-      threadId: "t",
-      dir: "/tmp",
-      model: "m",
-      prompt: "p",
-      adapter,
-      onChunk: () => {},
-    });
+    const runtime3 = runtimeFor(adapter);
+    const handle = await runtime3.runPromise(
+      buildAgentStepEffect({
+        threadId: "t",
+        dir: "/tmp",
+        model: "m",
+        prompt: "p",
+        onChunk: () => {},
+      }),
+    );
 
     const outcome = await Effect.runPromise(handle.effect);
     expect(outcome.chunkCount).toBe(3);
@@ -170,14 +181,16 @@ describe("createSlowFakeAdapter", () => {
       [{ index: 0, signal: { kind: "session", sessionId: "ses_slow" } }],
     );
 
-    const handle = buildAgentStepEffect({
-      threadId: "t",
-      dir: "/tmp",
-      model: "m",
-      prompt: "p",
-      adapter,
-      onChunk: () => {},
-    });
+    const runtime4 = runtimeFor(adapter);
+    const handle = await runtime4.runPromise(
+      buildAgentStepEffect({
+        threadId: "t",
+        dir: "/tmp",
+        model: "m",
+        prompt: "p",
+        onChunk: () => {},
+      }),
+    );
 
     const outcome = await Effect.runPromise(handle.effect);
     expect(outcome.chunkCount).toBe(2);

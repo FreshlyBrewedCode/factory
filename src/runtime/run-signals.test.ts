@@ -11,6 +11,7 @@ import { describe, expect, test } from "bun:test";
 import type { RunEvent } from "../events";
 import { defineWorkflow, Schema } from "../workflow";
 import { createSlowFakeAdapter } from "../replay/adapter";
+import { makeAgentRuntime } from "./agent-runtime";
 import { startRun } from "./run";
 
 const TEXT_CHUNKS = [
@@ -38,11 +39,11 @@ async function runWith(
   signals: Parameters<typeof createSlowFakeAdapter>[2],
 ) {
   const events: Array<RunEvent> = [];
-  const handle = startRun(agentWorkflow(), {
+  const runtime = makeAgentRuntime(createSlowFakeAdapter(chunks, 1, signals));
+  const handle = await startRun(agentWorkflow(), runtime, {
     runId: "run-signals",
     dir: "/tmp",
     input: {},
-    adapter: createSlowFakeAdapter(chunks, 1, signals),
     onEvent: (event) => events.push(event),
   });
   const outcome = await handle.result;
@@ -67,15 +68,15 @@ describe("signals populate AgentStepFinished as before (issue #35)", () => {
 
   test("a structured-output signal is decoded into AgentStepFinished.output (tier 1)", async () => {
     const events: Array<RunEvent> = [];
-    const handle = startRun(agentWorkflow(SIGNAL_SCHEMA), {
+    const runtime = makeAgentRuntime(
+      createSlowFakeAdapter([...TEXT_CHUNKS, { type: "CUSTOM", name: "anything-at-all" }], 1, [
+        { index: 3, signal: { kind: "structured-output", value: { where: "from-signal" } } },
+      ]),
+    );
+    const handle = await startRun(agentWorkflow(SIGNAL_SCHEMA), runtime, {
       runId: "run-signals-output",
       dir: "/tmp",
       input: {},
-      adapter: createSlowFakeAdapter(
-        [...TEXT_CHUNKS, { type: "CUSTOM", name: "anything-at-all" }],
-        1,
-        [{ index: 3, signal: { kind: "structured-output", value: { where: "from-signal" } } }],
-      ),
       onEvent: (event) => events.push(event),
     });
     const outcome = await handle.result;
@@ -86,11 +87,11 @@ describe("signals populate AgentStepFinished as before (issue #35)", () => {
 
   test("without a signal, tier 2 re-parses the final text — the fallback is unchanged", async () => {
     const events: Array<RunEvent> = [];
-    const handle = startRun(agentWorkflow(SIGNAL_SCHEMA), {
+    const runtime = makeAgentRuntime(createSlowFakeAdapter(TEXT_CHUNKS, 1));
+    const handle = await startRun(agentWorkflow(SIGNAL_SCHEMA), runtime, {
       runId: "run-signals-tier2",
       dir: "/tmp",
       input: {},
-      adapter: createSlowFakeAdapter(TEXT_CHUNKS, 1),
       onEvent: (event) => events.push(event),
     });
     const outcome = await handle.result;

@@ -21,7 +21,8 @@
  */
 
 import { Effect, Schema, Stream } from "effect";
-import type { AgentAdapter, AgentStreamItem } from "./agent-adapter";
+import type { AgentStreamItem } from "./agent-adapter";
+import { AgentRuntime } from "./agent-runtime";
 
 export class AgentStepChunkError extends Schema.TaggedError<AgentStepChunkError>()(
   "AgentStepChunkError",
@@ -34,7 +35,6 @@ export interface AgentStepEffectOptions {
   readonly model: string;
   readonly prompt: string;
   readonly outputSchema?: unknown;
-  readonly adapter: AgentAdapter;
   /** Fired synchronously per chunk, before any bookkeeping — the runtime's `AgentChunk` emission point. */
   readonly onChunk: (chunk: unknown) => void;
 }
@@ -66,89 +66,95 @@ export interface AgentStepHandle {
   readonly partial: AgentStepPartial;
 }
 
-export function buildAgentStepEffect(options: AgentStepEffectOptions): AgentStepHandle {
-  const abortController = new AbortController();
+export function buildAgentStepEffect(
+  options: AgentStepEffectOptions,
+): Effect.Effect<AgentStepHandle, never, AgentRuntime> {
+  return Effect.gen(function* () {
+    const { adapter } = yield* AgentRuntime;
 
-  const iterable = options.adapter.stream({
-    threadId: options.threadId,
-    dir: options.dir,
-    model: options.model,
-    prompt: options.prompt,
-    outputSchema: options.outputSchema,
-    abortController,
+    const abortController = new AbortController();
+
+    const iterable = adapter.stream({
+      threadId: options.threadId,
+      dir: options.dir,
+      model: options.model,
+      prompt: options.prompt,
+      outputSchema: options.outputSchema,
+      abortController,
+    });
+
+    const rawStream = Stream.fromAsyncIterable(
+      iterable as AsyncIterable<AgentStreamItem>,
+      (cause) => new AgentStepChunkError({ cause }),
+    );
+
+    const partial: AgentStepPartial = { chunkCount: 0, finalText: "", sessionId: undefined };
+    let currentMessageBuffer: string | undefined;
+    let structuredOutput: unknown;
+    let runError: string | undefined;
+    const startedAt = Date.now();
+
+    // Plain closure mutation (not a `Ref`) is fine: this Effect never runs
+    // concurrently with itself, and the callback always runs on the same
+    // single-threaded event loop turn (mirrors the spike's finding exactly).
+    const processed = Stream.mapEffect(rawStream, (item) =>
+      Effect.sync(() => {
+        const chunk = item.chunk;
+        partial.chunkCount += 1;
+        options.onChunk(chunk);
+
+        const signal = item.signal;
+        if (signal !== undefined) {
+          if (signal.kind === "session") {
+            partial.sessionId = signal.sessionId;
+          } else if (signal.kind === "structured-output") {
+            structuredOutput = signal.value;
+          } else {
+            runError = signal.message;
+          }
+        }
+
+        // TEXT_MESSAGE_* folding stays runtime-side: `finalText` is an AG-UI
+        // concept (ADR 0003 §2), not a vendor event name — it feeds tier 2 of
+        // structured-output resolution and the cancelled-step partial.
+        const record = chunk as { type?: unknown; delta?: unknown };
+        if (record.type === "TEXT_MESSAGE_START") {
+          currentMessageBuffer = "";
+        } else if (record.type === "TEXT_MESSAGE_CONTENT") {
+          const delta = record.delta;
+          if (typeof delta === "string") {
+            currentMessageBuffer = (currentMessageBuffer ?? "") + delta;
+          }
+        } else if (record.type === "TEXT_MESSAGE_END") {
+          if (currentMessageBuffer !== undefined) {
+            partial.finalText = currentMessageBuffer;
+          }
+          currentMessageBuffer = undefined;
+        }
+
+        return chunk;
+      }),
+    );
+
+    const drain = Stream.runDrain(processed);
+
+    // `Effect.onInterrupt`'s finalizer runs ONLY if `drain` is interrupted, not
+    // on normal success/failure — deliberately not `Effect.ensuring`.
+    const guarded = Effect.onInterrupt(drain, () =>
+      Effect.sync(() => {
+        abortController.abort();
+      }),
+    );
+
+    const effect = Effect.map(guarded, () => ({
+      chunkCount: partial.chunkCount,
+      finalText: partial.finalText,
+      structuredOutput,
+      sessionId: partial.sessionId,
+      runError,
+      durationMs: Date.now() - startedAt,
+    }));
+
+    return { effect, abortController, partial };
   });
-
-  const rawStream = Stream.fromAsyncIterable(
-    iterable as AsyncIterable<AgentStreamItem>,
-    (cause) => new AgentStepChunkError({ cause }),
-  );
-
-  const partial: AgentStepPartial = { chunkCount: 0, finalText: "", sessionId: undefined };
-  let currentMessageBuffer: string | undefined;
-  let structuredOutput: unknown;
-  let runError: string | undefined;
-  const startedAt = Date.now();
-
-  // Plain closure mutation (not a `Ref`) is fine: this Effect never runs
-  // concurrently with itself, and the callback always runs on the same
-  // single-threaded event loop turn (mirrors the spike's finding exactly).
-  const processed = Stream.mapEffect(rawStream, (item) =>
-    Effect.sync(() => {
-      const chunk = item.chunk;
-      partial.chunkCount += 1;
-      options.onChunk(chunk);
-
-      const signal = item.signal;
-      if (signal !== undefined) {
-        if (signal.kind === "session") {
-          partial.sessionId = signal.sessionId;
-        } else if (signal.kind === "structured-output") {
-          structuredOutput = signal.value;
-        } else {
-          runError = signal.message;
-        }
-      }
-
-      // TEXT_MESSAGE_* folding stays runtime-side: `finalText` is an AG-UI
-      // concept (ADR 0003 §2), not a vendor event name — it feeds tier 2 of
-      // structured-output resolution and the cancelled-step partial.
-      const record = chunk as { type?: unknown; delta?: unknown };
-      if (record.type === "TEXT_MESSAGE_START") {
-        currentMessageBuffer = "";
-      } else if (record.type === "TEXT_MESSAGE_CONTENT") {
-        const delta = record.delta;
-        if (typeof delta === "string") {
-          currentMessageBuffer = (currentMessageBuffer ?? "") + delta;
-        }
-      } else if (record.type === "TEXT_MESSAGE_END") {
-        if (currentMessageBuffer !== undefined) {
-          partial.finalText = currentMessageBuffer;
-        }
-        currentMessageBuffer = undefined;
-      }
-
-      return chunk;
-    }),
-  );
-
-  const drain = Stream.runDrain(processed);
-
-  // `Effect.onInterrupt`'s finalizer runs ONLY if `drain` is interrupted, not
-  // on normal success/failure — deliberately not `Effect.ensuring`.
-  const guarded = Effect.onInterrupt(drain, () =>
-    Effect.sync(() => {
-      abortController.abort();
-    }),
-  );
-
-  const effect = Effect.map(guarded, () => ({
-    chunkCount: partial.chunkCount,
-    finalText: partial.finalText,
-    structuredOutput,
-    sessionId: partial.sessionId,
-    runError,
-    durationMs: Date.now() - startedAt,
-  }));
-
-  return { effect, abortController, partial };
 }
