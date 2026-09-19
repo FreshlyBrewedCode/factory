@@ -16,7 +16,16 @@ describe("formatDuration", () => {
     expect(formatDuration(59_999)).toBe("1m 00s");
     expect(formatDuration(60_000)).toBe("1m 00s");
     expect(formatDuration(95_000)).toBe("1m 35s");
-    expect(formatDuration(3_600_000)).toBe("60m 00s");
+  });
+
+  test("just under an hour stays m/padded-s, not h/m/s", () => {
+    expect(formatDuration(59 * 60 * 1000)).toBe("59m 00s");
+  });
+
+  test("an hour or more adds an h component, minutes and seconds padded", () => {
+    expect(formatDuration(3_600_000)).toBe("1h 00m 00s");
+    expect(formatDuration(3_723_000)).toBe("1h 02m 03s");
+    expect(formatDuration(7_325_000)).toBe("2h 02m 05s");
   });
 
   test("unknown duration is an em dash", () => {

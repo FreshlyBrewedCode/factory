@@ -19,22 +19,33 @@ const inputClass =
 export function NewRunDialog({
   open,
   onClose,
+  initial,
 }: {
   readonly open: boolean;
   readonly onClose: () => void;
+  /** Pre-seeds the dialog on a workflow with its raw JSON input, e.g. for "run again". */
+  readonly initial?: { readonly workflowId: string; readonly input: unknown };
 }) {
   if (!open) return null;
-  return <NewRunDialogBody onClose={onClose} />;
+  return <NewRunDialogBody onClose={onClose} initial={initial} />;
 }
 
-function NewRunDialogBody({ onClose }: { readonly onClose: () => void }) {
+function NewRunDialogBody({
+  onClose,
+  initial,
+}: {
+  readonly onClose: () => void;
+  readonly initial?: { readonly workflowId: string; readonly input: unknown };
+}) {
   const navigate = useNavigate();
   const startRunMutation = useStartRun();
   const workflows = useWorkflows();
-  const [workflowId, setWorkflowId] = useState<string | undefined>(undefined);
+  const [workflowId, setWorkflowId] = useState<string | undefined>(initial?.workflowId);
   const [values, setValues] = useState<Record<string, string | boolean>>({});
-  const [jsonMode, setJsonMode] = useState(false);
-  const [jsonText, setJsonText] = useState("{}");
+  const [jsonMode, setJsonMode] = useState(initial !== undefined);
+  const [jsonText, setJsonText] = useState(
+    initial !== undefined ? JSON.stringify(initial.input, null, 2) : "{}",
+  );
   const [error, setError] = useState<string | undefined>(undefined);
 
   useEscapeKey(true, onClose);
