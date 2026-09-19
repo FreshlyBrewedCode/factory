@@ -13,6 +13,7 @@
  * start rather than dropped.
  */
 
+import { Schema } from "effect";
 import type { Database } from "bun:sqlite";
 import { rm } from "node:fs/promises";
 import { admitRun } from "./admission";
@@ -41,23 +42,18 @@ export const DEFAULT_MAX_DISPATCH_DEPTH = 5;
 export const DEFAULT_MAX_CHILDREN_PER_RUN = 20;
 
 /** Issue #14: a `ctx.dispatch` rejected by a cap, for the parent to surface. */
-export class DispatchCapError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = "DispatchCapError";
-  }
-}
+export class DispatchCapError extends Schema.TaggedError<DispatchCapError>()("DispatchCapError", {
+  message: Schema.String,
+}) {}
 
 function isReserved(entry: RunHandle<unknown> | ReservedSlot | undefined): boolean {
   return entry !== undefined && !("result" in entry) && "cancelled" in entry;
 }
 
-export class ConcurrencyLimitError extends Error {
-  constructor(maxConcurrentRuns: number) {
-    super(`concurrency limit reached (max ${maxConcurrentRuns} concurrent runs)`);
-    this.name = "ConcurrencyLimitError";
-  }
-}
+export class ConcurrencyLimitError extends Schema.TaggedError<ConcurrencyLimitError>()(
+  "ConcurrencyLimitError",
+  { maxConcurrentRuns: Schema.Number },
+) {}
 
 export function isActive(runId: string): boolean {
   return active.has(runId);
@@ -231,21 +227,22 @@ async function dispatchChildRun(
     env.maxConcurrentRuns !== undefined &&
     !admitRun(env.maxConcurrentRuns, activeRunIds().length)
   ) {
-    throw new ConcurrencyLimitError(env.maxConcurrentRuns);
+    throw new ConcurrencyLimitError({ maxConcurrentRuns: env.maxConcurrentRuns });
   }
 
   const depth = dispatchDepth(db, parentRunId);
   if (depth + 1 > maxDepth) {
-    throw new DispatchCapError(
-      `dispatch depth exceeded: run ${parentRunId} is nested ${depth} levels deep; ` +
+    throw new DispatchCapError({
+      message:
+        `dispatch depth exceeded: run ${parentRunId} is nested ${depth} levels deep; ` +
         `max ${maxDepth} (a workflow that dispatches itself must not fill the daemon)`,
-    );
+    });
   }
   const childCount = countDispatchedChildren(db, parentRunId);
   if (childCount >= maxChildren) {
-    throw new DispatchCapError(
-      `dispatch child cap exceeded: run ${parentRunId} already dispatched ${childCount} children; max ${maxChildren}`,
-    );
+    throw new DispatchCapError({
+      message: `dispatch child cap exceeded: run ${parentRunId} already dispatched ${childCount} children; max ${maxChildren}`,
+    });
   }
 
   // Issue #15: the collision check is synchronous with the child id in hand
@@ -313,7 +310,7 @@ export async function startTrackedRun(
   }
   if (existing === undefined && options.maxConcurrentRuns !== undefined) {
     if (!admitRun(options.maxConcurrentRuns, active.size)) {
-      throw new ConcurrencyLimitError(options.maxConcurrentRuns);
+      throw new ConcurrencyLimitError({ maxConcurrentRuns: options.maxConcurrentRuns });
     }
     active.set(runId, { cancelled: false });
   }

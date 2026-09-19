@@ -10,7 +10,24 @@ import { describe, expect, test } from "bun:test";
 import type { RunEvent } from "../events";
 import { defineWorkflow, Schema } from "../workflow";
 import { createSlowFakeAdapter } from "../replay/adapter";
-import { startRun } from "./run";
+import { startRun, RunCancelledSignal } from "./run";
+
+describe("RunCancelledSignal as TaggedError (#34)", () => {
+  test("carries the _tag", () => {
+    const signal = new RunCancelledSignal({});
+    expect(signal._tag).toBe("RunCancelledSignal");
+    expect(signal instanceof Error).toBe(true);
+  });
+
+  test("is matchable by _tag from an unknown catch", () => {
+    try {
+      throw new RunCancelledSignal({});
+    } catch (err: unknown) {
+      const e = err as { _tag?: string };
+      expect(e._tag).toBe("RunCancelledSignal");
+    }
+  });
+});
 
 const SLOW_CHUNKS = [
   { type: "TEXT_MESSAGE_START" },

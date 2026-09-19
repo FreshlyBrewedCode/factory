@@ -112,7 +112,7 @@ function harness(
           dispatch: async (_child, rawInput, opts) => {
             const input_ = rawInput as { issueNumber: number };
             const key = opts?.dedupeKey ?? "";
-            if (held.has(key)) throw new DedupeKeyError(key, `run-holder-${key}`);
+            if (held.has(key)) throw new DedupeKeyError({ key, holderRunId: `run-holder-${key}` });
             dispatches.push({ issueNumber: input_.issueNumber, dedupeKey: key });
             return `run-child-issue-${input_.issueNumber}`;
           },

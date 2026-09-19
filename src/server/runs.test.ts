@@ -20,6 +20,7 @@ import { createSlowFakeAdapter } from "../replay/adapter";
 import { defineWorkflow, Schema } from "../workflow";
 import {
   ConcurrencyLimitError,
+  DispatchCapError,
   activeRunIds,
   cancelRegisteredRun,
   getActiveHandle,
@@ -70,6 +71,37 @@ async function waitFor(predicate: () => boolean, timeoutMs = 5_000): Promise<voi
   }
   throw new Error("condition not met within timeout");
 }
+
+describe("domain errors as TaggedError (#34)", () => {
+  test("ConcurrencyLimitError carries _tag and maxConcurrentRuns", () => {
+    const err = new ConcurrencyLimitError({ maxConcurrentRuns: 5 });
+    expect(err._tag).toBe("ConcurrencyLimitError");
+    expect(err.maxConcurrentRuns).toBe(5);
+    expect(err instanceof Error).toBe(true);
+  });
+
+  test("DispatchCapError carries _tag and message", () => {
+    const err = new DispatchCapError({ message: "depth exceeded" });
+    expect(err._tag).toBe("DispatchCapError");
+    expect(err.message).toContain("depth exceeded");
+    expect(err instanceof Error).toBe(true);
+  });
+
+  test("domain errors are matchable by _tag from an unknown catch", () => {
+    const errors = [
+      new ConcurrencyLimitError({ maxConcurrentRuns: 1 }),
+      new DispatchCapError({ message: "cap" }),
+    ];
+    for (const err of errors) {
+      try {
+        throw err;
+      } catch (caught: unknown) {
+        const e = caught as { _tag?: string };
+        expect(typeof e._tag).toBe("string");
+      }
+    }
+  });
+});
 
 describe("startTrackedRun admission (M1: the slot is reserved before any await)", () => {
   test("a second start while the first is still reserving is refused atomically, and the slot frees after", async () => {

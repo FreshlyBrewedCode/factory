@@ -18,17 +18,12 @@
  * see `startTrackedRun` in server/runs.ts.
  */
 
-export class DedupeKeyError extends Error {
-  readonly key: string;
-  readonly holderRunId: string;
+import { Schema } from "effect";
 
-  constructor(key: string, holderRunId: string) {
-    super(`dedupe key held: "${key}" is currently held by run ${holderRunId}`);
-    this.name = "DedupeKeyError";
-    this.key = key;
-    this.holderRunId = holderRunId;
-  }
-}
+export class DedupeKeyError extends Schema.TaggedError<DedupeKeyError>()("DedupeKeyError", {
+  key: Schema.String,
+  holderRunId: Schema.String,
+}) {}
 
 export interface DedupeRegistry {
   /** The run id currently holding `key`, or `undefined`. */
@@ -49,7 +44,8 @@ export function createDedupeRegistry(): DedupeRegistry {
     holderOf: (key) => held.get(key),
     claim(key, runId) {
       const holder = held.get(key);
-      if (holder !== undefined && holder !== runId) throw new DedupeKeyError(key, holder);
+      if (holder !== undefined && holder !== runId)
+        throw new DedupeKeyError({ key, holderRunId: holder });
       held.set(key, runId);
     },
     release(key, runId) {
