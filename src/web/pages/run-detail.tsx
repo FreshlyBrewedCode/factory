@@ -18,6 +18,7 @@ import {
   ResizablePanelGroup,
 } from "@/web/components/ui/resizable";
 import { useRun, useRunEvents, useTickingNow } from "@/web/hooks";
+import { agentStepContextTokens, type AgentStepUsage } from "@/events";
 import { formatAgo, formatClock, formatDuration, formatTokenCount } from "@/web/lib/format";
 import {
   deriveRunMeta,
@@ -226,9 +227,14 @@ function stepKindLabel(step: StepView): string {
   return step.kind;
 }
 
+/**
+ * "ctx", not "tok": this is the size of the context the step's final turn ran
+ * against, not the tokens the step burned — `@tanstack/ai-opencode` reports
+ * only the last of the step's assistant messages. See `AgentStepFinished.usage`.
+ */
 function stepMeta(step: StepView): string {
-  if (step.kind === "agent" && step.totalTokens !== undefined) {
-    return `${step.descriptor} · ${formatTokenCount(step.totalTokens)} tok`;
+  if (step.kind === "agent" && step.usage !== undefined) {
+    return `${step.descriptor} · ${formatTokenCount(agentStepContextTokens(step.usage))} ctx`;
   }
   return step.descriptor;
 }
@@ -595,6 +601,31 @@ function TranscriptPanel({
   );
 }
 
+/**
+ * The final assistant turn's context size, with its components spelled out so
+ * the cached prefix — usually the overwhelming majority — is visible rather
+ * than folded into one opaque figure.
+ *
+ * Labelled "context", not "tokens": this is the last turn of the step, not the
+ * step's cumulative spend, which `@tanstack/ai-opencode` does not report. See
+ * `AgentStepFinished.usage`.
+ */
+function UsageField({ usage }: { readonly usage: AgentStepUsage | undefined }) {
+  if (usage === undefined) return "—";
+  const parts = [
+    `in ${formatTokenCount(usage.inputTokens)}`,
+    `out ${formatTokenCount(usage.outputTokens)}`,
+    `cached ${formatTokenCount(usage.cachedInputTokens)}`,
+    ...(usage.reasoningTokens > 0 ? [`reasoning ${formatTokenCount(usage.reasoningTokens)}`] : []),
+  ];
+  return (
+    <span>
+      {formatTokenCount(agentStepContextTokens(usage))}
+      <span className="ml-2 text-muted-foreground">({parts.join(" · ")})</span>
+    </span>
+  );
+}
+
 function fieldRow(label: string, value: React.ReactNode) {
   return (
     <div key={label} className="flex gap-3 text-xs">
@@ -622,6 +653,7 @@ function StepDetails({
         fieldRow("outcome", <StatusCell status={step.status} />),
         fieldRow("chunks", String(step.chunkCount)),
         fieldRow("duration", formatDuration(step.durationMs)),
+        fieldRow("context", <UsageField usage={step.usage} />),
         fieldRow("sessionId", step.sessionId ?? "—"),
       );
       break;

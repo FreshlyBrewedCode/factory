@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import type { RunEvent, RunEventPayload } from "../../events";
+import { agentStepContextTokens, type RunEvent, type RunEventPayload } from "../../events";
 import { deriveRunMeta, deriveSteps, summarizeEvent } from "./run-events";
 
 function event(seq: number, payload: RunEventPayload): RunEvent {
@@ -55,8 +55,66 @@ describe("deriveSteps", () => {
     expect(step.sessionId).toBe("ses-1");
   });
 
-  test("an agent step picks up totalTokens from a harness RUN_FINISHED chunk's usage", () => {
+  test("an agent step takes usage from AgentStepFinished, not from the raw chunk", () => {
+    // The numbers are step-0 of run-69780571 verbatim. The RUN_FINISHED chunk
+    // is present and carries the adapter's under-reported `totalTokens: 3648`;
+    // the projection must ignore it and read the typed payload, whose context
+    // total is 36,288 — what opencode itself reports for the session.
     const events: ReadonlyArray<RunEvent> = [
+      STARTED,
+      event(1, {
+        _tag: "AgentStepStarted",
+        stepId: "step-0",
+        name: "find-next-issue",
+        model: "m",
+        prompt: "do it",
+        structured: false,
+      }),
+      event(2, {
+        _tag: "AgentChunk",
+        stepId: "step-0",
+        chunkType: "RUN_FINISHED",
+        chunk: {
+          usage: {
+            promptTokens: 2037,
+            completionTokens: 1611,
+            totalTokens: 3648,
+            promptTokensDetails: { cachedTokens: 32640 },
+          },
+        },
+      }),
+      event(3, {
+        _tag: "AgentStepFinished",
+        stepId: "step-0",
+        name: "find-next-issue",
+        outcome: "completed",
+        chunkCount: 1,
+        durationMs: 42,
+        finalText: "done",
+        sessionId: "ses-1",
+        usage: {
+          inputTokens: 2037,
+          outputTokens: 1611,
+          cachedInputTokens: 32640,
+          reasoningTokens: 0,
+        },
+      }),
+    ];
+
+    const steps = deriveSteps(events);
+    const step = steps[0]!;
+    if (step.kind !== "agent") throw new Error("unreachable");
+    expect(step.usage).toEqual({
+      inputTokens: 2037,
+      outputTokens: 1611,
+      cachedInputTokens: 32640,
+      reasoningTokens: 0,
+    });
+    expect(agentStepContextTokens(step.usage!)).toBe(36_288);
+  });
+
+  test("an agent step with no usage on its finished event reports none", () => {
+    const steps = deriveSteps([
       STARTED,
       event(1, {
         _tag: "AgentStepStarted",
@@ -67,33 +125,18 @@ describe("deriveSteps", () => {
         structured: false,
       }),
       event(2, {
-        _tag: "AgentChunk",
-        stepId: "step-0",
-        chunkType: "TEXT_MESSAGE_START",
-        chunk: {},
-      }),
-      event(3, {
-        _tag: "AgentChunk",
-        stepId: "step-0",
-        chunkType: "RUN_FINISHED",
-        chunk: { usage: { promptTokens: 2037, completionTokens: 1611, totalTokens: 3648 } },
-      }),
-      event(4, {
         _tag: "AgentStepFinished",
         stepId: "step-0",
         name: "implement",
-        outcome: "completed",
-        chunkCount: 2,
+        outcome: "cancelled",
+        chunkCount: 1,
         durationMs: 42,
-        finalText: "done",
-        sessionId: "ses-1",
+        finalText: "",
       }),
-    ];
-
-    const steps = deriveSteps(events);
+    ]);
     const step = steps[0]!;
     if (step.kind !== "agent") throw new Error("unreachable");
-    expect(step.totalTokens).toBe(3648);
+    expect(step.usage).toBeUndefined();
   });
 
   test("an agent step is running until its finished event arrives", () => {
