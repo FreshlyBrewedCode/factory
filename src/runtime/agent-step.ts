@@ -17,7 +17,32 @@
  */
 
 import { Effect, Schema, Stream } from "effect";
+import type { AgentStepUsage } from "../events";
 import type { AgentAdapter } from "./agent-adapter";
+
+/**
+ * Pull the four token counts out of a `RUN_FINISHED.usage` object.
+ *
+ * `usage.totalTokens` is deliberately ignored: the opencode adapter computes it
+ * as `input + output`, omitting the cached prefix that dominates a coding
+ * session. See `AgentStepFinished.usage` for the full account.
+ */
+function readUsage(value: unknown): AgentStepUsage | undefined {
+  if (typeof value !== "object" || value === null) return undefined;
+  const usage = value as {
+    promptTokens?: unknown;
+    completionTokens?: unknown;
+    promptTokensDetails?: { cachedTokens?: unknown };
+    completionTokensDetails?: { reasoningTokens?: unknown };
+  };
+  const count = (n: unknown) => (typeof n === "number" && Number.isFinite(n) ? n : 0);
+  return {
+    inputTokens: count(usage.promptTokens),
+    outputTokens: count(usage.completionTokens),
+    cachedInputTokens: count(usage.promptTokensDetails?.cachedTokens),
+    reasoningTokens: count(usage.completionTokensDetails?.reasoningTokens),
+  };
+}
 
 export class AgentStepChunkError extends Schema.TaggedError<AgentStepChunkError>()(
   "AgentStepChunkError",
@@ -40,6 +65,7 @@ export interface AgentStepOutcome {
   readonly finalText: string;
   readonly structuredOutput: unknown;
   readonly sessionId: string | undefined;
+  readonly usage: AgentStepUsage | undefined;
   readonly runError: string | undefined;
   readonly durationMs: number;
 }
@@ -53,6 +79,7 @@ export interface AgentStepPartial {
   chunkCount: number;
   finalText: string;
   sessionId: string | undefined;
+  usage: AgentStepUsage | undefined;
 }
 
 export interface AgentStepHandle {
@@ -79,7 +106,12 @@ export function buildAgentStepEffect(options: AgentStepEffectOptions): AgentStep
     (cause) => new AgentStepChunkError({ cause }),
   );
 
-  const partial: AgentStepPartial = { chunkCount: 0, finalText: "", sessionId: undefined };
+  const partial: AgentStepPartial = {
+    chunkCount: 0,
+    finalText: "",
+    sessionId: undefined,
+    usage: undefined,
+  };
   let currentMessageBuffer: string | undefined;
   let structuredOutput: unknown;
   let runError: string | undefined;
@@ -99,6 +131,7 @@ export function buildAgentStepEffect(options: AgentStepEffectOptions): AgentStep
         value?: unknown;
         delta?: unknown;
         message?: unknown;
+        usage?: unknown;
       };
 
       if (record.type === "CUSTOM" && typeof record.name === "string") {
@@ -123,6 +156,8 @@ export function buildAgentStepEffect(options: AgentStepEffectOptions): AgentStep
           partial.finalText = currentMessageBuffer;
         }
         currentMessageBuffer = undefined;
+      } else if (record.type === "RUN_FINISHED") {
+        partial.usage = readUsage(record.usage);
       } else if (record.type === "RUN_ERROR") {
         const message = record.message;
         runError = typeof message === "string" ? message : JSON.stringify(chunk);
@@ -147,6 +182,7 @@ export function buildAgentStepEffect(options: AgentStepEffectOptions): AgentStep
     finalText: partial.finalText,
     structuredOutput,
     sessionId: partial.sessionId,
+    usage: partial.usage,
     runError,
     durationMs: Date.now() - startedAt,
   }));
