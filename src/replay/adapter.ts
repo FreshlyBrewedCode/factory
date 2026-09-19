@@ -3,6 +3,12 @@
  * adapter a corpus replayer") — the runtime code path is identical whether
  * chunks come from here or from live opencode; only this module swaps.
  *
+ * ADR 0012 §2: adapters yield `AgentAdapterYield` items (opaque chunk +
+ * optional signal). The corpus replay adapter extracts signals from recorded
+ * opencode chunks using `extractOpencodeSignal`, so existing corpus traces
+ * replay without modification. A second adapter could supply signals without
+ * imitating opencode chunk shapes at all.
+ *
  * `createCorpusReplayAdapter` replays a recorded NDJSON trace
  * (`test/corpus/*.ndjson`, one `{step, chunk}` line each). The traces were
  * captured one workflow step at a time, so consecutive lines sharing a
@@ -13,7 +19,12 @@
  */
 
 import { readFileSync } from "node:fs";
-import type { AgentAdapter, AgentAdapterOptions } from "../runtime/agent-adapter";
+import type {
+  AgentAdapter,
+  AgentAdapterOptions,
+  AgentAdapterYield,
+} from "../runtime/agent-adapter";
+import { extractOpencodeSignal } from "../runtime/opencode-adapter";
 
 export interface CorpusStepBlock {
   readonly step: string;
@@ -54,7 +65,7 @@ export function createCorpusReplayAdapter(path: string): AgentAdapter {
   let cursor = 0;
 
   return {
-    stream(_options: AgentAdapterOptions): AsyncIterable<unknown> {
+    stream(_options: AgentAdapterOptions): AsyncIterable<AgentAdapterYield> {
       const index = cursor;
       cursor += 1;
       const block = blocks[index];
@@ -66,7 +77,8 @@ export function createCorpusReplayAdapter(path: string): AgentAdapter {
       return {
         async *[Symbol.asyncIterator]() {
           for (const chunk of block.chunks) {
-            yield chunk;
+            const signal = extractOpencodeSignal(chunk);
+            yield signal !== undefined ? { chunk, signal } : { chunk };
           }
         },
       };
@@ -83,12 +95,12 @@ export function createCorpusReplayAdapter(path: string): AgentAdapter {
  */
 export function createSlowFakeAdapter(chunks: ReadonlyArray<unknown>, delayMs = 20): AgentAdapter {
   return {
-    stream(_options: AgentAdapterOptions): AsyncIterable<unknown> {
+    stream(_options: AgentAdapterOptions): AsyncIterable<AgentAdapterYield> {
       return {
         async *[Symbol.asyncIterator]() {
           for (const chunk of chunks) {
             await new Promise<void>((resolve) => setTimeout(resolve, delayMs));
-            yield chunk;
+            yield { chunk };
           }
         },
       };
