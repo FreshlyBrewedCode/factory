@@ -76,7 +76,11 @@ export interface WorkspaceAllocationInput {
   readonly refreshGates: RefreshGates;
 }
 
-function enqueueRefresh(refreshGates: RefreshGates, mirrorPath: string, task: () => Promise<void>): Promise<void> {
+function enqueueRefresh(
+  refreshGates: RefreshGates,
+  mirrorPath: string,
+  task: () => Promise<void>,
+): Promise<void> {
   const prior = refreshGates.get(mirrorPath) ?? Promise.resolve();
   const next = prior.then(task, task);
   refreshGates.set(mirrorPath, next);
@@ -126,7 +130,9 @@ export async function allocateWorkspace(input: WorkspaceAllocationInput): Promis
 
   const mirrorPath = join(workspaceRoot, MIRROR_DIR);
 
-  await enqueueRefresh(input.refreshGates, mirrorPath, () => refreshMirror(mirrorPath, sshUrl, exec));
+  await enqueueRefresh(input.refreshGates, mirrorPath, () =>
+    refreshMirror(mirrorPath, sshUrl, exec),
+  );
 
   if (existsSync(dir)) {
     await rm(dir, { recursive: true, force: true });

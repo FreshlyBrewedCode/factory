@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, test } from "bun:test";
 import type { ExecResult } from "./exec";
-import { allocateWorkspace, evictOldWorkspaces } from "./workspace";
+import { allocateWorkspace, createRefreshGates, evictOldWorkspaces } from "./workspace";
 import { writeBack } from "./writeback";
 import type { GitIdentity } from "./clone";
 import { hostExec } from "./exec";
@@ -29,6 +29,8 @@ describe("allocateWorkspace (D28)", () => {
     await seedRepo(seed, "one");
 
     const dir = await allocateWorkspace({
+      refreshGates: createRefreshGates(),
+
       runId: "run-a",
       workspaceRoot,
       sshUrl: seed,
@@ -53,6 +55,8 @@ describe("allocateWorkspace (D28)", () => {
     await seedRepo(seed, "one");
 
     await allocateWorkspace({
+      refreshGates: createRefreshGates(),
+
       runId: "run-one",
       workspaceRoot,
       sshUrl: seed,
@@ -65,6 +69,8 @@ describe("allocateWorkspace (D28)", () => {
     await Bun.$`git -C ${seed} -c user.name=seed -c user.email=seed@seed.local commit -q -m second`.quiet();
 
     const dir = await allocateWorkspace({
+      refreshGates: createRefreshGates(),
+
       runId: "run-two",
       workspaceRoot,
       sshUrl: seed,
@@ -83,6 +89,8 @@ describe("allocateWorkspace (D28)", () => {
 
     for (const runId of ["run-1", "run-2", "run-3"]) {
       await allocateWorkspace({
+        refreshGates: createRefreshGates(),
+
         runId,
         workspaceRoot,
         sshUrl: seed,
@@ -103,6 +111,7 @@ describe("allocateWorkspace (D28)", () => {
     const seed = join(root, "seed-repo");
     await seedRepo(seed, "one");
 
+    const sharedGates = createRefreshGates();
     const [a, b] = await Promise.all([
       allocateWorkspace({
         runId: "run-x",
@@ -110,6 +119,7 @@ describe("allocateWorkspace (D28)", () => {
         sshUrl: seed,
         identity: IDENTITY,
         retainedWorkspaces: 10,
+        refreshGates: sharedGates,
       }),
       allocateWorkspace({
         runId: "run-y",
@@ -117,6 +127,7 @@ describe("allocateWorkspace (D28)", () => {
         sshUrl: seed,
         identity: IDENTITY,
         retainedWorkspaces: 10,
+        refreshGates: sharedGates,
       }),
     ]);
     expect(existsSync(join(a, "seed.txt"))).toBe(true);
@@ -132,6 +143,8 @@ describe("allocateWorkspace (D28)", () => {
     await seedRepo(seed, "one");
 
     const dir = await allocateWorkspace({
+      refreshGates: createRefreshGates(),
+
       runId: "run-a",
       workspaceRoot,
       sshUrl: seed,
@@ -152,6 +165,8 @@ describe("allocateWorkspace (D28)", () => {
     await seedRepo(seed, "one");
 
     const dir = await allocateWorkspace({
+      refreshGates: createRefreshGates(),
+
       runId: "run-a",
       workspaceRoot,
       sshUrl: seed,
@@ -185,6 +200,8 @@ describe("allocateWorkspace (D28)", () => {
     await Bun.$`git -C ${seed} push -q ${remote} main`.quiet();
 
     const dir = await allocateWorkspace({
+      refreshGates: createRefreshGates(),
+
       runId: "run-a",
       workspaceRoot,
       sshUrl: remote,
@@ -229,6 +246,8 @@ describe("allocateWorkspace (D28)", () => {
     await seedRepo(seed, "one");
 
     await allocateWorkspace({
+      refreshGates: createRefreshGates(),
+
       runId: "run-1",
       workspaceRoot,
       sshUrl: seed,
@@ -237,6 +256,8 @@ describe("allocateWorkspace (D28)", () => {
     });
     await Bun.sleep(5);
     await allocateWorkspace({
+      refreshGates: createRefreshGates(),
+
       runId: "run-2",
       workspaceRoot,
       sshUrl: seed,
@@ -246,6 +267,8 @@ describe("allocateWorkspace (D28)", () => {
     await Bun.sleep(5);
 
     await allocateWorkspace({
+      refreshGates: createRefreshGates(),
+
       runId: "run-3",
       workspaceRoot,
       sshUrl: seed,
@@ -267,6 +290,8 @@ describe("allocateWorkspace (D28)", () => {
     await seedRepo(seed, "one");
 
     await allocateWorkspace({
+      refreshGates: createRefreshGates(),
+
       runId: "run-1",
       workspaceRoot,
       sshUrl: seed,
@@ -275,6 +300,8 @@ describe("allocateWorkspace (D28)", () => {
     });
     await Bun.sleep(5);
     await allocateWorkspace({
+      refreshGates: createRefreshGates(),
+
       runId: "run-2",
       workspaceRoot,
       sshUrl: seed,
@@ -284,6 +311,8 @@ describe("allocateWorkspace (D28)", () => {
     await Bun.sleep(5);
 
     await allocateWorkspace({
+      refreshGates: createRefreshGates(),
+
       runId: "run-3",
       workspaceRoot,
       sshUrl: seed,
@@ -306,6 +335,8 @@ describe("scratch workspaces (issue #13)", () => {
     await seedRepo(seed, "one");
 
     const dir = await allocateWorkspace({
+      refreshGates: createRefreshGates(),
+
       runId: "run-scratch",
       workspaceRoot,
       sshUrl: seed,
@@ -330,6 +361,8 @@ describe("scratch workspaces (issue #13)", () => {
     // Two failed-run scratch leftovers, plus one clone.
     for (const runId of ["scratch-1", "scratch-2"]) {
       await allocateWorkspace({
+        refreshGates: createRefreshGates(),
+
         runId,
         workspaceRoot,
         sshUrl: seed,
@@ -339,6 +372,8 @@ describe("scratch workspaces (issue #13)", () => {
       });
     }
     await allocateWorkspace({
+      refreshGates: createRefreshGates(),
+
       runId: "clone-1",
       workspaceRoot,
       sshUrl: seed,
@@ -393,6 +428,8 @@ describe("host exec injection (issue #13)", () => {
     // `hostExec` directly, `git clone` would really run and contradict it.
     const exit0: ExecResult = { command: "fake", exitCode: 0, stdout: "", stderr: "" };
     const dir = await allocateWorkspace({
+      refreshGates: createRefreshGates(),
+
       runId: "run-fake",
       workspaceRoot: workspaceRoot2,
       sshUrl: seed,

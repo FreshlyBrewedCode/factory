@@ -4,6 +4,11 @@
  * releases it when the run reaches any terminal state. Starting a second run
  * with a key a non-terminal run already holds throws a `DedupeKeyError`
  * naming the key and the holding run.
+ *
+ * #38: tests create their own DaemonServices instead of using module-level
+ * singletons or test seams. The `beforeStart` test seam is gone — tests
+ * reserve registry slots directly to test the reserved-but-not-started
+ * window.
  */
 
 import { mkdtempSync, mkdirSync, rmSync } from "node:fs";
@@ -14,13 +19,14 @@ import { openStore, getRunEvents } from "../persistence/store";
 import { createSlowFakeAdapter } from "../replay/adapter";
 import { defineWorkflow, Schema } from "../workflow";
 import { createDedupeRegistry, DedupeKeyError } from "../lib/dedupe";
-import { activeRunIds, getActiveHandle, isActive, startTrackedRun } from "./runs";
+import { createRunRegistry, startTrackedRun, type DaemonServices } from "./runs";
+import { createPubSub } from "./pubsub";
+import { createRefreshGates } from "../lib/workspace";
 import { serve } from "./http";
 import { defineConfig } from "../config";
 
-/** Fire-and-forget children keep filling the registry; drain before closing the store. */
-async function drain(timeoutMs = 10_000): Promise<void> {
-  await waitFor(() => activeRunIds().length === 0, timeoutMs);
+async function drain(services: DaemonServices, timeoutMs = 10_000): Promise<void> {
+  await waitFor(() => services.registry.activeRunIds().length === 0, timeoutMs);
 }
 
 const SLOW_ADAPTER = createSlowFakeAdapter(
@@ -40,19 +46,6 @@ const echoWorkflow = defineWorkflow("echo-wf", {
   },
 });
 
-interface Gate {
-  readonly wait: () => Promise<void>;
-  readonly release: () => void;
-}
-
-function makeGate(): Gate {
-  let release: () => void = () => undefined;
-  const promise = new Promise<void>((resolve) => {
-    release = resolve;
-  });
-  return { wait: () => promise, release };
-}
-
 async function waitFor(predicate: () => boolean, timeoutMs = 5_000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
@@ -62,29 +55,33 @@ async function waitFor(predicate: () => boolean, timeoutMs = 5_000): Promise<voi
   throw new Error("condition not met within timeout");
 }
 
+function createTestServices(): DaemonServices {
+  return {
+    registry: createRunRegistry(),
+    pubsub: createPubSub(),
+    dedupeRegistry: createDedupeRegistry(),
+    refreshGates: createRefreshGates(),
+  };
+}
+
 interface StartOpts {
   readonly runId?: string;
   readonly dir: string;
   readonly dedupeKey?: string;
-  readonly beforeStart?: () => Promise<void>;
-  /** Shared holder registry when one test needs two starts to agree. */
-  readonly registry?: ReturnType<typeof createDedupeRegistry>;
+  readonly services: DaemonServices;
 }
 
 function start(db: ReturnType<typeof openStore>, opts: StartOpts): Promise<string> {
-  return startTrackedRun(db, echoWorkflow, {
+  return startTrackedRun(db, opts.services, echoWorkflow, {
     dir: opts.dir,
     input: {},
     adapter: SLOW_ADAPTER,
-    dedupeRegistry: opts.registry ?? createDedupeRegistry(),
     maxConcurrentRuns: 4,
     ...(opts.runId !== undefined ? { runId: opts.runId } : {}),
     ...(opts.dedupeKey !== undefined ? { dedupeKey: opts.dedupeKey } : {}),
-    ...(opts.beforeStart !== undefined ? { beforeStart: opts.beforeStart } : {}),
   });
 }
 
-/** The `DedupeKeyError` a rejected start produced — else a placeholder string. */
 async function errorOf(promise: Promise<string>): Promise<unknown> {
   return promise.then(
     () => "resolved",
@@ -131,6 +128,7 @@ describe("dedupe keys through ctx.dispatch (issue #15)", () => {
     const root = mkdtempSync(join(tmpdir(), "factory-dedupe-dispatch-"));
     const db = openStore(join(root, "factory.db"));
     mkdirSync(join(root, "workspaces"), { recursive: true });
+    const services = createTestServices();
 
     const parent = defineWorkflow("parent-wf", {
       input: Schema.Struct({ wait: Schema.Number }),
@@ -141,13 +139,12 @@ describe("dedupe keys through ctx.dispatch (issue #15)", () => {
           { n: input.wait },
           { dedupeKey: "item:7" },
         );
-        // A second dispatch on the same key, while the first still runs.
         await ctx.dispatch(busyWorkflow, { n: input.wait }, { dedupeKey: "item:7" });
         return { childRunId };
       },
     });
 
-    const parentRunId = await startTrackedRun(db, parent, {
+    const parentRunId = await startTrackedRun(db, services, parent, {
       input: { wait: 3 },
       adapter: driftAdapter,
       workspace: workspaces(join(root)),
@@ -155,7 +152,7 @@ describe("dedupe keys through ctx.dispatch (issue #15)", () => {
       dispatchEnv: { ...withWorkspaces(join(root)), adapter: driftAdapter } as never,
     });
 
-    await waitFor(() => !isActive(parentRunId));
+    await waitFor(() => !services.registry.isActive(parentRunId));
 
     const events = getRunEvents(db, parentRunId);
     const collided = events.find((event) => event.payload._tag === "DispatchCollision");
@@ -165,13 +162,12 @@ describe("dedupe keys through ctx.dispatch (issue #15)", () => {
       expect(collided.payload.holderRunId).toBeTypeOf("string");
       expect(collided.payload.childWorkflowId).toBe("busy-wf");
     }
-    // The failed dispatch's throw unwound the parent into its terminal state.
     const failed = events.find((event) => event.payload._tag === "RunFailed");
     expect(
       failed !== undefined && failed.payload._tag === "RunFailed" ? failed.payload.message : "",
     ).toMatch(/dedupe key held: "item:7"/);
 
-    await drain();
+    await drain(services);
     db.close();
     rmSync(root, { recursive: true, force: true });
   });
@@ -180,16 +176,24 @@ describe("dedupe keys through ctx.dispatch (issue #15)", () => {
     const root = mkdtempSync(join(tmpdir(), "factory-dedupe-dispatch-release-"));
     const db = openStore(join(root, "factory.db"));
     mkdirSync(join(root, "workspaces"), { recursive: true });
+    const services = createTestServices();
 
-    let release: () => void = () => undefined;
-    const gate = makeGate();
+    let releaseHeldWorkflow: () => void = () => undefined;
+    const heldWorkflowGate = new Promise<void>((resolve) => {
+      releaseHeldWorkflow = resolve;
+    });
     const heldWorkflow = defineWorkflow("held-wf", {
       input: Schema.Struct({}),
       workspace: { kind: "scratch" },
       run: async () => {
-        await gate.wait;
+        await heldWorkflowGate;
         return {};
       },
+    });
+
+    let releaseParent: () => void = () => undefined;
+    const parentGate = new Promise<void>((resolve) => {
+      releaseParent = resolve;
     });
 
     const parent = defineWorkflow("parent-release-wf", {
@@ -198,16 +202,13 @@ describe("dedupe keys through ctx.dispatch (issue #15)", () => {
       run: async (ctx) => {
         const ids = [];
         ids.push(await ctx.dispatch(heldWorkflow, {}, { dedupeKey: "item:8" }));
-        await new Promise<void>((r) => {
-          release = r;
-        });
-        // The first child is terminal by now; the key must be free again.
+        await parentGate;
         ids.push(await ctx.dispatch(heldWorkflow, {}, { dedupeKey: "item:8" }));
         return { ids };
       },
     });
 
-    const parentRunId = (await startTrackedRun(db, parent, {
+    const parentRunId = (await startTrackedRun(db, services, parent, {
       input: {},
       adapter: driftAdapter,
       workspace: workspaces(join(root)),
@@ -219,17 +220,16 @@ describe("dedupe keys through ctx.dispatch (issue #15)", () => {
       getRunEvents(db, parentRunId).some((event) => event.payload._tag === "RunDispatched"),
     );
     await Bun.sleep(150);
-    // The first child dispatched, still holding while the gate is shut — one
-    // more dispatch inside the parent would collide. Then let the child end.
-    gate.release();
-    if (typeof release === "function") release();
+    releaseHeldWorkflow();
+    await Bun.sleep(50);
+    releaseParent();
     await waitFor(
       () =>
         getRunEvents(db, parentRunId).filter((event) => event.payload._tag === "RunDispatched")
           .length >= 2,
       10_000,
     );
-    await waitFor(() => !isActive(parentRunId));
+    await waitFor(() => !services.registry.isActive(parentRunId));
 
     const dispatchedCount = getRunEvents(db, parentRunId).filter(
       (event) => event.payload._tag === "RunDispatched",
@@ -239,7 +239,7 @@ describe("dedupe keys through ctx.dispatch (issue #15)", () => {
       getRunEvents(db, parentRunId).some((event) => event.payload._tag === "DispatchCollision"),
     ).toBe(false);
 
-    await drain();
+    await drain(services);
     db.close();
     rmSync(root, { recursive: true, force: true });
   });
@@ -249,20 +249,13 @@ describe("dedupe keys through startTrackedRun (issue #15)", () => {
   test("a key held by a non-terminal run rejects a second start with key and holder named", async () => {
     const root = mkdtempSync(join(tmpdir(), "factory-dedupe-hold-"));
     const db = openStore(join(root, "factory.db"));
-    const gate = makeGate();
-    const registry = createDedupeRegistry();
+    const services = createTestServices();
 
-    const first = start(db, {
-      runId: "run-holder",
-      dir: join(root, "dir-1"),
-      dedupeKey: "item:41",
-      beforeStart: gate.wait,
-      registry,
-    });
-    await waitFor(() => isActive("run-holder"));
+    services.registry.reserve("run-holder");
+    services.dedupeRegistry.claim("item:41", "run-holder");
 
     const err = (await errorOf(
-      start(db, { runId: "run-collide", dir: join(root, "dir-2"), dedupeKey: "item:41", registry }),
+      start(db, { runId: "run-collide", dir: join(root, "dir-2"), dedupeKey: "item:41", services }),
     )) as DedupeKeyError | string;
     expect(err).toBeInstanceOf(DedupeKeyError);
     if (err instanceof DedupeKeyError) {
@@ -272,11 +265,18 @@ describe("dedupe keys through startTrackedRun (issue #15)", () => {
       expect(err.message).toContain("run-holder");
     }
 
-    gate.release();
-    await first;
-    await waitFor(() => !isActive("run-holder"));
+    services.registry.delete("run-holder");
+    services.dedupeRegistry.release("item:41", "run-holder");
 
-    await drain();
+    const firstRunId = await start(db, {
+      runId: "run-holder",
+      dir: join(root, "dir-1"),
+      dedupeKey: "item:41",
+      services,
+    });
+    await waitFor(() => !services.registry.isActive(firstRunId));
+
+    await drain(services);
     db.close();
     rmSync(root, { recursive: true, force: true });
   });
@@ -284,25 +284,20 @@ describe("dedupe keys through startTrackedRun (issue #15)", () => {
   test("the holder's RunStarted carries the key; a rejected start leaves no lifecycle trace", async () => {
     const root = mkdtempSync(join(tmpdir(), "factory-dedupe-log-"));
     const db = openStore(join(root, "factory.db"));
-    const gate = makeGate();
-    const registry = createDedupeRegistry();
+    const services = createTestServices();
 
-    const first = start(db, {
+    const firstRunId = await start(db, {
       runId: "run-holder",
       dir: join(root, "dir-1"),
       dedupeKey: "item:42",
-      beforeStart: gate.wait,
-      registry,
+      services,
     });
-    await waitFor(() => isActive("run-holder"));
 
     await errorOf(
-      start(db, { runId: "run-collide", dir: join(root, "dir-2"), dedupeKey: "item:42", registry }),
+      start(db, { runId: "run-collide", dir: join(root, "dir-2"), dedupeKey: "item:42", services }),
     );
 
-    gate.release();
-    await first;
-    await waitFor(() => !isActive("run-holder"));
+    await waitFor(() => !services.registry.isActive(firstRunId));
 
     const holderStarted = getRunEvents(db, "run-holder").find(
       (e) => e.payload._tag === "RunStarted",
@@ -314,10 +309,9 @@ describe("dedupe keys through startTrackedRun (issue #15)", () => {
         ? holderStarted.payload.dedupeKey
         : "missing",
     ).toBe("item:42");
-    // A dropped start never started: the collision run's log has no rows.
     expect(getRunEvents(db, "run-collide")).toHaveLength(0);
 
-    await drain();
+    await drain(services);
     db.close();
     rmSync(root, { recursive: true, force: true });
   });
@@ -325,16 +319,25 @@ describe("dedupe keys through startTrackedRun (issue #15)", () => {
   test("the key is released when the holding run reaches its terminal state", async () => {
     const root = mkdtempSync(join(tmpdir(), "factory-dedupe-finish-"));
     const db = openStore(join(root, "factory.db"));
+    const services = createTestServices();
 
-    const firstRunId = await start(db, { dir: join(root, "dir-1"), dedupeKey: "item:43" });
+    const firstRunId = await start(db, {
+      dir: join(root, "dir-1"),
+      dedupeKey: "item:43",
+      services,
+    });
     expect(firstRunId).toBeTypeOf("string");
-    await waitFor(() => !isActive(firstRunId));
+    await waitFor(() => !services.registry.isActive(firstRunId));
 
-    const retryRunId = await start(db, { dir: join(root, "dir-2"), dedupeKey: "item:43" });
-    await waitFor(() => !isActive(retryRunId));
+    const retryRunId = await start(db, {
+      dir: join(root, "dir-2"),
+      dedupeKey: "item:43",
+      services,
+    });
+    await waitFor(() => !services.registry.isActive(retryRunId));
     expect(getRunEvents(db, retryRunId).some((e) => e.payload._tag === "RunStarted")).toBe(true);
 
-    await drain();
+    await drain(services);
     db.close();
     rmSync(root, { recursive: true, force: true });
   });
@@ -342,22 +345,25 @@ describe("dedupe keys through startTrackedRun (issue #15)", () => {
   test("a failed start releases its claim so a corrected retry can start", async () => {
     const root = mkdtempSync(join(tmpdir(), "factory-dedupe-fail-"));
     const db = openStore(join(root, "factory.db"));
+    const services = createTestServices();
 
-    // allocation of an explicitly undefined dir fails after the claim
     await expect(
-      startTrackedRun(db, echoWorkflow, {
+      startTrackedRun(db, services, echoWorkflow, {
         input: {},
         adapter: SLOW_ADAPTER,
         dedupeKey: "item:44",
-        dedupeRegistry: createDedupeRegistry(),
       }),
     ).rejects.toThrow(/needs `dir` or `workspace`/);
 
-    const retryRunId = await start(db, { dir: join(root, "dir-1"), dedupeKey: "item:44" });
-    await waitFor(() => !isActive(retryRunId));
+    const retryRunId = await start(db, {
+      dir: join(root, "dir-1"),
+      dedupeKey: "item:44",
+      services,
+    });
+    await waitFor(() => !services.registry.isActive(retryRunId));
     expect(getRunEvents(db, retryRunId).some((e) => e.payload._tag === "RunStarted")).toBe(true);
 
-    await drain();
+    await drain(services);
     db.close();
     rmSync(root, { recursive: true, force: true });
   });
@@ -365,33 +371,31 @@ describe("dedupe keys through startTrackedRun (issue #15)", () => {
   test("a cancelled run releases its key (RunCancelled is a terminal state)", async () => {
     const root = mkdtempSync(join(tmpdir(), "factory-dedupe-cancel-"));
     const db = openStore(join(root, "factory.db"));
-    const registry = createDedupeRegistry();
+    const services = createTestServices();
 
-    const holderRunId = await startTrackedRun(db, echoWorkflow, {
+    const holderRunId = await startTrackedRun(db, services, echoWorkflow, {
       runId: "run-cancelled",
       dir: join(root, "dir-1"),
       input: {},
       adapter: SLOW_ADAPTER,
       dedupeKey: "item:45",
-      dedupeRegistry: registry,
     });
-    await waitFor(() => !isActive(holderRunId) || true);
-    const handle = getActiveHandle("run-cancelled");
+    await waitFor(() => !services.registry.isActive(holderRunId) || true);
+    const handle = services.registry.getActiveHandle("run-cancelled");
     expect(handle).toBeDefined();
     if (handle !== undefined) await handle.cancel();
 
-    await waitFor(() => !isActive(holderRunId));
+    await waitFor(() => !services.registry.isActive(holderRunId));
     const started = getRunEvents(db, holderRunId).some((e) => e.payload._tag === "RunStarted");
-    const retryRunId = await startTrackedRun(db, echoWorkflow, {
+    const retryRunId = await startTrackedRun(db, services, echoWorkflow, {
       dir: join(root, "dir-2"),
       input: {},
       adapter: SLOW_ADAPTER,
       dedupeKey: "item:45",
-      dedupeRegistry: registry,
     });
     expect(started).toBe(true);
     expect(retryRunId).toBeTypeOf("string");
-    await drain();
+    await drain(services);
 
     db.close();
     rmSync(root, { recursive: true, force: true });
@@ -400,14 +404,17 @@ describe("dedupe keys through startTrackedRun (issue #15)", () => {
   test("runs started without a key behave exactly as before", async () => {
     const root = mkdtempSync(join(tmpdir(), "factory-dedupe-none-"));
     const db = openStore(join(root, "factory.db"));
+    const services = createTestServices();
 
-    const firstRunId = await start(db, { dir: join(root, "dir-1") });
-    const secondRunId = await start(db, { dir: join(root, "dir-2") });
+    const firstRunId = await start(db, { dir: join(root, "dir-1"), services });
+    const secondRunId = await start(db, { dir: join(root, "dir-2"), services });
     expect(firstRunId).toBeTypeOf("string");
     expect(secondRunId).toBeTypeOf("string");
-    await waitFor(() => !isActive(firstRunId) && !isActive(secondRunId));
+    await waitFor(
+      () => !services.registry.isActive(firstRunId) && !services.registry.isActive(secondRunId),
+    );
 
-    await drain();
+    await drain(services);
     db.close();
     rmSync(root, { recursive: true, force: true });
   });
@@ -431,11 +438,11 @@ describe("dedupe keys over POST /api/runs (issue #15)", () => {
   test("a key held by a running run surfaces as a 409 conflict naming the key and the holder", async () => {
     const root = mkdtempSync(join(tmpdir(), "factory-dedupe-http-"));
     const db = openStore(join(root, "factory.db"));
+    const services = createTestServices();
 
     const slowStartWorkflow = defineWorkflow("dedupe-http-slow", {
       input: Schema.Struct({}),
       workspace: { kind: "scratch" },
-      // Scratch: no clone needed. The key is claimed before the workflow runs.
       run: async (ctx) => {
         await ctx.exec(["sh", "-c", "sleep 0.5"]);
         return {};
@@ -445,6 +452,7 @@ describe("dedupe keys over POST /api/runs (issue #15)", () => {
     const server = serve({
       db,
       adapter: SLOW_ADAPTER,
+      services,
       port: 0,
       config: defineConfig({
         repo: {
@@ -487,11 +495,9 @@ describe("dedupe keys over POST /api/runs (issue #15)", () => {
       expect(collision.error).toContain("issue:91");
       expect(collision.error).toContain(holderRunId);
 
-      // A conflict is a start rejection, not a started run: nothing recorded.
       expect(getRunEvents(db, "nonexistent")).toHaveLength(0);
 
       await waitForTerminalStatus(db, holderRunId);
-      // Rejected while held; once terminal, a retry is a fresh 201.
       const retryRes = await fetch(`${base}/api/runs`, {
         method: "POST",
         body: JSON.stringify({ workflowId: "dedupe-http-slow", input: {}, dedupeKey: "issue:91" }),
@@ -500,7 +506,7 @@ describe("dedupe keys over POST /api/runs (issue #15)", () => {
       const { runId: retryRunId } = (await retryRes.json()) as { runId: string };
       await waitForTerminalStatus(db, retryRunId);
     } finally {
-      await drain();
+      await drain(services);
       await server.stop(true);
       db.close();
       rmSync(root, { recursive: true, force: true });
@@ -510,6 +516,7 @@ describe("dedupe keys over POST /api/runs (issue #15)", () => {
   test("a non-string dedupeKey is a 400, and omitting one behaves as today", async () => {
     const root = mkdtempSync(join(tmpdir(), "factory-dedupe-http-shape-"));
     const db = openStore(join(root, "factory.db"));
+    const services = createTestServices();
     const plainWorkflow = defineWorkflow("dedupe-http-plain", {
       input: Schema.Struct({}),
       workspace: { kind: "scratch" },
@@ -519,6 +526,7 @@ describe("dedupe keys over POST /api/runs (issue #15)", () => {
     const server = serve({
       db,
       adapter: SLOW_ADAPTER,
+      services,
       port: 0,
       config: defineConfig({
         repo: {
@@ -549,7 +557,7 @@ describe("dedupe keys over POST /api/runs (issue #15)", () => {
       const { runId } = (await plain.json()) as { runId: string };
       await waitForTerminalStatus(db, runId);
     } finally {
-      await drain();
+      await drain(services);
       await server.stop(true);
       db.close();
       rmSync(root, { recursive: true, force: true });

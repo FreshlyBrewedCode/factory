@@ -260,7 +260,10 @@ export function createHandler(options: ServerOptions): (req: Request) => Promise
 
     if (req.method === "POST" && url.pathname === "/api/runs") {
       const maxConcurrentRuns = options.config?.maxConcurrentRuns;
-      if (maxConcurrentRuns !== undefined && !admitRun(maxConcurrentRuns, services.registry.activeRunIds().length)) {
+      if (
+        maxConcurrentRuns !== undefined &&
+        !admitRun(maxConcurrentRuns, services.registry.activeRunIds().length)
+      ) {
         return json(
           { error: `concurrency limit reached (max ${maxConcurrentRuns} concurrent runs)` },
           { status: 409 },
@@ -371,9 +374,6 @@ export function createHandler(options: ServerOptions): (req: Request) => Promise
         input: body.input,
         adapter: options.adapter,
         ...(typeof body.dedupeKey === "string" ? { dedupeKey: body.dedupeKey } : {}),
-        ...(body.clone !== undefined && typeof body.dir === "string"
-          ? { prepareWorkspace: true }
-          : {}),
       };
       let runId: string;
       try {

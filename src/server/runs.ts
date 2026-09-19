@@ -66,7 +66,9 @@ export interface RunRegistry {
   isActive(runId: string): boolean;
   activeRunIds(): ReadonlyArray<string>;
   getActiveHandle(runId: string): RunHandle<unknown> | undefined;
-  cancelRegisteredRun(runId: string):
+  cancelRegisteredRun(
+    runId: string,
+  ):
     | { readonly kind: "handle"; readonly handle: RunHandle<unknown> }
     | { readonly kind: "reserved" }
     | undefined;
@@ -135,7 +137,6 @@ export interface StartTrackedRunOptions {
   readonly dedupeKeyClaimed?: boolean;
   readonly scheduleId?: string;
   readonly agentOverrides?: { readonly model?: string };
-  readonly prepareWorkspace?: boolean;
 }
 
 export interface DispatchEnv {
@@ -295,8 +296,6 @@ export async function startTrackedRun(
       dir,
       ...(options.repo !== undefined ? { repo: options.repo } : {}),
       workspaceKind: kind,
-      prepareWorkspace:
-        options.prepareWorkspace === true || (workspaceAllocated && kind === "clone"),
       ...(dispatch !== undefined ? { dispatch } : {}),
       ...(options.parentRunId !== undefined ? { parentRunId: options.parentRunId } : {}),
       ...(options.dedupeKey !== undefined ? { dedupeKey: options.dedupeKey } : {}),
@@ -319,7 +318,8 @@ export async function startTrackedRun(
 
     void handle.result.finally(() => {
       if (registry.get(runId) === handle) registry.delete(runId);
-      if (options.dedupeKey !== undefined) services.dedupeRegistry.release(options.dedupeKey, runId);
+      if (options.dedupeKey !== undefined)
+        services.dedupeRegistry.release(options.dedupeKey, runId);
     });
 
     void handle.result.then((outcome) => {
