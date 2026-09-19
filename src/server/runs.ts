@@ -1,29 +1,43 @@
 /**
  * The server's in-memory run registry: which runs are currently live in
  * *this* process, so the HTTP API can cancel them and the dispatcher can
- * enforce a WIP limit (D24, D29).
+ * enforce a WIP limit (D24, D29). Deliberately not derived from sqlite — a
+ * run whose process died is "interrupted" (D12), not "active"; only a
+ * `RunHandle` this process actually holds counts.
+ *
+ * A run is registered *before* it starts: `startTrackedRun` reserves the
+ * registry slot synchronously (check-then-set with no `await` between, so a
+ * concurrent HTTP start cannot lose the race) and only then allocates the
+ * workspace. A reserved slot is released if allocation/startup fails, and a
+ * `cancel` that arrives while a run is still reserving is deferred into run
+ * start rather than dropped.
+ *
+ * #38: the active-run registry, pubsub, and dedupe registry are now
+ * per-daemon instances passed through `DaemonServices`, so two daemons can
+ * coexist in one process without sharing state.
  */
 
 import type { Database } from "bun:sqlite";
-import { Schema } from "effect";
-import type { ManagedRuntime } from "effect";
 import { rm } from "node:fs/promises";
+import type { ManagedRuntime } from "effect";
 import { admitRun } from "./admission";
 import { appendEvent, getRunEvents, listRuns } from "../persistence/store";
 import type { RunRepo } from "../runtime/run";
 import { startRun, type RunHandle } from "../runtime/run";
 import type { GitIdentity } from "../lib/clone";
-import { allocateWorkspace } from "../lib/workspace";
-import { dedupeRegistry, type DedupeRegistry } from "../lib/dedupe";
-import type { DispatchChildFn, WorkflowDefinition, WorkspaceKind } from "../workflow";
-import { publish } from "./pubsub";
+import { allocateWorkspace, type RefreshGates } from "../lib/workspace";
+import type { DedupeRegistry } from "../lib/dedupe";
 import { AgentRuntime } from "../runtime/agent-runtime";
+import type { DispatchChildFn, WorkflowDefinition, WorkspaceKind } from "../workflow";
+import type { PubSub } from "./pubsub";
 
 interface ReservedSlot {
   cancelled: boolean;
 }
 
-const active = new Map<string, RunHandle<unknown> | ReservedSlot>();
+function isReserved(entry: RunHandle<unknown> | ReservedSlot | undefined): boolean {
+  return entry !== undefined && !("result" in entry) && "cancelled" in entry;
+}
 
 export const DEFAULT_MAX_DISPATCH_DEPTH = 5;
 export const DEFAULT_MAX_CHILDREN_PER_RUN = 20;
@@ -31,10 +45,6 @@ export const DEFAULT_MAX_CHILDREN_PER_RUN = 20;
 export class DispatchCapError extends Schema.TaggedError<DispatchCapError>()("DispatchCapError", {
   message: Schema.String,
 }) {}
-
-function isReserved(entry: RunHandle<unknown> | ReservedSlot | undefined): boolean {
-  return entry !== undefined && !("result" in entry) && "cancelled" in entry;
-}
 
 export class ConcurrencyLimitError extends Schema.TaggedError<ConcurrencyLimitError>()(
   "ConcurrencyLimitError",
@@ -46,33 +56,65 @@ export class ConcurrencyLimitError extends Schema.TaggedError<ConcurrencyLimitEr
   }
 }
 
-export function isActive(runId: string): boolean {
-  return active.has(runId);
+export interface DaemonServices {
+  readonly registry: RunRegistry;
+  readonly pubsub: PubSub;
+  readonly dedupeRegistry: DedupeRegistry;
+  readonly refreshGates: RefreshGates;
 }
 
-export function activeRunIds(): ReadonlyArray<string> {
-  return [...active.keys()];
+export interface RunRegistry {
+  isActive(runId: string): boolean;
+  activeRunIds(): ReadonlyArray<string>;
+  getActiveHandle(runId: string): RunHandle<unknown> | undefined;
+  cancelRegisteredRun(
+    runId: string,
+  ):
+    | { readonly kind: "handle"; readonly handle: RunHandle<unknown> }
+    | { readonly kind: "reserved" }
+    | undefined;
+  reserve(runId: string): void;
+  setHandle(runId: string, handle: RunHandle<unknown>): void;
+  delete(runId: string): void;
+  get(runId: string): RunHandle<unknown> | ReservedSlot | undefined;
+  size: number;
 }
 
-export function getActiveHandle(runId: string): RunHandle<unknown> | undefined {
-  const entry = active.get(runId);
-  if (entry === undefined || isReserved(entry)) return undefined;
-  return entry as RunHandle<unknown>;
-}
-
-export function cancelRegisteredRun(
-  runId: string,
-):
-  | { readonly kind: "handle"; readonly handle: RunHandle<unknown> }
-  | { readonly kind: "reserved" }
-  | undefined {
-  const entry = active.get(runId);
-  if (entry === undefined) return undefined;
-  if (isReserved(entry)) {
-    (entry as ReservedSlot).cancelled = true;
-    return { kind: "reserved" };
-  }
-  return { kind: "handle", handle: entry as RunHandle<unknown> };
+export function createRunRegistry(): RunRegistry {
+  const active = new Map<string, RunHandle<unknown> | ReservedSlot>();
+  return {
+    isActive: (runId) => active.has(runId),
+    activeRunIds: () => [...active.keys()],
+    getActiveHandle(runId) {
+      const entry = active.get(runId);
+      if (entry === undefined || isReserved(entry)) return undefined;
+      return entry as RunHandle<unknown>;
+    },
+    cancelRegisteredRun(runId) {
+      const entry = active.get(runId);
+      if (entry === undefined) return undefined;
+      if (isReserved(entry)) {
+        (entry as ReservedSlot).cancelled = true;
+        return { kind: "reserved" };
+      }
+      return { kind: "handle", handle: entry as RunHandle<unknown> };
+    },
+    reserve(runId) {
+      active.set(runId, { cancelled: false });
+    },
+    setHandle(runId, handle) {
+      active.set(runId, handle);
+    },
+    delete(runId) {
+      active.delete(runId);
+    },
+    get(runId) {
+      return active.get(runId);
+    },
+    get size() {
+      return active.size;
+    },
+  };
 }
 
 export interface WorkspaceSpec {
@@ -89,21 +131,12 @@ export interface StartTrackedRunOptions {
   readonly input: unknown;
   readonly runId?: string;
   readonly maxConcurrentRuns?: number;
-  readonly beforeStart?: () => Promise<void>;
   readonly dispatchEnv?: DispatchEnv;
   readonly parentRunId?: string;
   readonly dedupeKey?: string;
   readonly dedupeKeyClaimed?: boolean;
-  readonly dedupeRegistry?: DedupeRegistry;
   readonly scheduleId?: string;
   readonly agentOverrides?: { readonly model?: string };
-  /**
-   * ADR 0012 §3 (#37): when true, the runtime calls `adapter.prepareWorkspace`
-   * before the workflow runs. The caller sets this when it has done a
-   * `resetClone` on `dir`. Combined with the daemon's own allocation check,
-   * this covers both clone paths.
-   */
-  readonly prepareWorkspace?: boolean;
 }
 
 export interface DispatchEnv {
@@ -112,7 +145,6 @@ export interface DispatchEnv {
   readonly maxConcurrentRuns?: number;
   readonly maxDispatchDepth?: number;
   readonly maxChildrenPerRun?: number;
-  readonly dedupeRegistry?: DedupeRegistry;
 }
 
 function parentOf(db: Database, runId: string): string | undefined {
@@ -133,13 +165,10 @@ function dispatchDepth(db: Database, runId: string): number {
   return depth;
 }
 
-function countDispatchedChildren(db: Database, runId: string): number {
-  return getRunEvents(db, runId).filter((event) => event.payload._tag === "RunDispatched").length;
-}
-
 async function dispatchChildRun(
   runtime: ManagedRuntime.ManagedRuntime<AgentRuntime, never>,
   db: Database,
+  services: DaemonServices,
   env: DispatchEnv,
   parentRunId: string,
   child: WorkflowDefinition<any, any>,
@@ -148,92 +177,87 @@ async function dispatchChildRun(
 ): Promise<string> {
   const maxDepth = env.maxDispatchDepth ?? DEFAULT_MAX_DISPATCH_DEPTH;
   const maxChildren = env.maxChildrenPerRun ?? DEFAULT_MAX_CHILDREN_PER_RUN;
-  const registry = env.dedupeRegistry ?? dedupeRegistry;
+  const registry = services.registry;
 
   if (
     env.maxConcurrentRuns !== undefined &&
-    !admitRun(env.maxConcurrentRuns, activeRunIds().length)
+    !admitRun(env.maxConcurrentRuns, registry.activeRunIds().length)
   ) {
-    throw new ConcurrencyLimitError({ maxConcurrentRuns: env.maxConcurrentRuns });
+    throw new ConcurrencyLimitError(env.maxConcurrentRuns);
   }
 
   const depth = dispatchDepth(db, parentRunId);
   if (depth + 1 > maxDepth) {
-    throw new DispatchCapError({
-      message:
-        `dispatch depth exceeded: run ${parentRunId} is nested ${depth} levels deep; ` +
+    throw new DispatchCapError(
+      `dispatch depth exceeded: run ${parentRunId} is nested ${depth} levels deep; ` +
         `max ${maxDepth} (a workflow that dispatches itself must not fill the daemon)`,
-    });
+    );
   }
   const childCount = countDispatchedChildren(db, parentRunId);
   if (childCount >= maxChildren) {
-    throw new DispatchCapError({
-      message: `dispatch child cap exceeded: run ${parentRunId} already dispatched ${childCount} children; max ${maxChildren}`,
-    });
+    throw new DispatchCapError(
+      `dispatch child cap exceeded: run ${parentRunId} already dispatched ${childCount} children; max ${maxChildren}`,
+    );
   }
 
   const childRunId = `run-${crypto.randomUUID()}`;
-  if (opts?.dedupeKey !== undefined) registry.claim(opts.dedupeKey, childRunId);
+  if (opts?.dedupeKey !== undefined) services.dedupeRegistry.claim(opts.dedupeKey, childRunId);
 
   void (async () => {
-    try {
-      await startTrackedRun(runtime, db, child, {
-        runId: childRunId,
-        ...(env.workspace !== undefined ? { workspace: env.workspace } : {}),
-        ...(env.repo !== undefined ? { repo: env.repo } : {}),
-        ...(env.maxConcurrentRuns !== undefined
-          ? { maxConcurrentRuns: env.maxConcurrentRuns }
-          : {}),
-        input,
-        parentRunId,
-        dispatchEnv: env,
-        ...(opts?.dedupeKey !== undefined ? { dedupeKey: opts.dedupeKey } : {}),
-        ...(opts?.dedupeKey !== undefined ? { dedupeKeyClaimed: true } : {}),
-        ...(env.dedupeRegistry !== undefined ? { dedupeRegistry: env.dedupeRegistry } : {}),
-      });
-    } catch (err) {
+    await startTrackedRun(runtime, db, services, child, {
+      runId: childRunId,
+      ...(env.workspace !== undefined ? { workspace: env.workspace } : {}),
+      ...(env.repo !== undefined ? { repo: env.repo } : {}),
+      ...(env.maxConcurrentRuns !== undefined ? { maxConcurrentRuns: env.maxConcurrentRuns } : {}),
+      input,
+      parentRunId,
+      dispatchEnv: env,
+      ...(opts?.dedupeKey !== undefined ? { dedupeKey: opts.dedupeKey } : {}),
+      ...(opts?.dedupeKey !== undefined ? { dedupeKeyClaimed: true } : {}),
+    }).catch((err: unknown) => {
       if (opts?.dedupeKey !== undefined) {
-        (env.dedupeRegistry ?? dedupeRegistry).release(opts.dedupeKey, childRunId);
+        services.dedupeRegistry.release(opts.dedupeKey, childRunId);
       }
       console.error(
         `nested run start failed (parent ${parentRunId}, child ${childRunId}):` +
           `${err instanceof Error ? err.message : String(err)}`,
       );
-    }
+    });
   })();
 
   return childRunId;
 }
 
+function countDispatchedChildren(db: Database, runId: string): number {
+  return getRunEvents(db, runId).filter((event) => event.payload._tag === "RunDispatched").length;
+}
+
 export async function startTrackedRun(
   runtime: ManagedRuntime.ManagedRuntime<AgentRuntime, never>,
   db: Database,
+  services: DaemonServices,
   workflow: WorkflowDefinition<any, any>,
   options: StartTrackedRunOptions,
 ): Promise<string> {
   const runId = options.runId ?? `run-${crypto.randomUUID()}`;
+  const registry = services.registry;
 
-  const existing = active.get(runId);
+  const existing = registry.get(runId);
   if (existing !== undefined && !isReserved(existing)) {
     throw new Error(`run ${runId} is already active`);
   }
 
-  const registry = options.dedupeRegistry ?? dedupeRegistry;
   if (options.dedupeKey !== undefined && options.dedupeKeyClaimed !== true) {
-    registry.claim(options.dedupeKey, runId);
+    services.dedupeRegistry.claim(options.dedupeKey, runId);
   }
   if (existing === undefined && options.maxConcurrentRuns !== undefined) {
-    if (!admitRun(options.maxConcurrentRuns, active.size)) {
-      throw new ConcurrencyLimitError({ maxConcurrentRuns: options.maxConcurrentRuns });
+    if (!admitRun(options.maxConcurrentRuns, registry.size)) {
+      throw new ConcurrencyLimitError(options.maxConcurrentRuns);
     }
-    active.set(runId, { cancelled: false });
+    registry.reserve(runId);
   }
 
   try {
-    if (options.beforeStart !== undefined) {
-      await options.beforeStart();
-    }
-
     const kind: WorkspaceKind = workflow.workspace?.kind ?? "clone";
     const scratchEntries =
       options.workspace !== undefined && kind === "scratch"
@@ -250,13 +274,11 @@ export async function startTrackedRun(
         ? undefined
         : await allocateWorkspace({
             runId,
-            workspaceRoot: options.workspace.workspaceRoot,
-            sshUrl: options.workspace.sshUrl,
-            identity: options.workspace.identity,
-            retainedWorkspaces: options.workspace.retainedWorkspaces,
+            ...options.workspace,
             kind,
             ...(scratchEntries !== undefined ? { scratchEntries } : {}),
-            protectedEntries: [runId, ...activeRunIds()],
+            protectedEntries: [runId, ...registry.activeRunIds()],
+            refreshGates: services.refreshGates,
           }));
 
     if (dir === undefined) throw new Error("startTrackedRun needs `dir` or `workspace`");
@@ -267,15 +289,22 @@ export async function startTrackedRun(
       options.dispatchEnv === undefined
         ? undefined
         : (child, input, opts) =>
-            dispatchChildRun(runtime, db, options.dispatchEnv!, runId, child, input, opts);
+            dispatchChildRun(
+              runtime,
+              db,
+              services,
+              options.dispatchEnv!,
+              runId,
+              child,
+              input,
+              opts,
+            );
 
     const handle = await startRun(workflow, runtime, {
       runId,
       dir,
       ...(options.repo !== undefined ? { repo: options.repo } : {}),
       workspaceKind: kind,
-      prepareWorkspace:
-        options.prepareWorkspace === true || (workspaceAllocated && kind === "clone"),
       ...(dispatch !== undefined ? { dispatch } : {}),
       ...(options.parentRunId !== undefined ? { parentRunId: options.parentRunId } : {}),
       ...(options.dedupeKey !== undefined ? { dedupeKey: options.dedupeKey } : {}),
@@ -284,20 +313,21 @@ export async function startTrackedRun(
       input: options.input,
       onEvent: (event) => {
         appendEvent(db, event);
-        publish(runId, event);
+        services.pubsub.publish(runId, event);
       },
     });
 
-    const beforeStartEntry = active.get(runId);
+    const beforeStartEntry = registry.get(runId);
     const reservedSlot = isReserved(beforeStartEntry)
       ? (beforeStartEntry as ReservedSlot)
       : undefined;
     const cancelRequested = reservedSlot?.cancelled === true;
-    active.set(runId, handle);
+    registry.setHandle(runId, handle);
 
     void handle.result.finally(() => {
-      if (active.get(runId) === handle) active.delete(runId);
-      if (options.dedupeKey !== undefined) registry.release(options.dedupeKey, runId);
+      if (registry.get(runId) === handle) registry.delete(runId);
+      if (options.dedupeKey !== undefined)
+        services.dedupeRegistry.release(options.dedupeKey, runId);
     });
 
     void handle.result.then((outcome) => {
@@ -310,9 +340,9 @@ export async function startTrackedRun(
 
     return runId;
   } catch (err) {
-    if (options.dedupeKey !== undefined) registry.release(options.dedupeKey, runId);
-    const current = active.get(runId);
-    if (current === undefined || isReserved(current)) active.delete(runId);
+    if (options.dedupeKey !== undefined) services.dedupeRegistry.release(options.dedupeKey, runId);
+    const current = registry.get(runId);
+    if (current === undefined || isReserved(current)) registry.delete(runId);
     throw err;
   }
 }
