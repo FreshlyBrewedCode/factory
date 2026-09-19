@@ -171,9 +171,9 @@ export const RunEventPayload = Schema.TaggedUnion({
    *
    * `chunk` is `Schema.Json` rather than a Factory-shaped type: opacity is a
    * property of *this log and its consumers*, not of the runtime. The runtime
-   * still reads a handful of chunk types internally to honour ADR 0002's
-   * contract (tier-1 `structured-output.complete` extraction, tier-2 final-text
-   * re-parse) — but it does so on its way past, and stores the chunk unchanged.
+   * itself no longer interprets the stream — the adapter does (ADR 0012 §2)
+   * and hands over normalized signals instead; the SPA still folds these
+   * chunks with `StreamProcessor` from `@tanstack/ai/client`.
    *
    * `chunkType` is the chunk's own `type` field copied out. It is an opaque
    * string, never an enum, and Factory never branches on it — it exists so
@@ -201,11 +201,11 @@ export const RunEventPayload = Schema.TaggedUnion({
      * must not assume a terminated step has a final text at all.
      */
     finalText: Schema.String,
-    /** Present only when tier 1 or tier 2 extraction produced an object. */
+    /** Present only when tier 1 (the adapter's signal) or tier 2 (final-text re-parse) produced an object. */
     output: Schema.optional(Schema.Json),
-    /** From the `opencode.session-id` CUSTOM chunk. Fresh per step (D10). */
+    /** From the adapter's `session` signal (ADR 0012 §2). Fresh per step (D10). */
     sessionId: Schema.optional(Schema.String),
-    /** From a `RUN_ERROR` chunk, or the abort reason. */
+    /** From the adapter's `error` signal (ADR 0012 §2), or the abort reason. */
     error: Schema.optional(Schema.String),
   },
 

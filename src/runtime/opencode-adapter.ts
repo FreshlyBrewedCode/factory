@@ -3,6 +3,11 @@
  * `opencodeText`, exactly the plumbing proven in `src/spike/lib/effect-agent-step.ts`
  * (ADR 0001 §5). D15: `localProcessSandbox({dir})` implements D8, paired with
  * `defineWorkspace({source:{type:"none"}, setup:[]})` to get `lifecycle.reuse:"thread"`.
+ *
+ * ADR 0012 §2: this adapter interprets its own stream. `@tanstack/ai-opencode`'s
+ * CUSTOM event names are an implementation detail of *this file* — the
+ * interpreter turns them into the normalized `AgentSignal` union, and nothing
+ * outside here ever matches a vendor event name again.
  */
 
 import { chat } from "@tanstack/ai";
@@ -10,7 +15,12 @@ import { opencodeText } from "@tanstack/ai-opencode";
 import { defineSandbox, defineWorkspace, withSandbox } from "@tanstack/ai-sandbox";
 import { localProcessSandbox } from "@tanstack/ai-sandbox-local-process";
 import net from "node:net";
-import type { AgentAdapter, AgentAdapterOptions } from "./agent-adapter";
+import type {
+  AgentAdapter,
+  AgentAdapterOptions,
+  AgentSignal,
+  AgentStreamItem,
+} from "./agent-adapter";
 
 /**
  * The adapter boots `opencode serve --port=…` inside the run's sandbox on a
@@ -36,8 +46,61 @@ async function freePort(): Promise<number> {
   });
 }
 
+/**
+ * The vendor CUSTOM event names this adapter decodes. Exported so the
+ * adapter's test can name them without re-spelling the literals — the strings
+ * themselves live here and nowhere else (issue #35 acceptance criterion).
+ */
+export const OPENCODE_SESSION_ID_EVENT = "opencode.session-id";
+export const STRUCTURED_OUTPUT_COMPLETE_EVENT = "structured-output.complete";
+
+/**
+ * Interpret one raw opencode-stream chunk into `{chunk, signal}`.
+ *
+ * `structured-output.complete` is not a provider capability: the opencode
+ * *text* adapter simulates structured output by injecting JSON Schema into
+ * the prompt and re-parsing its own final message (ADR 0001 §1). Here is
+ * where that simulation is decoded into the neutral signal; an adapter over
+ * a natively structured-output-capable provider emits the same signal from a
+ * different mechanism, and the runtime cannot tell the difference.
+ */
+export function interpretOpencodeChunk(chunk: unknown): AgentStreamItem {
+  const record = chunk as {
+    type?: unknown;
+    name?: unknown;
+    value?: unknown;
+    message?: unknown;
+  };
+
+  if (record.type === "CUSTOM" && typeof record.name === "string") {
+    if (record.name === STRUCTURED_OUTPUT_COMPLETE_EVENT) {
+      const value = record.value as { object?: unknown } | undefined;
+      return {
+        chunk,
+        signal: { kind: "structured-output", value: value?.object } satisfies AgentSignal,
+      };
+    }
+    if (record.name === OPENCODE_SESSION_ID_EVENT) {
+      const value = record.value as { sessionId?: unknown } | undefined;
+      if (typeof value?.sessionId === "string") {
+        return {
+          chunk,
+          signal: { kind: "session", sessionId: value.sessionId } satisfies AgentSignal,
+        };
+      }
+    }
+  }
+
+  if (record.type === "RUN_ERROR") {
+    const message = typeof record.message === "string" ? record.message : JSON.stringify(chunk);
+    return { chunk, signal: { kind: "error", message } satisfies AgentSignal };
+  }
+
+  return { chunk };
+}
+
 export const opencodeAdapter: AgentAdapter = {
-  async *stream(options: AgentAdapterOptions): AsyncIterable<unknown> {
+  async *stream(options: AgentAdapterOptions): AsyncIterable<AgentStreamItem> {
     const sandboxDefinition = defineSandbox({
       id: "factory-run",
       provider: localProcessSandbox({ dir: options.dir }),
@@ -68,6 +131,9 @@ export const opencodeAdapter: AgentAdapter = {
             stream: true,
           } as unknown as Parameters<typeof chat>[0]) as AsyncIterable<unknown>)
         : (chat(baseChatOptions) as unknown as AsyncIterable<unknown>);
-    yield* stream;
+
+    for await (const chunk of stream) {
+      yield interpretOpencodeChunk(chunk);
+    }
   },
 };

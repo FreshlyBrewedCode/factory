@@ -24,7 +24,7 @@
  * like any other dedupe collision; `"stack"` fires regardless.
  */
 
-import { Cron, Effect, Schedule, Schema } from "effect";
+import { Cron, Effect, Schedule, Schema, ManagedRuntime } from "effect";
 import type { Database } from "bun:sqlite";
 import type { FactoryConfig } from "../config";
 import { dedupeRegistry, type DedupeRegistry } from "../lib/dedupe";
@@ -36,7 +36,7 @@ import {
   type WorkspaceSpec,
 } from "./runs";
 import type { RunRepo } from "../runtime/run";
-import type { AgentAdapter } from "../runtime/agent-adapter";
+import { AgentRuntime } from "../runtime/agent-runtime";
 
 export class SchedulerError extends Schema.TaggedError<SchedulerError>()("SchedulerError", {
   cause: Schema.Defect(),
@@ -213,7 +213,7 @@ export function runSchedulerLoop(
  */
 export function makeScheduleFire(options: {
   readonly db: Database;
-  readonly adapter: AgentAdapter;
+  readonly runtime: ManagedRuntime.ManagedRuntime<AgentRuntime, never>;
   readonly maxConcurrentRuns: number;
   readonly workspace: WorkspaceSpec;
   readonly repo: RunRepo;
@@ -221,11 +221,10 @@ export function makeScheduleFire(options: {
 }): (schedule: RuntimeSchedule) => Promise<string> {
   const env = options;
   return async (schedule: RuntimeSchedule): Promise<string> => {
-    return startTrackedRun(env.db, schedule.workflow, {
+    return startTrackedRun(env.runtime, env.db, schedule.workflow, {
       input: schedule.input,
       repo: env.repo,
-      adapter: options.adapter,
-      maxConcurrentRuns: options.maxConcurrentRuns,
+      maxConcurrentRuns: env.maxConcurrentRuns,
       workspace: env.workspace,
       dispatchEnv: env.dispatchEnv,
       scheduleId: schedule.id,

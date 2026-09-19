@@ -10,10 +10,22 @@
  * before writing this: no interleaving). `.stream()` hands out blocks in
  * file order, one per call — a workflow's Nth `ctx.agent()` call replays the
  * Nth recorded step, independent of what the corpus happened to name it.
+ *
+ * ADR 0012 §2: the replay adapter supplies its own signals. It interprets
+ * the recorded chunks with the same rules the live adapter uses — so the
+ * corpus replays unmodified — but nothing outside an adapter ever sees a
+ * vendor event name, and a hand-written test adapter can attach signals
+ * declaratively without imitating any vendor chunk shape.
  */
 
 import { readFileSync } from "node:fs";
-import type { AgentAdapter, AgentAdapterOptions } from "../runtime/agent-adapter";
+import type {
+  AgentAdapter,
+  AgentAdapterOptions,
+  AgentSignal,
+  AgentStreamItem,
+} from "../runtime/agent-adapter";
+import { interpretOpencodeChunk } from "../runtime/opencode-adapter";
 
 export interface CorpusStepBlock {
   readonly step: string;
@@ -44,6 +56,16 @@ export function loadCorpusBlocks(path: string): ReadonlyArray<CorpusStepBlock> {
 }
 
 /**
+ * Interpret one recorded chunk into `{chunk, signal}`. A corpus is a
+ * recorded opencode stream, so its chunks are interpreted by the live
+ * adapter's own interpreter — one mapping, kept in step by construction; the
+ * replay adapter adds no interpretation rules of its own.
+ */
+export function interpretRecordedChunk(chunk: unknown): AgentStreamItem {
+  return interpretOpencodeChunk(chunk);
+}
+
+/**
  * Consumes recorded step blocks sequentially, one per `.stream()` call.
  * Throws once the corpus is exhausted rather than looping or going empty —
  * a workflow calling `ctx.agent()` more times than the corpus recorded is a
@@ -54,7 +76,7 @@ export function createCorpusReplayAdapter(path: string): AgentAdapter {
   let cursor = 0;
 
   return {
-    stream(_options: AgentAdapterOptions): AsyncIterable<unknown> {
+    stream(_options: AgentAdapterOptions): AsyncIterable<AgentStreamItem> {
       const index = cursor;
       cursor += 1;
       const block = blocks[index];
@@ -66,12 +88,18 @@ export function createCorpusReplayAdapter(path: string): AgentAdapter {
       return {
         async *[Symbol.asyncIterator]() {
           for (const chunk of block.chunks) {
-            yield chunk;
+            yield interpretRecordedChunk(chunk);
           }
         },
       };
     },
   };
+}
+
+/** One declarative signal attachment: attach `signal` to the chunk at `index`. */
+export interface AttachedSignal {
+  readonly index: number;
+  readonly signal: AgentSignal;
 }
 
 /**
@@ -80,15 +108,26 @@ export function createCorpusReplayAdapter(path: string): AgentAdapter {
  * chunk arrives and reliably interrupt mid-stream. Used by the cancellation
  * regression test in place of a corpus (no recorded trace can be paused on
  * demand; a corpus is a fixed sequence, not a controllable one).
+ *
+ * Signals can be attached declaratively by index, so a test can exercise the
+ * signal path without imitating any vendor chunk shape (ADR 0012 §2).
  */
-export function createSlowFakeAdapter(chunks: ReadonlyArray<unknown>, delayMs = 20): AgentAdapter {
+export function createSlowFakeAdapter(
+  chunks: ReadonlyArray<unknown>,
+  delayMs = 20,
+  signals: ReadonlyArray<AttachedSignal> = [],
+): AgentAdapter {
+  const byIndex = new Map(signals.map((s) => [s.index, s.signal]));
   return {
-    stream(_options: AgentAdapterOptions): AsyncIterable<unknown> {
+    stream(_options: AgentAdapterOptions): AsyncIterable<AgentStreamItem> {
       return {
         async *[Symbol.asyncIterator]() {
-          for (const chunk of chunks) {
+          for (let index = 0; index < chunks.length; index++) {
             await new Promise<void>((resolve) => setTimeout(resolve, delayMs));
-            yield chunk;
+            const signal = byIndex.get(index);
+            yield signal === undefined
+              ? { chunk: chunks[index] }
+              : { chunk: chunks[index], signal };
           }
         },
       };
