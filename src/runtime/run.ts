@@ -469,6 +469,10 @@ export function startRun<I, O>(
     });
 
     try {
+      if (workspaceKind === "clone") {
+        await options.adapter.prepareWorkspace(options.dir);
+      }
+
       const output = await workflow.run(ctx, decodedInput);
 
       if (workflow.output !== undefined) {
