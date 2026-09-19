@@ -57,3 +57,7 @@ playwright-report/
 
 # per-machine Tailscale cert for the Vite dev server (`tailscale cert`)
 .certs/
+
+# tanstack sandbox projected state
+.tanstack-projected-*
+data/
