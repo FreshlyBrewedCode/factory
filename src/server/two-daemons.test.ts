@@ -86,6 +86,9 @@ describe("two daemons in one process (#38)", () => {
     try {
       const port1 = daemon1.server.port;
       const port2 = daemon2.server.port;
+      if (port1 === undefined || port2 === undefined) {
+        throw new Error("daemons did not bind to ports");
+      }
 
       const res1 = await fetch(`http://localhost:${port1}/api/runs`, {
         method: "POST",
