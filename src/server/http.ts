@@ -382,9 +382,6 @@ export function createHandler(options: ServerOptions): (req: Request) => Promise
         ...(runEnv !== undefined ? { dispatchEnv: dispatchEnvFor(runEnv) } : {}),
         input: body.input,
         ...(typeof body.dedupeKey === "string" ? { dedupeKey: body.dedupeKey } : {}),
-        ...(body.clone !== undefined && typeof body.dir === "string"
-          ? { prepareWorkspace: true }
-          : {}),
       };
       let runId: string;
       try {
