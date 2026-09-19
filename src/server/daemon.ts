@@ -2,18 +2,22 @@
  * `factory serve` — wires the HTTP API/SSE (`server/http.ts`) and the config
  * scheduler (`server/scheduler.ts`) into one running process (AGENTS.md's
  * third column). Automatic dispatch is not daemon logic since epic #19: it
- * is project policy living in scheduled wrapper workflows — e.g. the sample
- * project's Ready sweep — fired by the scheduler loop on their cron.
+ * is project policy living in scheduled wrapper workflows.
+ *
+ * Issue #36: the daemon now has an Effect composition root. `server/daemon.ts`
+ * builds a `Layer` for the agent runtime, creates a `ManagedRuntime`, and
+ * passes that runtime to `serve()` and the scheduler. The adapter is no longer
+ * threaded by hand through `ServerOptions`, `StartTrackedRunOptions`,
+ * `DispatchEnv` and the run/step options; it is resolved from context inside
+ * `runtime/agent-step.ts`.
  */
 
 import { mkdir } from "node:fs/promises";
 import { dirname } from "node:path";
-import { Effect, type Fiber } from "effect";
+import { Effect, type Fiber, ManagedRuntime } from "effect";
 type AnyFiber = Fiber.Fiber<unknown, unknown>;
 import type { FactoryConfig } from "../config";
 import { openStore } from "../persistence/store";
-import type { AgentAdapter } from "../runtime/agent-adapter";
-import { opencodeAdapter } from "../runtime/opencode-adapter";
 import { serve } from "./http";
 import { type DispatchEnv, type WorkspaceSpec } from "./runs";
 import {
@@ -23,11 +27,12 @@ import {
   toRuntimeSchedules,
   type SchedulerDeps,
 } from "./scheduler";
+import { AgentRuntimeLayer } from "../runtime/agent-runtime";
+import { opencodeAdapter } from "../runtime/opencode-adapter";
 
 export interface DaemonOptions {
   readonly dbPath: string;
   readonly port?: number;
-  readonly adapter?: AgentAdapter;
   /** Issue #16: the tick cadence of the config schedules, over the default. */
   readonly schedulerIntervalMs?: number;
   /**
@@ -51,11 +56,14 @@ export const DEFAULT_SCHEDULER_INTERVAL_MS = 30_000;
 export async function startDaemon(options: DaemonOptions): Promise<DaemonHandle> {
   await mkdir(dirname(options.dbPath), { recursive: true });
   const db = openStore(options.dbPath);
-  const adapter = options.adapter ?? opencodeAdapter;
+
+  const adapter = options.config?.agent.adapter ?? opencodeAdapter;
+  const layer = AgentRuntimeLayer(adapter);
+  const runtime = ManagedRuntime.make(layer);
 
   const server = serve({
     db,
-    adapter,
+    runtime,
     port: options.port,
     ...(options.config !== undefined ? { config: options.config } : {}),
   });
@@ -76,7 +84,6 @@ export async function startDaemon(options: DaemonOptions): Promise<DaemonHandle>
             workspace,
             repo,
             maxConcurrentRuns,
-            adapter,
             maxDispatchDepth: config.maxDispatchDepth,
             maxChildrenPerRun: config.maxChildrenPerRun,
           };
@@ -84,7 +91,7 @@ export async function startDaemon(options: DaemonOptions): Promise<DaemonHandle>
             schedules: toRuntimeSchedules(config),
             fire: makeScheduleFire({
               db,
-              adapter,
+              runtime,
               maxConcurrentRuns,
               workspace,
               repo,

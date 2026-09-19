@@ -20,6 +20,7 @@ import { getRunEvents, listRuns, openStore } from "../persistence/store";
 import { createSlowFakeAdapter } from "../replay/adapter";
 import { activeRunIds, isActive, startTrackedRun } from "./runs";
 import { defineWorkflow } from "../workflow";
+import { makeAgentRuntime } from "../runtime/agent-runtime";
 
 const SLOW_ADAPTER = createSlowFakeAdapter(
   [
@@ -29,6 +30,8 @@ const SLOW_ADAPTER = createSlowFakeAdapter(
   ],
   25,
 );
+
+const runtime = makeAgentRuntime(SLOW_ADAPTER);
 
 // The child does a real ctx.exec so its outcome is observable in its log.
 // Scratch (issue #13): no mirror refresh, so no git fixture is needed.
@@ -89,7 +92,7 @@ describe("nested runs through the daemon (issue #14)", () => {
       },
     });
 
-    const parentRunId = await startTrackedRun(db, parent, {
+    const parentRunId = await startTrackedRun(runtime, db, parent, {
       workspace: {
         workspaceRoot: join(root, "workspaces"),
         sshUrl: join(root, "seed-not-used"),
@@ -97,7 +100,6 @@ describe("nested runs through the daemon (issue #14)", () => {
         retainedWorkspaces: 10,
       },
       input: {},
-      adapter: SLOW_ADAPTER,
       dispatchEnv: {
         workspace: {
           workspaceRoot: join(root, "workspaces"),
@@ -105,7 +107,6 @@ describe("nested runs through the daemon (issue #14)", () => {
           identity: { name: "Test Bot", email: "test@factory.local" },
           retainedWorkspaces: 10,
         },
-        adapter: SLOW_ADAPTER,
       },
     });
 
@@ -145,9 +146,8 @@ describe("nested runs through the daemon (issue #14)", () => {
     const db = openStore(join(root, "factory.db"));
     mkdirSync(join(root, "workspaces"), { recursive: true });
 
-    await startTrackedRun(db, selfDispatching, {
+    await startTrackedRun(runtime, db, selfDispatching, {
       input: {},
-      adapter: SLOW_ADAPTER,
       workspace: {
         workspaceRoot: join(root, "workspaces"),
         sshUrl: join(root, "seed-not-used"),
@@ -162,7 +162,6 @@ describe("nested runs through the daemon (issue #14)", () => {
           identity: { name: "Test Bot", email: "test@factory.local" },
           retainedWorkspaces: 20,
         },
-        adapter: SLOW_ADAPTER,
         maxConcurrentRuns: 20,
       },
     });
@@ -198,9 +197,8 @@ describe("nested runs through the daemon (issue #14)", () => {
     const db = openStore(join(root, "factory.db"));
     mkdirSync(join(root, "workspaces"), { recursive: true });
 
-    const parentRunId = await startTrackedRun(db, manyChildren, {
+    const parentRunId = await startTrackedRun(runtime, db, manyChildren, {
       input: {},
-      adapter: SLOW_ADAPTER,
       workspace: {
         workspaceRoot: join(root, "workspaces"),
         sshUrl: join(root, "seed-not-used"),
@@ -215,7 +213,6 @@ describe("nested runs through the daemon (issue #14)", () => {
           identity: { name: "Test Bot", email: "test@factory.local" },
           retainedWorkspaces: 30,
         },
-        adapter: SLOW_ADAPTER,
         maxConcurrentRuns: 40,
         maxChildrenPerRun: 5,
       },
@@ -250,9 +247,8 @@ describe("nested runs through the daemon (issue #14)", () => {
       },
     });
 
-    const parentRunId = await startTrackedRun(db, parent, {
+    const parentRunId = await startTrackedRun(runtime, db, parent, {
       input: {},
-      adapter: SLOW_ADAPTER,
       workspace: {
         workspaceRoot: join(root, "workspaces"),
         sshUrl: join(root, "seed-not-used"),
@@ -267,7 +263,6 @@ describe("nested runs through the daemon (issue #14)", () => {
           identity: { name: "Test Bot", email: "test@factory.local" },
           retainedWorkspaces: 5,
         },
-        adapter: SLOW_ADAPTER,
         maxConcurrentRuns: 1,
       },
     });

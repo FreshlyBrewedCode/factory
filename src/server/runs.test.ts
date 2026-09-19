@@ -18,6 +18,7 @@ import type { AgentAdapter } from "../runtime/agent-adapter";
 import echoWorkflow from "../../test/fixtures/echo-workflow";
 import { appendEvent, openStore, getRunEvents } from "../persistence/store";
 import { createSlowFakeAdapter } from "../replay/adapter";
+import { makeAgentRuntime } from "../runtime/agent-runtime";
 import { defineWorkflow, Schema } from "../workflow";
 import {
   ConcurrencyLimitError,
@@ -37,6 +38,8 @@ const SLOW_ADAPTER = createSlowFakeAdapter(
   ],
   25,
 );
+
+const runtime = makeAgentRuntime(SLOW_ADAPTER);
 
 const sleepWorkflow = defineWorkflow("sleep-test", {
   input: Schema.Struct({}),
@@ -101,11 +104,10 @@ describe("startTrackedRun admission (M1: the slot is reserved before any await)"
     const db = openStore(join(root, "factory.db"));
     const gate = makeGate();
 
-    const first = startTrackedRun(db, echoWorkflow, {
+    const first = startTrackedRun(runtime, db, echoWorkflow, {
       runId: "run-first",
       dir: join(root, "first-dir"),
       input: {},
-      adapter: SLOW_ADAPTER,
       maxConcurrentRuns: 1,
       beforeStart: gate.wait,
     });
@@ -114,11 +116,10 @@ describe("startTrackedRun admission (M1: the slot is reserved before any await)"
     expect(activeRunIds()).toEqual(["run-first"]);
     expect(getActiveHandle("run-first")).toBeUndefined();
 
-    const second = startTrackedRun(db, echoWorkflow, {
+    const second = startTrackedRun(runtime, db, echoWorkflow, {
       runId: "run-second",
       dir: join(root, "second-dir"),
       input: {},
-      adapter: SLOW_ADAPTER,
       maxConcurrentRuns: 1,
     });
 
@@ -144,10 +145,9 @@ describe("startTrackedRun admission (M1: the slot is reserved before any await)"
     const db = openStore(join(root, "factory.db"));
 
     await expect(
-      startTrackedRun(db, echoWorkflow, {
+      startTrackedRun(runtime, db, echoWorkflow, {
         runId: "run-doomed",
         input: {},
-        adapter: SLOW_ADAPTER,
         maxConcurrentRuns: 1,
         workspace: {
           workspaceRoot: join(root, "workspaces"),
@@ -160,10 +160,9 @@ describe("startTrackedRun admission (M1: the slot is reserved before any await)"
 
     expect(activeRunIds()).toEqual([]);
 
-    const runId = await startTrackedRun(db, echoWorkflow, {
+    const runId = await startTrackedRun(runtime, db, echoWorkflow, {
       dir: join(root, "dir"),
       input: {},
-      adapter: SLOW_ADAPTER,
       maxConcurrentRuns: 1,
     });
     expect(activeRunIds()).toEqual([runId]);
@@ -181,11 +180,10 @@ describe("cancel of a reserved-but-not-started run (L1)", () => {
     mkdirSync(join(root, "dir"), { recursive: true });
     const gate = makeGate();
 
-    const starting = startTrackedRun(db, sleepWorkflow, {
+    const starting = startTrackedRun(runtime, db, sleepWorkflow, {
       runId: "run-gated",
       dir: join(root, "dir"),
       input: {},
-      adapter: SLOW_ADAPTER,
       maxConcurrentRuns: 1,
       beforeStart: gate.wait,
     });
@@ -251,11 +249,10 @@ describe("scratch workspaces through startTrackedRun (issue #13)", () => {
     const db = openStore(join(root, "factory.db"));
     mkdirSync(join(root, "seed"), { recursive: true });
 
-    const runId = await startTrackedRun(db, failingScratchWorkflow, {
+    const runId = await startTrackedRun(runtime, db, failingScratchWorkflow, {
       runId: "run-scratch-empty",
       workspace: { ...workspaceSpec(), sshUrl: join(root, "no-such-remote") },
       input: {},
-      adapter: SLOW_ADAPTER,
     });
     await waitFor(() => !isActive(runId));
 
@@ -273,21 +270,19 @@ describe("scratch workspaces through startTrackedRun (issue #13)", () => {
     const db = openStore(join(root, "factory.db"));
     mkdirSync(join(root, "seed"), { recursive: true });
 
-    const okId = await startTrackedRun(db, scratchWorkflow, {
+    const okId = await startTrackedRun(runtime, db, scratchWorkflow, {
       runId: "run-scratch-ok",
       workspace: workspaceSpec(),
       input: {},
-      adapter: SLOW_ADAPTER,
     });
     await waitFor(() => !isActive(okId));
     await new Promise((resolve) => setTimeout(resolve, 50)); // reap lands async
     expect(existsSync(join(root, "workspaces", "run-scratch-ok"))).toBe(false);
 
-    const badId = await startTrackedRun(db, failingScratchWorkflow, {
+    const badId = await startTrackedRun(runtime, db, failingScratchWorkflow, {
       runId: "run-scratch-bad",
       workspace: workspaceSpec(),
       input: {},
-      adapter: SLOW_ADAPTER,
     });
     await waitFor(() => !isActive(badId));
     await new Promise((resolve) => setTimeout(resolve, 50));
@@ -319,11 +314,10 @@ describe("scratch workspaces through startTrackedRun (issue #13)", () => {
 
     // retention = 1: with the scratch dir correctly excluded, the only clone
     // survives: the leftover must not count toward retention.
-    await startTrackedRun(db, echoWorkflow, {
+    await startTrackedRun(runtime, db, echoWorkflow, {
       runId: "run-clone",
       workspace: { ...workspaceSpec(), sshUrl: seed, retainedWorkspaces: 1 },
       input: {},
-      adapter: SLOW_ADAPTER,
     });
     await waitFor(() => !isActive("run-clone"));
 
