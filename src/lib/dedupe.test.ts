@@ -14,6 +14,25 @@
 import { describe, expect, test } from "bun:test";
 import { createDedupeRegistry, DedupeKeyError } from "./dedupe";
 
+describe("DedupeKeyError as TaggedError (#34)", () => {
+  test("carries the _tag, key, and holderRunId fields", () => {
+    const err = new DedupeKeyError({ key: "issue:41", holderRunId: "run-a" });
+    expect(err._tag).toBe("DedupeKeyError");
+    expect(err.key).toBe("issue:41");
+    expect(err.holderRunId).toBe("run-a");
+    expect(err instanceof Error).toBe(true);
+  });
+
+  test("is matchable by _tag from an unknown catch", () => {
+    try {
+      throw new DedupeKeyError({ key: "k", holderRunId: "r" });
+    } catch (err: unknown) {
+      const e = err as { _tag?: string };
+      expect(e._tag).toBe("DedupeKeyError");
+    }
+  });
+});
+
 describe("the holder registry (issue #15)", () => {
   test("an unclaimed key claims silently and reports its holder", () => {
     const registry = createDedupeRegistry();
@@ -40,10 +59,9 @@ describe("the holder registry (issue #15)", () => {
       }
       throw new Error("unreachable");
     })();
+    expect(err._tag).toBe("DedupeKeyError");
     expect(err.key).toBe("issue:41");
     expect(err.holderRunId).toBe("run-a");
-    expect(err.message).toContain("issue:41");
-    expect(err.message).toContain("run-a");
   });
 
   test("release frees the key when the holder releases it", () => {
