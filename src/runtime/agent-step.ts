@@ -111,7 +111,12 @@ export function buildAgentStepEffect(options: AgentStepEffectOptions): AgentStep
     (cause) => new AgentStepChunkError({ cause }),
   );
 
-  const partial: AgentStepPartial = { chunkCount: 0, finalText: "", sessionId: undefined, usage: undefined };
+  const partial: AgentStepPartial = {
+    chunkCount: 0,
+    finalText: "",
+    sessionId: undefined,
+    usage: undefined,
+  };
   let currentMessageBuffer: string | undefined;
   let structuredOutput: unknown;
   let runError: string | undefined;
@@ -181,10 +186,10 @@ export function buildAgentStepEffect(options: AgentStepEffectOptions): AgentStep
     chunkCount: partial.chunkCount,
     finalText: partial.finalText,
     structuredOutput,
-      sessionId: partial.sessionId,
-      usage: partial.usage,
-      runError,
-      durationMs: Date.now() - startedAt,
+    sessionId: partial.sessionId,
+    usage: partial.usage,
+    runError,
+    durationMs: Date.now() - startedAt,
   }));
 
   return { effect, abortController, partial };
