@@ -11,6 +11,7 @@ import type { RunEvent } from "../events";
 import { defineWorkflow, Schema } from "../workflow";
 import { createSlowFakeAdapter } from "../replay/adapter";
 import { startRun, RunCancelledSignal } from "./run";
+import type { AgentAdapter } from "./agent-adapter";
 
 describe("RunCancelledSignal as TaggedError (#34)", () => {
   test("carries the _tag", () => {
@@ -297,5 +298,57 @@ describe("startRun model precedence (issue #16)", () => {
     expect(started?.payload._tag === "AgentStepStarted" && started.payload.model).toBe(
       "workflow-default",
     );
+  });
+});
+
+describe("startRun prepareWorkspace (ADR 0012 §3, #37)", () => {
+  function trackingAdapter(): AgentAdapter & { readonly prepared: Array<string> } {
+    const prepared: Array<string> = [];
+    const inner = createSlowFakeAdapter([]);
+    return {
+      prepared,
+      async prepareWorkspace(dir: string): Promise<void> {
+        prepared.push(dir);
+      },
+      stream: inner.stream.bind(inner),
+    };
+  }
+
+  test("calls adapter.prepareWorkspace for a clone workspace before the workflow runs", async () => {
+    const events: Array<RunEvent> = [];
+    const adapter = trackingAdapter();
+    const workflow = defineWorkflow("prep-clone", {
+      input: Schema.Struct({}),
+      run: async () => ({}),
+    });
+
+    await startRun(workflow, {
+      runId: "run-prep-clone",
+      dir: "/tmp/clone-dir",
+      input: {},
+      adapter,
+      onEvent: (event) => events.push(event),
+    }).result;
+
+    expect(adapter.prepared).toEqual(["/tmp/clone-dir"]);
+  });
+
+  test("does not call adapter.prepareWorkspace for a scratch workspace", async () => {
+    const adapter = trackingAdapter();
+    const workflow = defineWorkflow("prep-scratch", {
+      input: Schema.Struct({}),
+      run: async () => ({}),
+    });
+
+    await startRun(workflow, {
+      runId: "run-prep-scratch",
+      dir: "/tmp/scratch-dir",
+      input: {},
+      adapter,
+      workspaceKind: "scratch",
+      onEvent: () => {},
+    }).result;
+
+    expect(adapter.prepared).toEqual([]);
   });
 });
