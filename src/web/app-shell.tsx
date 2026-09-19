@@ -1,5 +1,5 @@
 import { Link, Outlet } from "@tanstack/react-router";
-import { Activity, CalendarClock, ListTree, Menu, Moon, Plus, Sun } from "lucide-react";
+import { CalendarClock, ListTree, Menu, Moon, Plus, Sun } from "lucide-react";
 import { useEffect, useState } from "react";
 import { NewRunDialog } from "@/web/components/new-run-dialog";
 import { Button } from "@/web/components/ui/button";
@@ -98,10 +98,6 @@ export function AppShell() {
           <span className="font-mono text-lg font-semibold tracking-tight">factory</span>
         </div>
         <div className="ml-auto flex items-center gap-3">
-          <span className="hidden items-center gap-1.5 text-sm text-muted-foreground sm:flex">
-            <Activity className="size-4" />
-            same-origin API
-          </span>
           <Button
             data-testid="new-run-trigger"
             size="sm"

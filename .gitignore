@@ -54,3 +54,6 @@ playwright-report/
 **/factory.db-wal
 .factory/workspaces/
 .factory/runs/
+
+# per-machine Tailscale cert for the Vite dev server (`tailscale cert`)
+.certs/

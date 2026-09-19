@@ -1,8 +1,9 @@
 import { useMemo, useState } from "react";
 import { Link, useParams } from "@tanstack/react-router";
-import { PanelRight, X } from "lucide-react";
+import { PanelRight, RotateCcw, X } from "lucide-react";
 import type { RunEvent } from "@/web/api";
 import { CancelRunButton } from "@/web/components/cancel-run-button";
+import { NewRunDialog } from "@/web/components/new-run-dialog";
 import { Button } from "@/web/components/ui/button";
 import {
   MessageScroller,
@@ -11,8 +12,13 @@ import {
   MessageScrollerProvider,
   MessageScrollerViewport,
 } from "@/web/components/ui/message-scroller";
+import {
+  ResizableHandle,
+  ResizablePanel,
+  ResizablePanelGroup,
+} from "@/web/components/ui/resizable";
 import { useRun, useRunEvents, useTickingNow } from "@/web/hooks";
-import { formatAgo, formatClock, formatDuration } from "@/web/lib/format";
+import { formatAgo, formatClock, formatDuration, formatTokenCount } from "@/web/lib/format";
 import {
   deriveRunMeta,
   deriveSteps,
@@ -220,6 +226,13 @@ function stepKindLabel(step: StepView): string {
   return step.kind;
 }
 
+function stepMeta(step: StepView): string {
+  if (step.kind === "agent" && step.totalTokens !== undefined) {
+    return `${step.descriptor} · ${formatTokenCount(step.totalTokens)} tok`;
+  }
+  return step.descriptor;
+}
+
 /*
  * The step row: six columns >559px pane-width (status | kind | time | name |
  * descriptor | chevron), stacked full-width lines below that. The pane is a
@@ -319,13 +332,13 @@ function StepRow({
           {step.name}
         </span>
         <span
-          title={step.descriptor}
+          title={stepMeta(step)}
           className={cn(
             "max-w-[32ch] min-w-0 overflow-hidden text-right font-mono text-[11px] whitespace-nowrap text-ellipsis text-muted-foreground",
             STEP_AREA_META,
           )}
         >
-          {step.descriptor}
+          {stepMeta(step)}
         </span>
         <span className={STEP_CHEVRON}>›</span>
       </button>
@@ -723,7 +736,15 @@ function StepDetails({
   );
 }
 
-function EventsTable({ events }: { readonly events: ReadonlyArray<RunEvent> }) {
+function EventsTable({
+  events,
+  selectedSeq,
+  onSelect,
+}: {
+  readonly events: ReadonlyArray<RunEvent>;
+  readonly selectedSeq: number | null;
+  readonly onSelect: (seq: number) => void;
+}) {
   return (
     <table data-testid="events-table" className="w-full border-collapse text-xs">
       <thead>
@@ -744,7 +765,18 @@ function EventsTable({ events }: { readonly events: ReadonlyArray<RunEvent> }) {
             key={event.seq}
             data-testid="event-row"
             data-tag={event.payload._tag}
-            className="border-b border-border align-top"
+            tabIndex={0}
+            aria-current={selectedSeq === event.seq}
+            onClick={() => onSelect(event.seq)}
+            onKeyDown={(keyEvent) => {
+              if (keyEvent.key !== "Enter" && keyEvent.key !== " ") return;
+              keyEvent.preventDefault();
+              onSelect(event.seq);
+            }}
+            className={cn(
+              "cursor-pointer border-b border-border align-top hover:bg-accent/50",
+              selectedSeq === event.seq && STEP_ROW_SELECTED,
+            )}
           >
             <td className="px-3 py-1.5 font-mono text-[11px]">{event.seq}</td>
             <td className="px-3 py-1.5 font-mono text-[11px]">{formatClock(event.ts)}</td>
@@ -756,6 +788,29 @@ function EventsTable({ events }: { readonly events: ReadonlyArray<RunEvent> }) {
         ))}
       </tbody>
     </table>
+  );
+}
+
+/** Full detail for one raw `RunEvent` — mirrors `StepDetails`' Fields + raw-payload shape. */
+function EventDetails({ event }: { readonly event: RunEvent }) {
+  return (
+    <div data-testid="event-detail" className="grid gap-4">
+      <section className="grid gap-2">
+        <span className="text-[11px] font-semibold tracking-wide text-muted-foreground uppercase">
+          Fields
+        </span>
+        <div className="grid gap-1.5">
+          {fieldRow("seq", String(event.seq))}
+          {fieldRow("ts", formatClock(event.ts))}
+          {fieldRow("tag", event.payload._tag)}
+        </div>
+      </section>
+      <section className="grid gap-2">
+        <Disclosure label="Raw payload" hint="event view">
+          <JsonBlock value={event} />
+        </Disclosure>
+      </section>
+    </div>
   );
 }
 
@@ -772,8 +827,10 @@ function RunDetailView({ runId }: { readonly runId: string }) {
   const { events, streaming } = useRunEvents(runId);
   const [tab, setTab] = useState<"steps" | "events">("steps");
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
+  const [selectedEventSeq, setSelectedEventSeq] = useState<number | null>(null);
   const [inspectorOpen, setInspectorOpen] = useState(false);
   const [transcriptOpen, setTranscriptOpen] = useState(false);
+  const [runAgainOpen, setRunAgainOpen] = useState(false);
   const inspectorCompact = useMediaQuery(INSPECTOR_COMPACT_QUERY);
   const closeInspector = () => {
     setInspectorOpen(false);
@@ -781,6 +838,11 @@ function RunDetailView({ runId }: { readonly runId: string }) {
   };
   const selectStep = (key: string) => {
     setSelectedKey(key);
+    setInspectorOpen(true);
+    setTranscriptOpen(false);
+  };
+  const selectEvent = (seq: number) => {
+    setSelectedEventSeq(seq);
     setInspectorOpen(true);
     setTranscriptOpen(false);
   };
@@ -797,6 +859,8 @@ function RunDetailView({ runId }: { readonly runId: string }) {
   const now = useTickingNow(active);
   const steps = deriveSteps(events, { active });
   const selected = steps.find((step) => step.key === selectedKey) ?? null;
+  const selectedEvent = events.find((event) => event.seq === selectedEventSeq) ?? null;
+  const workflowId = run?.workflowId ?? meta.workflowId;
 
   const startedAt = run?.startedAt ?? events[0]?.ts ?? 0;
   const finishedAt = meta.finishedAt ?? run?.finishedAt;
@@ -825,13 +889,32 @@ function RunDetailView({ runId }: { readonly runId: string }) {
       />
     ) : null;
 
-  const showAside = selected !== null && inspectorOpen;
+  // Steps and events are separate domains with their own selection state; the
+  // aside reflects whichever one belongs to the active tab, so switching tabs
+  // doesn't clobber the other tab's selection.
+  const activeInspected:
+    | { kind: "step"; step: StepView }
+    | { kind: "event"; event: RunEvent }
+    | null =
+    tab === "events"
+      ? selectedEvent !== null
+        ? { kind: "event", event: selectedEvent }
+        : null
+      : selected !== null
+        ? { kind: "step", step: selected }
+        : null;
+
+  const showAside = activeInspected !== null && inspectorOpen;
   const desktopAside = showAside && !inspectorCompact;
   const mobileSheet = showAside && inspectorCompact;
 
   const selectedAgent = selected?.kind === "agent" ? selected : null;
   const inspectorBody =
-    selected === null ? null : transcriptOpen && selectedAgent !== null ? (
+    activeInspected === null ? null : activeInspected.kind === "event" ? (
+      <div className="min-h-0 flex-1 overflow-y-auto p-4">
+        <EventDetails event={activeInspected.event} />
+      </div>
+    ) : transcriptOpen && selectedAgent !== null ? (
       <TranscriptPanel
         step={selectedAgent}
         events={events}
@@ -840,131 +923,147 @@ function RunDetailView({ runId }: { readonly runId: string }) {
     ) : (
       <div className="min-h-0 flex-1 overflow-y-auto p-4">
         <StepDetails
-          step={selected}
-          onOpenTranscript={selected.kind === "agent" ? () => setTranscriptOpen(true) : undefined}
+          step={activeInspected.step}
+          onOpenTranscript={
+            activeInspected.step.kind === "agent" ? () => setTranscriptOpen(true) : undefined
+          }
         />
       </div>
     );
 
-  return (
-    <section data-testid="run-detail" className="flex h-full min-h-0 overflow-hidden">
-      {/*
-       * The whole main column scrolls as one page (header, tabs, steps), so a
-       * tall overview can scroll away instead of pinning the steps. The aside
-       * stays height-bound with its own internal scroll.
-       */}
-      <div className="flex min-w-0 flex-1 flex-col overflow-y-auto">
-        <header className="shrink-0 border-b border-border px-5 pt-4 pb-3">
-          <div className="mb-3 flex flex-wrap items-center gap-3">
-            <Link
-              to="/"
-              className="rounded-md bg-muted px-2 py-1 font-mono text-[11px] text-muted-foreground hover:text-foreground"
-            >
-              ‹ runs
-            </Link>
-            <span className="min-w-0 font-mono text-base font-semibold break-all">{runId}</span>
-            <StatusCell status={status} />
-            {active ? <CancelRunButton runId={runId} /> : null}
-            {/*
-             * The connection indicator reports the *connection*, not the run:
-             * with reconnect in place these can legitimately disagree for a
-             * moment (a live run whose stream is mid-retry), and saying
-             * "connected" then would be a lie.
-             */}
-            {streaming ? (
-              <span className="ml-auto flex items-center gap-1.5 font-mono text-[11px] text-muted-foreground">
-                <i
-                  className="motion-reduce:animate-none animate-status-pulse size-[7px] flex-none rounded-full bg-(--status)"
-                  data-status="running"
-                  aria-hidden="true"
-                />
-                replay-then-tail · connected
-              </span>
-            ) : (
-              <span className="ml-auto font-mono text-[11px] text-muted-foreground">
-                stream closed · {events.length} events replayed
-              </span>
-            )}
-          </div>
-          <MetaTable
-            runId={runId}
-            workflowId={run?.workflowId ?? meta.workflowId}
-            status={status}
-            startedAt={startedAt}
-            finishedAt={finishedAt}
-            duration={duration}
-            dir={meta.dir ?? run?.dir}
-            workspaceKind={run?.workspaceKind ?? meta.workspaceKind}
-            input={meta.input}
-            output={meta.output}
-            note={status === "interrupted" ? "no terminal event — process died mid-run" : undefined}
-            parentId={meta.parentId}
-            dispatched={meta.dispatched}
-            dedupeKey={meta.dedupeKey}
-            collisions={meta.collisions}
-          />
-        </header>
-
-        <div className="flex shrink-0 items-center gap-2 border-b border-border px-5 py-2">
-          <div role="tablist" className="inline-flex gap-0.5 rounded-xl bg-muted p-1">
-            {(["steps", "events"] as const).map((value) => (
-              <button
-                key={value}
-                role="tab"
-                type="button"
-                aria-selected={tab === value}
-                onClick={() => setTab(value)}
-                className={cn(
-                  "rounded-lg px-3 py-1 text-xs capitalize",
-                  tab === value
-                    ? "bg-card text-foreground shadow-sm"
-                    : "text-muted-foreground hover:text-foreground",
-                )}
-              >
-                {value}
-              </button>
-            ))}
-          </div>
-          <span className="hidden min-w-0 truncate font-mono text-[11px] text-muted-foreground lg:inline">
-            GET /api/runs/{runId}/events
-          </span>
-          <Button
-            variant="ghost"
-            size="icon"
-            aria-label={inspectorOpen ? "Close inspector" : "Open inspector"}
-            aria-expanded={inspectorOpen}
-            disabled={selected === null}
-            onClick={() => setInspectorOpen((value) => !value)}
-            className="ml-auto"
+  // The whole main column scrolls as one page (header, tabs, steps), so a
+  // tall overview can scroll away instead of pinning the steps. The aside
+  // stays height-bound with its own internal scroll.
+  const mainColumnContent = (
+    <>
+      <header className="shrink-0 border-b border-border px-5 pt-4 pb-3">
+        <div className="mb-3 flex flex-wrap items-center gap-3">
+          <Link
+            to="/"
+            className="rounded-md bg-muted px-2 py-1 font-mono text-[11px] text-muted-foreground hover:text-foreground"
           >
-            <PanelRight />
-          </Button>
+            ‹ runs
+          </Link>
+          <span className="min-w-0 font-mono text-base font-semibold break-all">{runId}</span>
+          <StatusCell status={status} />
+          <span className="ml-auto flex items-center gap-2">
+            {workflowId !== undefined ? (
+              <Button
+                variant="outline"
+                size="sm"
+                data-testid="run-again"
+                onClick={() => setRunAgainOpen(true)}
+                className="font-mono text-[11px]"
+              >
+                <RotateCcw />
+                run again
+              </Button>
+            ) : null}
+            {active ? <CancelRunButton runId={runId} /> : null}
+          </span>
         </div>
+        <MetaTable
+          runId={runId}
+          workflowId={workflowId}
+          status={status}
+          startedAt={startedAt}
+          finishedAt={finishedAt}
+          duration={duration}
+          dir={meta.dir ?? run?.dir}
+          workspaceKind={run?.workspaceKind ?? meta.workspaceKind}
+          input={meta.input}
+          output={meta.output}
+          note={status === "interrupted" ? "no terminal event — process died mid-run" : undefined}
+          parentId={meta.parentId}
+          dispatched={meta.dispatched}
+          dedupeKey={meta.dedupeKey}
+          collisions={meta.collisions}
+        />
+      </header>
 
-        <div className="min-w-0 flex-1 p-4 @container/steps">
-          {tab === "steps" ? (
-            steps.length === 0 && !active ? (
-              <p className="py-12 text-center text-sm text-muted-foreground">No steps recorded.</p>
-            ) : (
-              <StepsList
-                steps={steps}
-                now={now}
-                selectedKey={selectedKey}
-                onSelect={selectStep}
-                terminal={terminal}
-              />
-            )
-          ) : (
-            <EventsTable events={events} />
-          )}
+      <div className="flex shrink-0 items-center gap-2 border-b border-border px-5 py-2">
+        <div role="tablist" className="inline-flex gap-0.5 rounded-xl bg-muted p-1">
+          {(["steps", "events"] as const).map((value) => (
+            <button
+              key={value}
+              role="tab"
+              type="button"
+              aria-selected={tab === value}
+              onClick={() => setTab(value)}
+              className={cn(
+                "rounded-lg px-3 py-1 text-xs capitalize",
+                tab === value
+                  ? "bg-card text-foreground shadow-sm"
+                  : "text-muted-foreground hover:text-foreground",
+              )}
+            >
+              {value}
+            </button>
+          ))}
         </div>
+        <span className="hidden min-w-0 truncate font-mono text-[11px] text-muted-foreground lg:inline">
+          GET /api/runs/{runId}/events
+        </span>
+        <Button
+          variant="ghost"
+          size="icon"
+          aria-label={inspectorOpen ? "Close inspector" : "Open inspector"}
+          aria-expanded={inspectorOpen}
+          disabled={activeInspected === null}
+          onClick={() => setInspectorOpen((value) => !value)}
+          className="ml-auto"
+        >
+          <PanelRight />
+        </Button>
       </div>
 
-      {desktopAside && selected !== null ? (
-        <aside className="flex h-full w-[22rem] shrink-0 flex-col overflow-hidden border-l border-border">
-          {inspectorBody}
-        </aside>
-      ) : null}
+      <div className="min-w-0 flex-1 p-4 @container/steps">
+        {tab === "steps" ? (
+          steps.length === 0 && !active ? (
+            <p className="py-12 text-center text-sm text-muted-foreground">No steps recorded.</p>
+          ) : (
+            <StepsList
+              steps={steps}
+              now={now}
+              selectedKey={selectedKey}
+              onSelect={selectStep}
+              terminal={terminal}
+            />
+          )
+        ) : (
+          <EventsTable events={events} selectedSeq={selectedEventSeq} onSelect={selectEvent} />
+        )}
+      </div>
+    </>
+  );
+
+  return (
+    <section data-testid="run-detail" className="flex h-full min-h-0 overflow-hidden">
+      {desktopAside && activeInspected !== null ? (
+        <ResizablePanelGroup direction="horizontal" className="min-h-0 flex-1">
+          <ResizablePanel defaultSize={75} minSize={40} className="flex min-w-0 flex-col">
+            {/*
+             * `Panel` sets `overflow: hidden` as an inline style (react-resizable-panels
+             * needs it so content can't force a panel wider/taller than its
+             * allotted size) — inline styles beat a Tailwind class, so the
+             * scroll container has to be this nested div instead of the panel
+             * itself.
+             */}
+            <div className="min-h-0 flex-1 overflow-y-auto">{mainColumnContent}</div>
+          </ResizablePanel>
+          <ResizableHandle />
+          <ResizablePanel
+            defaultSize={25}
+            minSize={18}
+            maxSize={50}
+            className="flex h-full flex-col overflow-hidden border-l border-border"
+          >
+            {inspectorBody}
+          </ResizablePanel>
+        </ResizablePanelGroup>
+      ) : (
+        <div className="flex min-w-0 flex-1 flex-col overflow-y-auto">{mainColumnContent}</div>
+      )}
 
       {mobileSheet ? (
         <div
@@ -973,11 +1072,11 @@ function RunDetailView({ runId }: { readonly runId: string }) {
           aria-hidden="true"
         />
       ) : null}
-      {selected !== null && inspectorOpen && inspectorCompact ? (
+      {activeInspected !== null && inspectorOpen && inspectorCompact ? (
         <aside className="fixed top-14 right-0 bottom-0 z-50 flex w-full max-w-sm flex-col overflow-hidden border-l border-border bg-card shadow-lg">
           <div className="flex items-center justify-between border-b border-border px-4 py-2">
             <span className="text-[11px] font-semibold tracking-wide text-muted-foreground uppercase">
-              Step detail
+              {activeInspected.kind === "event" ? "Event detail" : "Step detail"}
             </span>
             <Button
               variant="ghost"
@@ -991,6 +1090,12 @@ function RunDetailView({ runId }: { readonly runId: string }) {
           {inspectorBody}
         </aside>
       ) : null}
+
+      <NewRunDialog
+        open={runAgainOpen}
+        onClose={() => setRunAgainOpen(false)}
+        initial={workflowId !== undefined ? { workflowId, input: meta.input } : undefined}
+      />
     </section>
   );
 }

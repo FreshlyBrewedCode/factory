@@ -1,12 +1,20 @@
 const EM_DASH = "—";
 
-/** `12345` -> `12s`, `95000` -> `1m 35s`. Undefined (no recorded duration) -> em dash. */
+/**
+ * `12345` -> `12s`, `95000` -> `1m 35s`, `3723000` -> `1h 02m 03s`. Undefined
+ * (no recorded duration) -> em dash.
+ */
 export function formatDuration(ms: number | undefined): string {
   if (ms === undefined) return EM_DASH;
   const seconds = Math.round(ms / 1000);
   if (seconds < 60) return `${seconds}s`;
-  const minutes = Math.floor(seconds / 60);
-  return `${minutes}m ${String(seconds % 60).padStart(2, "0")}s`;
+  if (seconds < 3600) {
+    const minutes = Math.floor(seconds / 60);
+    return `${minutes}m ${String(seconds % 60).padStart(2, "0")}s`;
+  }
+  const hours = Math.floor(seconds / 3600);
+  const minutes = Math.floor((seconds % 3600) / 60);
+  return `${hours}h ${String(minutes).padStart(2, "0")}m ${String(seconds % 60).padStart(2, "0")}s`;
 }
 
 /** `HH:MM:SS` in local time — an instrument-panel clock, not a locale string. */
@@ -47,6 +55,14 @@ export function formatInZone(ts: number, timezone: string): string {
     minute: "2-digit",
     hour12: false,
   }).format(new Date(ts));
+}
+
+/** `3648` -> `3.6k`, `10_000` -> `10k`, `1_500_000` -> `1.5m`, `999` -> `999`. */
+export function formatTokenCount(n: number): string {
+  const trimmed = (value: number) => value.toFixed(1).replace(/\.0$/, "");
+  if (n < 1_000) return String(n);
+  if (n < 1_000_000) return `${trimmed(n / 1_000)}k`;
+  return `${trimmed(n / 1_000_000)}m`;
 }
 
 /** Relative label for a future instant — the sibling of `formatAgo`. */
