@@ -7,8 +7,9 @@
  * ask is a permanent silent deadlock of the run, its WIP slot, and its
  * workspace.
  *
- * `allocateWorkspace`/`resetClone` write `opencode.json` into every run tree
- * with `permission: {"*": "allow"}`, verified against opencode's
+ * ADR 0012 §3 (#37): the opencode adapter calls `writeHeadlessPermissions`
+ * from `prepareWorkspace`, writing `opencode.json` with `permission:
+ * {"*": "allow"}` into every run tree. Verified against opencode's
  * `PermissionConfig` schema (`"*"`, `"allow"`, and every category including
  * `external_directory` are accepted keys). The tree is a throwaway sandbox
  * clone where `gh`/`git` already run host-side; the asks this eliminates are
