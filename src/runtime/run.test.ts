@@ -297,7 +297,7 @@ describe("startRun prepareWorkspace (ADR 0012 §3, #37)", () => {
     };
   }
 
-  test("calls adapter.prepareWorkspace for a clone workspace before the workflow runs", async () => {
+  test("calls adapter.prepareWorkspace when prepareWorkspace is true", async () => {
     const events: Array<RunEvent> = [];
     const adapter = trackingAdapter();
     const workflow = defineWorkflow("prep-clone", {
@@ -310,13 +310,14 @@ describe("startRun prepareWorkspace (ADR 0012 §3, #37)", () => {
       dir: "/tmp/clone-dir",
       input: {},
       adapter,
+      prepareWorkspace: true,
       onEvent: (event) => events.push(event),
     }).result;
 
     expect(adapter.prepared).toEqual(["/tmp/clone-dir"]);
   });
 
-  test("does not call adapter.prepareWorkspace for a scratch workspace", async () => {
+  test("does not call adapter.prepareWorkspace when prepareWorkspace is absent", async () => {
     const adapter = trackingAdapter();
     const workflow = defineWorkflow("prep-scratch", {
       input: Schema.Struct({}),
@@ -328,7 +329,6 @@ describe("startRun prepareWorkspace (ADR 0012 §3, #37)", () => {
       dir: "/tmp/scratch-dir",
       input: {},
       adapter,
-      workspaceKind: "scratch",
       onEvent: () => {},
     }).result;
 
