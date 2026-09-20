@@ -205,6 +205,38 @@ export const RunEventPayload = Schema.TaggedUnion({
     output: Schema.optional(Schema.Json),
     /** From the `opencode.session-id` CUSTOM chunk. Fresh per step (D10). */
     sessionId: Schema.optional(Schema.String),
+    /**
+     * Token counts from the step's `RUN_FINISHED.usage` chunk.
+     *
+     * Absent when the step produced no `RUN_FINISHED` (cancelled mid-stream, or
+     * a failure that surfaced as `RUN_ERROR` — the adapter emits one or the
+     * other, never both).
+     *
+     * ONLY THE FINAL ASSISTANT MESSAGE IS REPRESENTED HERE. One `ctx.agent()`
+     * step is one opencode `session.prompt()`, which internally runs opencode's
+     * whole agent loop — commonly 50-150 assistant messages. Each has its own
+     * token counts, but `@tanstack/ai-opencode` builds `RUN_FINISHED.usage`
+     * from the terminal `done` message alone and drops the rest (its translator
+     * ignores `message.updated`, which is where the per-message counts arrive).
+     * So these are the *last turn's* numbers, not the step's cumulative spend —
+     * do not bill off them. Recovering the true cumulative figure needs
+     * opencode's own message store, keyed by `sessionId`.
+     *
+     * Stored as the four raw components, deliberately without a total: the
+     * adapter's own `usage.totalTokens` is `input + output` and silently omits
+     * cache reads, which for a coding session are ~99% of the context. Consumers
+     * derive their own sum (see `agentStepContextTokens`); the components are
+     * individually correct, so that derivation survives an upstream fix.
+     */
+    usage: Schema.optional(
+      Schema.Struct({
+        inputTokens: Integer,
+        outputTokens: Integer,
+        /** Prompt tokens served from cache. NOT a subset of `inputTokens` — opencode reports the two disjointly. */
+        cachedInputTokens: Integer,
+        reasoningTokens: Integer,
+      }),
+    ),
     /** From a `RUN_ERROR` chunk, or the abort reason. */
     error: Schema.optional(Schema.String),
   },
@@ -322,3 +354,22 @@ export type RunEvent = typeof RunEvent.Type;
 
 /** Terminal run states — the three tags phase 3's dispatcher waits on. */
 export const isTerminal = RunEventPayload.isAnyOf(["RunFinished", "RunFailed", "RunCancelled"]);
+
+export type AgentStepUsage = NonNullable<
+  Extract<RunEventPayload, { _tag: "AgentStepFinished" }>["usage"]
+>;
+
+/**
+ * Size of the context the step's final assistant turn ran against: prompt plus
+ * completion plus the cached prefix. This is the number opencode itself
+ * displays for the session, and it reproduces opencode's stored per-message
+ * `tokens.total` exactly (verified against all 16 steps of
+ * run-69780571-15e8-442a-83cf-2abda1fc3f2e).
+ *
+ * Cache reads are added rather than assumed subsumed because opencode reports
+ * `input` exclusive of them (the Anthropic convention). It is emphatically not
+ * the step's cumulative token spend — see `AgentStepFinished.usage`.
+ */
+export function agentStepContextTokens(usage: AgentStepUsage): number {
+  return usage.inputTokens + usage.outputTokens + usage.cachedInputTokens;
+}

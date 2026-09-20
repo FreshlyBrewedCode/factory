@@ -1,4 +1,4 @@
-import type { RunEvent } from "../../events";
+import type { AgentStepUsage, RunEvent } from "../../events";
 
 /**
  * S3's read-only projection of the typed event spine (`src/events.ts`) for the
@@ -6,6 +6,11 @@ import type { RunEvent } from "../../events";
  * unit-testable in `bun test` without a DOM. It deliberately stops at typed
  * Factory payloads — `AgentChunk` is counted, never decoded. The transcript
  * reducer is S4.
+ *
+ * Token counts arrive on the typed `AgentStepFinished.usage`, so the earlier
+ * peek into `RUN_FINISHED`'s raw JSON is gone: that route could only see the
+ * adapter's `usage.totalTokens`, which omits the cached prefix and under-reports
+ * a step's context by ~100x.
  */
 
 export type StepStatus =
@@ -37,6 +42,8 @@ export interface AgentStepView extends StepBase {
   readonly prompt: string;
   readonly chunkCount: number;
   readonly sessionId: string | undefined;
+  /** Final-turn token counts; absent for steps that never reached `RUN_FINISHED`. */
+  readonly usage: AgentStepUsage | undefined;
   readonly finalText: string | undefined;
   readonly output: unknown;
   readonly error: string | undefined;
@@ -139,6 +146,7 @@ export function deriveSteps(
           prompt: payload.prompt,
           chunkCount: 0,
           sessionId: undefined,
+          usage: undefined,
           finalText: undefined,
           output: undefined,
           error: undefined,
@@ -178,6 +186,7 @@ export function deriveSteps(
           prompt: base?.prompt ?? "",
           chunkCount: payload.chunkCount,
           sessionId: payload.sessionId,
+          usage: payload.usage,
           finalText: payload.finalText,
           output: payload.output,
           error: payload.error,

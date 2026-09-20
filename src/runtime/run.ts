@@ -264,6 +264,7 @@ export function startRun<I, O>(
           ...(handle.partial.sessionId !== undefined
             ? { sessionId: handle.partial.sessionId }
             : {}),
+          ...(handle.partial.usage !== undefined ? { usage: handle.partial.usage } : {}),
         });
         throw new RunCancelledSignal({});
       }
@@ -278,6 +279,7 @@ export function startRun<I, O>(
         durationMs,
         finalText: handle.partial.finalText,
         ...(handle.partial.sessionId !== undefined ? { sessionId: handle.partial.sessionId } : {}),
+        ...(handle.partial.usage !== undefined ? { usage: handle.partial.usage } : {}),
         error: message,
       });
       throw new Error(`agent step "${name}" failed: ${message}`);
@@ -297,6 +299,7 @@ export function startRun<I, O>(
       finalText: result.finalText,
       ...(output !== undefined ? { output: output as never } : {}),
       ...(result.sessionId !== undefined ? { sessionId: result.sessionId } : {}),
+      ...(result.usage !== undefined ? { usage: result.usage } : {}),
       ...(result.runError !== undefined ? { error: result.runError } : {}),
     });
 
