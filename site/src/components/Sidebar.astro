@@ -1,0 +1,36 @@
+---
+import { sortedDocs } from "../lib/docs";
+
+interface Props {
+  current: string;
+}
+
+const { current } = Astro.props;
+const entries = await sortedDocs();
+---
+
+<nav aria-label="Docs" class="text-sm">
+  <p class="font-sans text-[11px] font-semibold tracking-wide uppercase text-muted-foreground mb-3">
+    Documentation
+  </p>
+  <ul class="space-y-px border-l border-border">
+    {
+      entries.map((entry) => (
+        <li>
+          <a
+            href={`/docs/${entry.id}`}
+            aria-current={entry.id === current ? "page" : undefined}
+            class:list={[
+              "block -ml-px border-l py-1.5 pl-3 hover:text-foreground hover:border-border-strong",
+              entry.id === current
+                ? "border-primary text-foreground font-medium"
+                : "border-transparent text-muted-foreground",
+            ]}
+          >
+            {entry.data.title}
+          </a>
+        </li>
+      ))
+    }
+  </ul>
+</nav>

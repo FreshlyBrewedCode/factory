@@ -1,0 +1,6 @@
+# astro build output + generated types
+dist/
+.astro/
+
+# pagefind writes its index into dist/, but keep the cache out too
+node_modules/
