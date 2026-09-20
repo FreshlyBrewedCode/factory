@@ -61,7 +61,7 @@ function stepFinished(events: ReadonlyArray<RunEvent>) {
 describe("signals populate AgentStepFinished as before (issue #35)", () => {
   test("a session signal lands on AgentStepFinished.sessionId", async () => {
     const { events } = await runWith(TEXT_CHUNKS, [
-      { index: 0, signal: { kind: "session", sessionId: "ses_e2e" } },
+      { index: 0, signal: { _tag: "sessionId", value: "ses_e2e" } },
     ]);
     expect(stepFinished(events).sessionId).toBe("ses_e2e");
   });
@@ -70,7 +70,7 @@ describe("signals populate AgentStepFinished as before (issue #35)", () => {
     const events: Array<RunEvent> = [];
     const runtime = makeAgentRuntime(
       createSlowFakeAdapter([...TEXT_CHUNKS, { type: "CUSTOM", name: "anything-at-all" }], 1, [
-        { index: 3, signal: { kind: "structured-output", value: { where: "from-signal" } } },
+        { index: 3, signal: { _tag: "structuredOutput", value: { where: "from-signal" } } },
       ]),
     );
     const handle = await startRun(agentWorkflow(SIGNAL_SCHEMA), runtime, {
@@ -103,7 +103,7 @@ describe("signals populate AgentStepFinished as before (issue #35)", () => {
   test("an error signal fails the step and lands on AgentStepFinished.error", async () => {
     const { outcome, events } = await runWith(
       [...TEXT_CHUNKS, { type: "RUN_FINISHED" }],
-      [{ index: 3, signal: { kind: "error", message: "sandbox vanished" } }],
+      [{ index: 3, signal: { _tag: "runError", value: "sandbox vanished" } }],
     );
     expect(outcome.outcome).toBe("failed");
 

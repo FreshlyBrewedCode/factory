@@ -1,7 +1,11 @@
 import { Effect, ManagedRuntime } from "effect";
 import { describe, expect, test } from "bun:test";
 import { buildAgentStepEffect } from "../runtime/agent-step";
-import type { AgentAdapter, AgentAdapterOptions, AgentStreamItem } from "../runtime/agent-adapter";
+import type {
+  AgentAdapter,
+  AgentAdapterOptions,
+  AgentAdapterYield,
+} from "../runtime/agent-adapter";
 import { AgentRuntimeLayer } from "../runtime/agent-runtime";
 import { createCorpusReplayAdapter, createSlowFakeAdapter, loadCorpusBlocks } from "./adapter";
 
@@ -10,8 +14,8 @@ function runtimeFor(adapter: AgentAdapter) {
 }
 
 /** Drains an adapter stream to an array (for-of over async iterables is fine; this keeps types explicit). */
-async function drain(stream: AsyncIterable<AgentStreamItem>): Promise<Array<AgentStreamItem>> {
-  const items: Array<AgentStreamItem> = [];
+async function drain(stream: AsyncIterable<AgentAdapterYield>): Promise<Array<AgentAdapterYield>> {
+  const items: Array<AgentAdapterYield> = [];
   for await (const item of stream) items.push(item);
   return items;
 }
@@ -97,11 +101,11 @@ describe("createCorpusReplayAdapter", () => {
     // The recorded session id surfaces as a signal, and every signal is the
     // normalized union — never a vendor event name.
     expect(signals).toContainEqual({
-      kind: "session",
-      sessionId: "ses_f64ec04acffeJ0tjsHSkjAEqZF",
+      _tag: "sessionId",
+      value: "ses_f64ec04acffeJ0tjsHSkjAEqZF",
     });
     for (const signal of signals) {
-      expect(["session", "structured-output", "error"]).toContain(signal.kind);
+      expect(["sessionId", "structuredOutput", "runError"]).toContain(signal._tag);
     }
 
     // Chunks still ride through verbatim, one item per recorded chunk.
@@ -127,8 +131,8 @@ describe("createCorpusReplayAdapter", () => {
     );
 
     expect(items.map((item) => item.signal)).toEqual([
-      { kind: "session", sessionId: "ses_fresh" },
-      { kind: "structured-output", value: { ok: true } },
+      { _tag: "sessionId", value: "ses_fresh" },
+      { _tag: "structuredOutput", value: { ok: true } },
     ]);
 
     const runtime2 = runtimeFor(adapter);
@@ -178,7 +182,7 @@ describe("createSlowFakeAdapter", () => {
     const adapter = createSlowFakeAdapter(
       [{ type: "RUN_STARTED" }, { type: "TEXT_MESSAGE_START" }],
       1,
-      [{ index: 0, signal: { kind: "session", sessionId: "ses_slow" } }],
+      [{ index: 0, signal: { _tag: "sessionId", value: "ses_slow" } }],
     );
 
     const runtime4 = runtimeFor(adapter);
@@ -204,18 +208,19 @@ function createFakeSignalAdapter(signals: {
   structuredOutput?: unknown;
 }): AgentAdapter {
   return {
-    stream(_options: AgentAdapterOptions): AsyncIterable<AgentStreamItem> {
+    async prepareWorkspace(_dir: string): Promise<void> {},
+    stream(_options: AgentAdapterOptions): AsyncIterable<AgentAdapterYield> {
       return (async function* () {
         if (signals.sessionId !== undefined) {
           yield {
             chunk: { type: "RUN_STARTED" },
-            signal: { kind: "session", sessionId: signals.sessionId },
+            signal: { _tag: "sessionId", value: signals.sessionId },
           };
         }
         if (signals.structuredOutput !== undefined) {
           yield {
             chunk: { type: "RUN_FINISHED" },
-            signal: { kind: "structured-output", value: signals.structuredOutput },
+            signal: { _tag: "structuredOutput", value: signals.structuredOutput },
           };
         }
       })();
