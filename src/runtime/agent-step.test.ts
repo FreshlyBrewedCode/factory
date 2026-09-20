@@ -110,18 +110,17 @@ describe("buildAgentStepEffect over the signal seam (ADR 0012 §2)", () => {
 
   test("the service is resolved from context, not passed as an option", async () => {
     const fake = scriptedAdapter([{ chunk: { type: "RUN_FINISHED" } }]);
-    const program = Effect.gen(function* () {
-      const handle = yield* buildAgentStepEffect({
+    const runtime = ManagedRuntime.make(AgentRuntimeLayer(fake));
+    const handle = await runtime.runPromise(
+      buildAgentStepEffect({
         threadId: "t",
         dir: "/tmp",
         model: "m",
         prompt: "p",
         onChunk: () => {},
-      });
-      return yield* handle.effect;
-    });
-    const runtime = ManagedRuntime.make(AgentRuntimeLayer(fake));
-    const outcome = await runtime.runPromise(program);
+      }),
+    );
+    const outcome = await Effect.runPromise(handle.effect);
     expect(outcome.chunkCount).toBe(1);
     await runtime.dispose();
   });
