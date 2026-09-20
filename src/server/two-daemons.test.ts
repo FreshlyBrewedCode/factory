@@ -5,7 +5,7 @@
  * state is independent.
  */
 
-import { mkdtempSync, mkdirSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, test } from "bun:test";
@@ -52,8 +52,8 @@ describe("two daemons in one process (#38)", () => {
     const daemon1 = await startDaemon({
       dbPath: join(root, "daemon1.db"),
       port: 0,
-      adapter,
       config: defineConfig({
+        agent: { adapter },
         repo: {
           sshUrl: join(root, "seed-not-used"),
           identity: { name: "Factory", email: "factory@factory.test" },
@@ -69,8 +69,8 @@ describe("two daemons in one process (#38)", () => {
     const daemon2 = await startDaemon({
       dbPath: join(root, "daemon2.db"),
       port: 0,
-      adapter,
       config: defineConfig({
+        agent: { adapter },
         repo: {
           sshUrl: join(root, "seed-not-used"),
           identity: { name: "Factory", email: "factory@factory.test" },
