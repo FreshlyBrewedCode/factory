@@ -1,14 +1,32 @@
 ---
-import { getCollection, render } from "astro:content";
+import { render } from "astro:content";
 import DocsLayout from "../../layouts/DocsLayout.astro";
+import { sortedDocs } from "../../lib/docs";
 
+/*
+ * One route per markdown file, plus `/docs` itself: a rest param also matches
+ * the empty path, so the first page in sidebar order is rendered there rather
+ * than redirected to. See the note in `astro.config.mjs` for why this isn't a
+ * `redirects` entry.
+ */
 export async function getStaticPaths() {
-  const entries = await getCollection("docs");
-  return entries.map((entry) => ({ params: { slug: entry.id }, props: { entry } }));
+  const entries = await sortedDocs();
+  const paths = entries.map((entry) => ({ params: { slug: entry.id }, props: { entry } }));
+
+  const [first] = entries;
+  if (!first) return paths;
+
+  return [...paths, { params: { slug: undefined }, props: { entry: first } }];
 }
 
 const { entry } = Astro.props;
 const { Content, headings } = await render(entry);
+
+// `/docs` and `/docs/<first>` serve the same page. Point the duplicate at the
+// slugged URL so search engines pick it — it's the one the sidebar links. The
+// trailing slash matches what that page canonicalizes itself to under the
+// `directory` build format, so both tags name the same URL.
+const canonical = Astro.params.slug ? undefined : `/docs/${entry.id}/`;
 ---
 
 <DocsLayout
@@ -16,6 +34,7 @@ const { Content, headings } = await render(entry);
   description={entry.data.description}
   slug={entry.id}
   headings={headings}
+  canonical={canonical}
 >
   <Content />
 </DocsLayout>
