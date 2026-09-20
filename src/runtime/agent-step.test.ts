@@ -6,13 +6,14 @@
 
 import { Effect, ManagedRuntime } from "effect";
 import { describe, expect, test } from "bun:test";
-import type { AgentAdapter, AgentAdapterOptions, AgentStreamItem } from "./agent-adapter";
+import type { AgentAdapter, AgentAdapterOptions, AgentAdapterYield } from "./agent-adapter";
 import { AgentRuntimeLayer } from "./agent-runtime";
 import { buildAgentStepEffect } from "./agent-step";
 
-function scriptedAdapter(items: ReadonlyArray<AgentStreamItem>): AgentAdapter {
+function scriptedAdapter(items: ReadonlyArray<AgentAdapterYield>): AgentAdapter {
   return {
-    stream(_options: AgentAdapterOptions): AsyncIterable<AgentStreamItem> {
+    async prepareWorkspace(_dir: string): Promise<void> {},
+    stream(_options: AgentAdapterOptions): AsyncIterable<AgentAdapterYield> {
       return (async function* () {
         yield* items;
       })();
@@ -37,16 +38,16 @@ async function runStep(adapter: AgentAdapter, options: Parameters<typeof buildAg
 describe("buildAgentStepEffect over the signal seam (ADR 0012 §2)", () => {
   test("records adapter signals; chunks reach onChunk verbatim", async () => {
     const seen: Array<unknown> = [];
-    const items: ReadonlyArray<AgentStreamItem> = [
+    const items: ReadonlyArray<AgentAdapterYield> = [
       { chunk: { type: "RUN_STARTED" } },
       {
         chunk: { type: "CUSTOM", name: "vendor.session", value: { id: "ses_x" } },
-        signal: { kind: "session", sessionId: "ses_x" },
+        signal: { _tag: "sessionId", value: "ses_x" },
       },
       ...TEXT_CHUNKS.map((chunk) => ({ chunk })),
       {
         chunk: { type: "CUSTOM", name: "vendor.output", value: { object: { answer: 42 } } },
-        signal: { kind: "structured-output", value: { answer: 42 } },
+        signal: { _tag: "structuredOutput", value: { answer: 42 } },
       },
       { chunk: { type: "RUN_FINISHED" } },
     ];
@@ -72,7 +73,7 @@ describe("buildAgentStepEffect over the signal seam (ADR 0012 §2)", () => {
       scriptedAdapter([
         {
           chunk: { type: "RUN_ERROR", message: "boom" },
-          signal: { kind: "error", message: "boom" },
+          signal: { _tag: "runError", value: "boom" },
         },
       ]),
       {
