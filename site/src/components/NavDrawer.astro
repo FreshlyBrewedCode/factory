@@ -1,0 +1,90 @@
+---
+import Menu from "@lucide/astro/icons/menu";
+import X from "@lucide/astro/icons/x";
+import type { MarkdownHeading } from "astro";
+import Sidebar from "./Sidebar.astro";
+import Toc from "./Toc.astro";
+
+interface Props {
+  slug: string;
+  headings: MarkdownHeading[];
+}
+
+const { slug, headings } = Astro.props;
+---
+
+{/* A trigger bar under the sticky header, standing in for the two `lg:` rails. */}
+<div
+  class="lg:hidden sticky top-14 z-20 border-b border-border bg-background/85 backdrop-blur supports-[backdrop-filter]:bg-background/70"
+>
+  <div class="mx-auto max-w-6xl px-6 h-11 flex items-center gap-2">
+    <button
+      type="button"
+      id="nav-open"
+      aria-haspopup="dialog"
+      aria-controls="nav-drawer"
+      class="inline-flex items-center gap-2 -ml-2 px-2 h-8 rounded-md text-sm text-muted-foreground hover:text-foreground hover:bg-accent focus-visible:outline-2 focus-visible:outline-ring"
+    >
+      <Menu class="size-4" />
+      Menu
+    </button>
+  </div>
+</div>
+
+{/*
+  `<dialog>` + `showModal()` rather than the popover API: a nav drawer wants the
+  page behind it inert and focus trapped, which is exactly the difference
+  between a modal dialog and an auto popover. Esc and the backdrop come free.
+*/}
+<dialog
+  id="nav-drawer"
+  aria-label="Documentation navigation"
+  class="nav-drawer m-0 mr-auto h-dvh max-h-none w-72 max-w-[85vw] bg-background text-foreground border-r border-border p-0 backdrop:bg-black/50"
+>
+  <div class="h-full overflow-y-auto px-6 py-5">
+    <div class="flex items-center justify-between mb-6">
+      <span class="font-mono text-base font-semibold tracking-tight">factory</span>
+      <button
+        type="button"
+        id="nav-close"
+        aria-label="Close navigation"
+        class="size-8 -mr-2 grid place-items-center rounded-md text-muted-foreground hover:text-foreground hover:bg-accent focus-visible:outline-2 focus-visible:outline-ring"
+      >
+        <X class="size-4" />
+      </button>
+    </div>
+
+    <Sidebar current={slug} />
+
+    {
+      headings.length > 0 && (
+        <div class="mt-8 pt-6 border-t border-border">
+          <Toc headings={headings} />
+        </div>
+      )
+    }
+  </div>
+</dialog>
+
+<script>
+  const drawer = document.getElementById("nav-drawer") as HTMLDialogElement | null;
+
+  document.getElementById("nav-open")?.addEventListener("click", () => drawer?.showModal());
+  document.getElementById("nav-close")?.addEventListener("click", () => drawer?.close());
+
+  drawer?.addEventListener("click", (event) => {
+    // The dialog element fills only the drawer panel, so a click that lands on
+    // the dialog itself came from the backdrop.
+    if (event.target === drawer) drawer.close();
+
+    // Page links navigate and take the drawer with them, but a TOC anchor just
+    // scrolls — without this it would scroll behind a drawer that stayed open.
+    if ((event.target as Element).closest("a")) drawer.close();
+  });
+
+  // Resizing up to the `lg` breakpoint reveals the real rails; a drawer left
+  // open over them traps focus in a duplicate nav.
+  matchMedia("(min-width: 64rem)").addEventListener("change", (event) => {
+    if (event.matches) drawer?.close();
+  });
+</script>

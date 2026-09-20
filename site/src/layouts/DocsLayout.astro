@@ -1,0 +1,54 @@
+---
+import FileText from "@lucide/astro/icons/file-text";
+import type { MarkdownHeading } from "astro";
+import NavDrawer from "../components/NavDrawer.astro";
+import Sidebar from "../components/Sidebar.astro";
+import Toc from "../components/Toc.astro";
+import Base from "./Base.astro";
+
+interface Props {
+  title: string;
+  description?: string;
+  slug: string;
+  headings: MarkdownHeading[];
+}
+
+const { title, description, slug, headings } = Astro.props;
+---
+
+<Base title={`${title} — factory`} description={description}>
+  <NavDrawer slug={slug} headings={headings} />
+
+  <div class="mx-auto max-w-6xl px-6 grid gap-10 lg:grid-cols-[13rem_minmax(0,1fr)_12rem]">
+    <aside class="hidden lg:block py-10 sticky top-14 self-start max-h-[calc(100vh-3.5rem)] overflow-y-auto">
+      <Sidebar current={slug} />
+    </aside>
+
+    <article class="py-10 min-w-0" data-pagefind-body>
+      <header class="mb-8">
+        <div class="flex items-start justify-between gap-4">
+          <h1 class="text-3xl font-semibold tracking-tight">{title}</h1>
+          {/* Nothing else advertises the `.md` route, so link it. */}
+          <a
+            href={`/docs/${slug}.md`}
+            data-pagefind-ignore
+            class="shrink-0 mt-1.5 inline-flex items-center gap-1.5 rounded-md border border-border px-2 py-1 font-mono text-xs text-muted-foreground hover:text-foreground hover:bg-accent"
+          >
+            <FileText class="size-3.5" />
+            .md
+          </a>
+        </div>
+        {description && <p class="mt-2 text-muted-foreground text-lg">{description}</p>}
+      </header>
+
+      {/* `prose-invert` is unnecessary: global.css binds prose to the tokens. */}
+      <div class="prose max-w-none">
+        <slot />
+      </div>
+    </article>
+
+    <aside class="hidden lg:block py-10 sticky top-14 self-start max-h-[calc(100vh-3.5rem)] overflow-y-auto">
+      <Toc headings={headings} />
+    </aside>
+  </div>
+</Base>

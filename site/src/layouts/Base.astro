@@ -1,0 +1,46 @@
+---
+import Header from "../components/Header.astro";
+import "../styles/global.css";
+
+interface Props {
+  title: string;
+  description?: string;
+}
+
+const { title, description = "Imperative TypeScript workflows over coding-agent sandboxes." } =
+  Astro.props;
+---
+
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <title>{title}</title>
+    <meta name="description" content={description} />
+    <meta property="og:title" content={title} />
+    <meta property="og:description" content={description} />
+    <link rel="canonical" href={new URL(Astro.url.pathname, Astro.site)} />
+    {/* Resolve the scheme before first paint, or dark mode flashes white. */}
+    <script is:inline>
+      const stored = localStorage.getItem("theme");
+      const dark = stored ? stored === "dark" : matchMedia("(prefers-color-scheme: dark)").matches;
+      document.documentElement.classList.toggle("dark", dark);
+    </script>
+  </head>
+  <body class="min-h-screen">
+    <Header />
+    <slot />
+    <footer class="border-t border-border mt-24">
+      <div
+        class="mx-auto max-w-6xl px-6 py-8 flex items-center justify-between text-sm text-muted-foreground"
+      >
+        <span>MIT licensed.</span>
+        <a class="hover:text-foreground" href="https://github.com/FreshlyBrewedCode/factory">
+          GitHub
+        </a>
+      </div>
+    </footer>
+  </body>
+</html>

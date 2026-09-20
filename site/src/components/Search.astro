@@ -1,0 +1,75 @@
+---
+import Search from "@lucide/astro/icons/search";
+
+/*
+ * Pagefind indexes the *built* HTML, so `/pagefind/*` only exists after
+ * `bun run build`. In `astro dev` the assets would 404 silently, so the
+ * trigger says so instead of pretending to search.
+ *
+ * Two presentations of the same index, swapped at `sm`:
+ *
+ * - `<pagefind-searchbox>` inline in the header on desktop — a combobox with a
+ *   results dropdown, keyboard navigation, and a `mod+k` shortcut.
+ * - An icon button opening `<pagefind-modal>` on phones, where a header-width
+ *   input does not fit. Given no children the modal renders its own input,
+ *   summary, results and keyboard hints, so this is the whole integration.
+ *
+ * Both register with the same Pagefind instance and only one is ever visible.
+ * Styled through `--pf-*` in global.css.
+ */
+const dev = import.meta.env.DEV;
+---
+
+{
+  dev ? (
+    <span
+      class="inline-flex items-center h-8 px-3 rounded-md border border-dashed border-border text-xs text-muted-foreground"
+      title="Pagefind indexes built HTML. Run `bun run preview` to search locally."
+    >
+      <Search class="size-3.5 sm:hidden" />
+      <span class="hidden sm:inline">Search — build only</span>
+    </span>
+  ) : (
+    <>
+      <link rel="stylesheet" href="/pagefind/pagefind-component-ui.css" />
+      <script is:inline src="/pagefind/pagefind-component-ui.js" />
+
+      {/*
+        The responsive classes go on wrapper divs, not on the custom elements.
+        Pagefind's stylesheet sets `pagefind-searchbox { display: block }`
+        unlayered, and unlayered rules beat anything in a layer — so Tailwind's
+        `hidden`, which lives in `@layer utilities`, loses despite its higher
+        specificity. Its element selectors cannot reach a plain div.
+      */}
+      <div class="sm:hidden flex items-center">
+        <button
+          type="button"
+          id="search-open"
+          aria-label="Search"
+          aria-haspopup="dialog"
+          class="size-8 grid place-items-center rounded-md border border-border text-muted-foreground hover:text-foreground hover:bg-accent focus-visible:outline-2 focus-visible:outline-ring"
+        >
+          <Search class="size-4" />
+        </button>
+
+        <pagefind-modal id="search-modal" reset-on-close />
+      </div>
+
+      <div class="hidden sm:block">
+        <pagefind-searchbox compact placeholder="Search the docs" />
+      </div>
+    </>
+  )
+}
+
+<script>
+  interface PagefindModal extends HTMLElement {
+    open?: () => void;
+  }
+
+  document.getElementById("search-open")?.addEventListener("click", async () => {
+    // The custom element has to be upgraded before `open()` exists on it.
+    await customElements.whenDefined("pagefind-modal");
+    (document.getElementById("search-modal") as PagefindModal | null)?.open?.();
+  });
+</script>

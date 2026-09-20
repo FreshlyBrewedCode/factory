@@ -1,0 +1,32 @@
+---
+import type { MarkdownHeading } from "astro";
+
+interface Props {
+  headings: MarkdownHeading[];
+}
+
+// h2/h3 only — deeper levels make the rail noise rather than navigation.
+const headings = Astro.props.headings.filter((h) => h.depth === 2 || h.depth === 3);
+---
+
+{
+  headings.length > 0 && (
+    <nav aria-label="On this page" class="text-sm">
+      <p class="font-sans text-[11px] font-semibold tracking-wide uppercase text-muted-foreground mb-3">
+        On this page
+      </p>
+      <ul class="space-y-1.5">
+        {headings.map((heading) => (
+          <li class:list={[heading.depth === 3 && "pl-3"]}>
+            <a
+              href={`#${heading.slug}`}
+              class="block text-muted-foreground hover:text-foreground leading-snug"
+            >
+              {heading.text}
+            </a>
+          </li>
+        ))}
+      </ul>
+    </nav>
+  )
+}

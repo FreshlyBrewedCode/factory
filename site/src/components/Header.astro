@@ -1,0 +1,37 @@
+---
+import Search from "./Search.astro";
+import ThemeToggle from "./ThemeToggle.astro";
+
+const path = Astro.url.pathname;
+---
+
+<header
+  class="sticky top-0 z-30 border-b border-border bg-background/85 backdrop-blur supports-[backdrop-filter]:bg-background/70"
+>
+  <div class="mx-auto max-w-6xl px-6 h-14 flex items-center gap-6">
+    <a href="/" class="font-mono text-base font-semibold tracking-tight">factory</a>
+
+    <nav class="flex items-center gap-4 text-sm">
+      <a
+        href="/docs"
+        class:list={[
+          "hover:text-foreground",
+          path.startsWith("/docs") ? "text-foreground font-medium" : "text-muted-foreground",
+        ]}
+      >
+        Docs
+      </a>
+      <a
+        href="https://github.com/FreshlyBrewedCode/factory"
+        class="text-muted-foreground hover:text-foreground"
+      >
+        GitHub
+      </a>
+    </nav>
+
+    <div class="ml-auto flex items-center gap-3">
+      <Search />
+      <ThemeToggle />
+    </div>
+  </div>
+</header>
