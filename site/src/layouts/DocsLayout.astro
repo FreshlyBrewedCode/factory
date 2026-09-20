@@ -11,12 +11,18 @@ interface Props {
   description?: string;
   slug: string;
   headings: MarkdownHeading[];
+  canonical?: string;
 }
 
-const { title, description, slug, headings } = Astro.props;
+const { title, description, slug, headings, canonical } = Astro.props;
+
+// A page pointed elsewhere by `canonical` is the second copy of one that is
+// already indexed at its own URL — Pagefind only picks up pages carrying a
+// body marker, so withholding it keeps `/docs` out of the search results.
+const indexable = canonical === undefined;
 ---
 
-<Base title={`${title} — factory`} description={description}>
+<Base title={`${title} — factory`} description={description} canonical={canonical}>
   <NavDrawer slug={slug} headings={headings} />
 
   <div class="mx-auto max-w-6xl px-6 grid gap-10 lg:grid-cols-[13rem_minmax(0,1fr)_12rem]">
@@ -24,7 +30,7 @@ const { title, description, slug, headings } = Astro.props;
       <Sidebar current={slug} />
     </aside>
 
-    <article class="py-10 min-w-0" data-pagefind-body>
+    <article class="py-10 min-w-0" data-pagefind-body={indexable ? true : undefined}>
       <header class="mb-8">
         <div class="flex items-start justify-between gap-4">
           <h1 class="text-3xl font-semibold tracking-tight">{title}</h1>

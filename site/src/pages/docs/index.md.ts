@@ -9,9 +9,9 @@ import { sortedDocs } from "../../lib/docs";
  * Unlisted on purpose. It is not a collection entry, so the sidebar never sees
  * it, and Pagefind only indexes HTML, so it stays out of search too.
  *
- * `/docs` itself redirects to the first page, so there is no `index.astro` for
- * this to collide with; `[...slug].md.ts` only emits slugs that exist as
- * content, so it never claims `index` either.
+ * Nothing else claims this path: `[...slug].astro` renders `/docs` as
+ * `docs/index.html`, which sits beside this `docs/index.md`, and
+ * `[...slug].md.ts` only emits slugs that exist as content.
  */
 export const GET: APIRoute = async ({ site }) => {
   const docs = await sortedDocs();

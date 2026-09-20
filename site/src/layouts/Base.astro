@@ -5,10 +5,15 @@ import "../styles/global.css";
 interface Props {
   title: string;
   description?: string;
+  /** Path to canonicalize to, for a page also served at another URL. Defaults to this page's own. */
+  canonical?: string;
 }
 
-const { title, description = "Imperative TypeScript workflows over coding-agent sandboxes." } =
-  Astro.props;
+const {
+  title,
+  description = "Imperative TypeScript workflows over coding-agent sandboxes.",
+  canonical,
+} = Astro.props;
 ---
 
 <!doctype html>
@@ -21,7 +26,7 @@ const { title, description = "Imperative TypeScript workflows over coding-agent 
     <meta name="description" content={description} />
     <meta property="og:title" content={title} />
     <meta property="og:description" content={description} />
-    <link rel="canonical" href={new URL(Astro.url.pathname, Astro.site)} />
+    <link rel="canonical" href={new URL(canonical ?? Astro.url.pathname, Astro.site)} />
     {/* Resolve the scheme before first paint, or dark mode flashes white. */}
     <script is:inline>
       const stored = localStorage.getItem("theme");

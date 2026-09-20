@@ -19,8 +19,10 @@ const httpsOptions =
 export default defineConfig({
   site: "https://factory.frebreco.de",
 
-  // `/docs` has no page of its own; the sidebar's first entry is the entry point.
-  redirects: { "/docs": "/docs/introduction" },
+  // No `redirects` entry for `/docs`. On static hosting Astro can only compile
+  // one into a meta-refresh stub, and an unstyled stub paints white before it
+  // bounces. `pages/docs/[...slug].astro` renders the entry page at `/docs`
+  // instead — same destination, no flash.
 
   // Expressive Code's own options live in `ec.config.mjs` — see the note there.
   integrations: [expressiveCode()],
