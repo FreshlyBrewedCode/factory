@@ -5,6 +5,7 @@
  */
 
 import type { Database } from "bun:sqlite";
+import { Schema } from "effect";
 import type { ManagedRuntime } from "effect";
 import { rm } from "node:fs/promises";
 import { admitRun } from "./admission";
@@ -27,12 +28,9 @@ const active = new Map<string, RunHandle<unknown> | ReservedSlot>();
 export const DEFAULT_MAX_DISPATCH_DEPTH = 5;
 export const DEFAULT_MAX_CHILDREN_PER_RUN = 20;
 
-export class DispatchCapError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = "DispatchCapError";
-  }
-}
+export class DispatchCapError extends Schema.TaggedError<DispatchCapError>()("DispatchCapError", {
+  message: Schema.String,
+}) {}
 
 function isReserved(entry: RunHandle<unknown> | ReservedSlot | undefined): boolean {
   return entry !== undefined && !("result" in entry) && "cancelled" in entry;
@@ -173,16 +171,17 @@ async function dispatchChildRun(
 
   const depth = dispatchDepth(db, parentRunId);
   if (depth + 1 > maxDepth) {
-    throw new DispatchCapError(
-      `dispatch depth exceeded: run ${parentRunId} is nested ${depth} levels deep; ` +
+    throw new DispatchCapError({
+      message:
+        `dispatch depth exceeded: run ${parentRunId} is nested ${depth} levels deep; ` +
         `max ${maxDepth} (a workflow that dispatches itself must not fill the daemon)`,
-    );
+    });
   }
   const childCount = countDispatchedChildren(db, parentRunId);
   if (childCount >= maxChildren) {
-    throw new DispatchCapError(
-      `dispatch child cap exceeded: run ${parentRunId} already dispatched ${childCount} children; max ${maxChildren}`,
-    );
+    throw new DispatchCapError({
+      message: `dispatch child cap exceeded: run ${parentRunId} already dispatched ${childCount} children; max ${maxChildren}`,
+    });
   }
 
   const childRunId = `run-${crypto.randomUUID()}`;
