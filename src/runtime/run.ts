@@ -438,6 +438,7 @@ export function startRun<I, O>(
           key: err.key,
           holderRunId: err.holderRunId,
           childWorkflowId: child.id,
+          error: domainErrorMessage(err),
         });
       }
       throw err;

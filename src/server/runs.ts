@@ -19,6 +19,7 @@
 
 import type { Database } from "bun:sqlite";
 import { rm } from "node:fs/promises";
+import { Schema } from "effect";
 import type { ManagedRuntime } from "effect";
 import { admitRun } from "./admission";
 import { appendEvent, getRunEvents, listRuns } from "../persistence/store";
@@ -200,16 +201,17 @@ async function dispatchChildRun(
 
   const depth = dispatchDepth(db, parentRunId);
   if (depth + 1 > maxDepth) {
-    throw new DispatchCapError(
-      `dispatch depth exceeded: run ${parentRunId} is nested ${depth} levels deep; ` +
+    throw new DispatchCapError({
+      message:
+        `dispatch depth exceeded: run ${parentRunId} is nested ${depth} levels deep; ` +
         `max ${maxDepth} (a workflow that dispatches itself must not fill the daemon)`,
-    );
+    });
   }
   const childCount = countDispatchedChildren(db, parentRunId);
   if (childCount >= maxChildren) {
-    throw new DispatchCapError(
-      `dispatch child cap exceeded: run ${parentRunId} already dispatched ${childCount} children; max ${maxChildren}`,
-    );
+    throw new DispatchCapError({
+      message: `dispatch child cap exceeded: run ${parentRunId} already dispatched ${childCount} children; max ${maxChildren}`,
+    });
   }
 
   const childRunId = `run-${crypto.randomUUID()}`;

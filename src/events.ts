@@ -144,6 +144,8 @@ export const RunEventPayload = Schema.TaggedUnion({
     /** The run currently holding `key` (non-terminal — it is holding). */
     holderRunId: Schema.String,
     childWorkflowId: Schema.String,
+    /** Human-readable reason, naming the held key and its holder. */
+    error: Schema.optional(Schema.String),
   },
 
   // ---- ctx.agent(name, prompt, opts?) --------------------------------
