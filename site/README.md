@@ -38,7 +38,7 @@ Drop a `.md` file in `content/docs/`. It appears at `/docs/<filename>` and in th
 
 ## Raw markdown
 
-Append `.md` to any docs URL — `/docs/kitchen-sink.md` — for the source without the chrome. The doc
+Append `.md` to any docs URL — `/docs/introduction.md` — for the source without the chrome. The doc
 header links it, and `src/pages/docs/[...slug].md.ts` generates it as a static file alongside the
 HTML. Served as `text/plain` so browsers display it rather than downloading; frontmatter is stripped
 and the `title` and `description` are reinstated as an H1 and a lead paragraph.
