@@ -1,6 +1,7 @@
 {
   "$schema": "./node_modules/@effect/tsgo/oxlint-schema.json",
   "extends": ["./node_modules/@effect/tsgo/oxlint-presets/recommended.json"],
+  "ignorePatterns": ["site"],
   "plugins": ["effecttsgo", "react", "jsx-a11y"],
   "categories": {
     "correctness": "error"

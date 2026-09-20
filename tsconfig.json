@@ -31,5 +31,9 @@
     "noUnusedLocals": false,
     "noUnusedParameters": false,
     "noPropertyAccessFromIndexSignature": false
-  }
+  },
+
+  // `site/` is its own Astro project with its own tsconfig and node_modules,
+  // checked separately via `bun run check` in `site/` — see its README.
+  "exclude": ["site"]
 }
