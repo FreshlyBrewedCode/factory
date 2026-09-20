@@ -1,0 +1,55 @@
+name: site
+
+# `site/` is its own package (own `bun.lock`, own `node_modules`) — not a
+# workspace of the root — so this workflow only ever touches that directory,
+# never `bun install`/`bun run check` at the repo root.
+
+on:
+  push:
+    branches: [main]
+    paths: [site/**]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Only one Pages deployment at a time; let a newer push win rather than queue
+# behind a stale one.
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.4.2"
+
+      - run: bun install --frozen-lockfile
+        working-directory: site
+
+      # astro build, then pagefind indexes dist/ — see site/package.json.
+      - run: bun run build
+        working-directory: site
+
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site/dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/deploy-pages@v4
+        id: deployment
