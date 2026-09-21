@@ -1,23 +1,7 @@
 ---
 import { Code } from "astro-expressive-code/components";
 import FactoryScene from "../components/FactoryScene.astro";
-import { shots } from "../lib/tour";
 import Base from "../layouts/Base.astro";
-
-const columns = [
-  {
-    title: "Workflows",
-    body: "Plain async TypeScript over a run context — ctx.agent, exec, writeBack, assert, output. No step graph, no DSL.",
-  },
-  {
-    title: "Server",
-    body: "factory serve gives you HTTP + SSE, run admission and lifecycle, automatic dispatch, and sqlite persistence.",
-  },
-  {
-    title: "Web UI",
-    body: "A React SPA to watch runs land: the event log, per-step transcripts, write-backs, and manual dispatch.",
-  },
-];
 
 const example = `import { defineWorkflow, Schema } from "@frebreco/factory";
 
@@ -45,6 +29,43 @@ export default defineWorkflow("hello-world", {
     return { prUrl: writeBack.prUrl };
   },
 });`;
+
+// Below `sm`, screens are too narrow for a right-anchored column without
+// overlapping the line, so panels sit as a bottom bar (above the chip row)
+// instead and switch to the right-anchored vertical-centre column at `sm+`.
+const panelClass =
+  "pointer-events-none absolute inset-x-0 bottom-24 z-10 flex justify-center px-4 sm:inset-x-auto sm:inset-y-0 sm:right-0 sm:bottom-auto sm:z-auto sm:w-full sm:max-w-md sm:items-center sm:justify-end sm:px-0 sm:pr-10 md:max-w-lg lg:max-w-2xl";
+
+// Each tour step's own section, shorter than a full viewport so scrolling
+// from one step's centre-trigger to the next takes less scroll distance.
+// `stepSpacerClass` closes the gap this leaves after the last step: without
+// it, the document would run out of room to scroll far enough to land the
+// final step's centre on the viewport's centre (see the chip-click handler
+// in FactoryScene.astro), so the "Ship" panel would stall short of centred
+// once you hit the bottom. Its height is exactly half of what the step
+// height is short of a full viewport (100 - 60) / 2, so the natural scroll
+// max lands exactly on that centred position — no further room to overshoot.
+const stepClass = "pointer-events-none relative h-[60svh]";
+const stepSpacerClass = "h-[20svh]";
+
+// Steps 2-4 share one card shape; the overview (code) and ship (CTA) steps are hand-authored below.
+const infoSteps = [
+  {
+    eyebrow: "Dispatch",
+    heading: "Run it now, or run it on a schedule.",
+    body: "Workflows dispatch manually or on a cron schedule — same run, same event log, same UI either way.",
+  },
+  {
+    eyebrow: "Agents",
+    heading: "Any coding agent, one prompt away.",
+    body: "Point ctx.agent() at a prompt and factory runs it in its own sandboxed environment — no per-agent setup.",
+  },
+  {
+    eyebrow: "Validation",
+    heading: "Validation isn't only automatic.",
+    body: "Checks run after every step on their own — or drop into the sandbox yourself and run the test suite by hand.",
+  },
+];
 ---
 
 <Base title="factory — coding agents as TypeScript workflows" landing>
@@ -52,15 +73,17 @@ export default defineWorkflow("hello-world", {
     The scroll tour: the canvas is pinned for the whole tour, the hero copy
     scrolls up over it, and each tour step below the fold advances the camera
     to the next shot as it crosses the viewport's centre line — a guided tour
-    of the line by scrolling. The steps themselves are transparent triggers;
-    copy can be dropped into them later.
+    of the line by scrolling. Every step past the hero anchors its own UI to
+    the right, over the negative space the shot's offset leaves there, and
+    fades in/out as its section crosses the viewport's centre (`data-tour-panel`
+    below, driven by the scroll listener at the bottom of this file).
   */}
   <div class="relative">
     <div class="sticky top-0 -mb-[100svh] h-[100svh] overflow-hidden">
       <FactoryScene fill />
     </div>
 
-    <section class="pointer-events-none relative h-[100svh]" data-tour-step="0">
+    <section class={stepClass} data-tour-step="0">
       <div class="absolute inset-x-0 top-0 z-10 flex flex-col items-center px-6">
         <p
           class="pointer-events-auto pt-14 font-mono text-xs uppercase tracking-wider text-muted-foreground sm:pt-16"
@@ -93,31 +116,122 @@ export default defineWorkflow("hello-world", {
       </div>
     </section>
 
-    {
-      shots
-        .slice(1)
-        .map((_, i) => (
-          <div
-            class="pointer-events-none relative h-[100svh]"
-            data-tour-step={i + 1}
-            aria-hidden="true"
-          />
-        ))
-    }
-  </div>
-
-  <section class="mx-auto mt-24 w-full max-w-4xl px-6 sm:mt-28">
-    <Code code={example} lang="ts" title="workflows/hello-world.ts" />
-  </section>
-
-  <section class="mx-auto mt-12 grid max-w-6xl gap-4 px-6 sm:grid-cols-3">
-    {
-      columns.map((column) => (
-        <div class="rounded-lg border border-border bg-card p-5">
-          <h2 class="font-mono text-sm font-semibold">{column.title}</h2>
-          <p class="mt-2 text-sm leading-relaxed text-muted-foreground">{column.body}</p>
+    <section class={stepClass} data-tour-step="1">
+      <div class={panelClass} data-tour-panel>
+        <div
+          class="pointer-events-auto mx-auto max-h-[45svh] w-full max-w-sm overflow-y-auto sm:max-h-[48svh] sm:max-w-none"
+          data-tour-panel-interactive
+        >
+          <div style="zoom: 0.85">
+            <p class="font-mono text-xs uppercase tracking-wider text-muted-foreground">
+              Workflow
+            </p>
+            <p class="mt-2 mb-3 text-sm leading-relaxed text-muted-foreground">
+              A workflow is just an async function.
+            </p>
+            <Code code={example} lang="ts" title="workflows/hello-world.ts" wrap />
+          </div>
         </div>
+      </div>
+    </section>
+
+    {
+      infoSteps.map((step, i) => (
+        <section class={stepClass} data-tour-step={i + 2}>
+          <div class={panelClass} data-tour-panel>
+            <div class="mx-auto w-full max-w-sm rounded-lg border border-border bg-card/90 p-5 backdrop-blur-sm sm:max-w-none">
+              <p class="font-mono text-xs uppercase tracking-wider text-muted-foreground">
+                {step.eyebrow}
+              </p>
+              <h2 class="mt-2 font-mono text-xl font-semibold">{step.heading}</h2>
+              <p class="mt-2 text-sm leading-relaxed text-muted-foreground">{step.body}</p>
+            </div>
+          </div>
+        </section>
       ))
     }
-  </section>
+
+    <section class={stepClass} data-tour-step="5">
+      <div
+        class="pointer-events-none absolute inset-x-0 bottom-24 z-10 flex flex-col items-center px-4 text-center sm:inset-x-auto sm:inset-y-0 sm:right-0 sm:bottom-auto sm:z-auto sm:w-full sm:max-w-lg sm:items-start sm:px-0 sm:pr-10 sm:text-left md:max-w-xl lg:max-w-3xl"
+        data-tour-panel
+      >
+        <h2 class="font-mono text-4xl font-semibold tracking-tight sm:text-5xl">
+          Stop prompting.<br />Start shipping.
+        </h2>
+        <p class="mt-4 max-w-md text-base text-muted-foreground">
+          Turn the workflow above into a pull request.
+        </p>
+        <div
+          class="pointer-events-auto mt-6 flex flex-wrap items-center justify-center gap-3 sm:justify-start"
+          data-tour-panel-interactive
+        >
+          <a
+            href="/docs"
+            class="inline-flex h-10 items-center rounded-md bg-primary px-5 font-medium text-primary-foreground hover:opacity-90 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
+          >
+            Read the docs
+          </a>
+          <code
+            class="inline-flex h-10 items-center rounded-md border border-border bg-card px-4 font-mono text-sm"
+          >
+            bunx @frebreco/factory init
+          </code>
+        </div>
+      </div>
+    </section>
+
+    <div class={stepSpacerClass} aria-hidden="true" />
+  </div>
 </Base>
+
+<script>
+  // Continuous fade for each step's right-anchored panel: opacity peaks at 1
+  // when its section is centred in the viewport (the same moment the camera
+  // locks onto its shot) and falls off from there, decoupled from the
+  // camera's own IntersectionObserver in FactoryScene.astro. The falloff is
+  // sized off the *section's* height (not the panel's own — below `sm` the
+  // panel is a content-sized bottom bar, not an `inset-y-0` fill of the
+  // section), since that height is also the spacing between adjacent
+  // sections' centres. Going slightly past half of it keeps a soft overlap
+  // so one panel crossfades into the next instead of both hitting zero
+  // opacity at once at the midpoint.
+  const panels = Array.from(document.querySelectorAll<HTMLElement>("[data-tour-panel]")).map(
+    (panel) => ({
+      panel,
+      section: panel.closest<HTMLElement>("[data-tour-step]") ?? panel,
+      interactive: Array.from(panel.querySelectorAll<HTMLElement>("[data-tour-panel-interactive]")),
+    }),
+  );
+
+  // Steps are shorter than a viewport, so more than one is on screen at
+  // once — a faded-out panel would otherwise still sit at `pointer-events:
+  // auto` (set by its own `pointer-events-auto` class) and silently eat
+  // clicks meant for whatever's visually on top of it, chip row included.
+  // Clearing the inline override (rather than forcing "none") falls back to
+  // that class, so this only ever *disables* click-through, never grants it.
+  const updateFade = () => {
+    const vh = window.innerHeight;
+    for (const { panel, section, interactive } of panels) {
+      const rect = section.getBoundingClientRect();
+      const distance = Math.abs(rect.top + rect.height / 2 - vh / 2);
+      const opacity = Math.max(0, 1 - distance / (rect.height * 0.6));
+      panel.style.opacity = String(opacity);
+      for (const el of interactive) el.style.pointerEvents = opacity > 0.05 ? "" : "none";
+    }
+  };
+
+  let ticking = false;
+  const onScroll = () => {
+    if (ticking) return;
+    ticking = true;
+    requestAnimationFrame(() => {
+      updateFade();
+      ticking = false;
+    });
+  };
+
+  updateFade();
+  window.addEventListener("scroll", onScroll, { passive: true });
+  window.addEventListener("resize", updateFade);
+</script>

@@ -47,15 +47,18 @@ const {
   <body class="relative min-h-screen">
     {landing ? <LandingNav /> : <Header />}
     <slot />
-    <footer class:list={["border-t border-border", landing ? "mt-28" : "mt-24"]}>
-      <div
-        class="mx-auto max-w-6xl px-6 py-8 flex items-center justify-between text-sm text-muted-foreground"
-      >
-        <span>MIT licensed.</span>
-        <a class="hover:text-foreground" href="https://github.com/FreshlyBrewedCode/factory">
-          GitHub
-        </a>
-      </div>
-    </footer>
+    {/* The landing page's tour is the whole page — nothing scrolls past the ship step. */}
+    {!landing && (
+      <footer class="mt-24 border-t border-border">
+        <div
+          class="mx-auto max-w-6xl px-6 py-8 flex items-center justify-between text-sm text-muted-foreground"
+        >
+          <span>MIT licensed.</span>
+          <a class="hover:text-foreground" href="https://github.com/FreshlyBrewedCode/factory">
+            GitHub
+          </a>
+        </div>
+      </footer>
+    )}
   </body>
 </html>

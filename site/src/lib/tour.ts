@@ -27,7 +27,7 @@ export interface Shot {
 export const shots: Shot[] = [
   { id: "machine-2", label: "Welcome", zoom: 2.5, offset: { x: 0, y: 30 } },
   { id: "home", label: "Workflow", zoom: 1, offset: { x: -15, y: 0, yPortrait: 34 } },
-  { id: "feeder", label: "Schedules", zoom: 1.8, offset: { x: -25, y: -15 } },
+  { id: "feeder", label: "Dispatch", zoom: 1.8, offset: { x: -25, y: -15 } },
   { id: "machine-1", label: "Agents", zoom: 2.5, offset: { x: -20, y: 8 } },
   { id: "machine-2", label: "Validation", zoom: 2.5, offset: { x: -10, y: 8 } },
   { id: "rocket", label: "Ship", zoom: 1.8, offset: { x: -10, y: 15 } },
