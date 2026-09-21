@@ -1,0 +1,189 @@
+---
+import { shots } from "../lib/tour";
+
+/*
+ * The factory-3d line, embedded via the `FactoryView` consumer API.
+ *
+ * `public/factory-view.js` is the vendored `build:embed` output from the
+ * sibling factory-3d project: a classic script exposing a global
+ * `FactoryView`, which resolves THREE lazily at construction (nothing touches
+ * THREE at module-eval time). That lets this component load it as a plain
+ * `<script>` tag during parse and hand it the bundled `three` module from a
+ * deferred ES module script — no window.THREE global dance needed, the
+ * constructor takes `{ three }` directly.
+ *
+ * `interactive: false` on purpose: wheel-over-canvas would trap the page
+ * scroll on a hero. The camera instead tours the line through `focusOn()` —
+ * driven by the page's scroll steps (see `[data-tour-step]` in `index.astro`
+ * and the IntersectionObserver in the boot script) and, as a manual
+ * shortcut, by the chip row.
+ */
+interface Props {
+  class?: string;
+  /** Fill the nearest positioned ancestor, for the overlay hero. */
+  fill?: boolean;
+}
+
+const { class: className, fill = false } = Astro.props;
+
+---
+
+<div
+  class:list={[
+    fill
+      ? "absolute inset-0 overflow-hidden"
+      : "relative h-[44svh] min-h-[300px] overflow-hidden",
+    className,
+  ]}
+>
+  <div id="factory-view" class="absolute inset-0" aria-hidden="true"></div>
+  <div class="pointer-events-none absolute inset-x-0 bottom-3 flex flex-wrap items-center justify-center gap-1.5 px-3">
+    {
+      shots.map(
+        (shot, i) => (
+          <button type="button" data-shot={shot.id} class:list={["shot", i === 0 && "is-active"]}>
+            {shot.label}
+          </button>
+        ),
+      )
+    }
+  </div>
+</div>
+
+<style>
+  .shot {
+    pointer-events: auto;
+    cursor: pointer;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    background: color-mix(in oklab, var(--card) 78%, transparent);
+    backdrop-filter: blur(6px);
+    padding: 0.375rem 0.75rem;
+    font-family: var(--font-mono);
+    font-size: 0.6875rem;
+    font-weight: 500;
+    line-height: 1;
+    color: var(--muted-foreground);
+    transition:
+      color 0.15s ease,
+      background-color 0.15s ease,
+      border-color 0.15s ease;
+  }
+
+  .shot:hover {
+    color: var(--foreground);
+    border-color: var(--border-strong);
+  }
+
+  .shot.is-active {
+    background: var(--foreground);
+    border-color: var(--foreground);
+    color: var(--background);
+  }
+
+  .shot:focus-visible {
+    outline: 2px solid var(--ring);
+    outline-offset: 2px;
+  }
+</style>
+
+<script is:inline src="/factory-view.js"></script>
+<script>
+  import * as THREE from "three";
+  import { shots } from "../lib/tour";
+
+  const VIEW_SIZE = 33;
+  const PORTRAIT_ASPECT = 1.15;
+
+  interface View {
+    focusOn(
+      id: string,
+      opts?: { smooth?: boolean; zoom?: number; offset?: { x?: number; y?: number } },
+    ): boolean;
+    pause(): void;
+  }
+
+  const container = document.getElementById("factory-view");
+  const steps = Array.from(document.querySelectorAll<HTMLElement>("[data-tour-step]"));
+  const FactoryView = (globalThis as { FactoryView?: new (el: HTMLElement, opts?: object) => View })
+    .FactoryView;
+
+  if (container && FactoryView) {
+    const reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    const view = new FactoryView(container, {
+      three: THREE,
+      interactive: false,
+      zoomRange: [0.2, 16],
+    });
+
+    // The API surface is live on the page for tinkering, as in factory-3d's own embed demo.
+    (window as { factoryView?: View }).factoryView = view;
+
+    /*
+     * Fit the overview: the line's projected footprint (~42 world units wide)
+     * across the container — near two thirds on portrait screens where width
+     * is the binding constraint, capped at the shot's zoom on landscape. The
+     * belt's tail is allowed to run off the fold.
+     */
+    const overviewZoom = () => {
+      const { width, height } = container.getBoundingClientRect();
+      return Math.min(shots.find((s) => s.id === "home")?.zoom ?? 1, (0.78 * VIEW_SIZE * width) / (42 * height));
+    };
+
+    // The chip row is the tour's legend: one chip per step, in step order.
+    const chips = Array.from(document.querySelectorAll<HTMLButtonElement>("[data-shot]"));
+    let active = -1;
+    const apply = (index: number, instant: boolean) => {
+      const shot = shots[index];
+      const chip = chips[index];
+      if (!shot || !chip || index === active) return;
+      active = index;
+      const { width, height } = container.getBoundingClientRect();
+      const portrait = width / height <= PORTRAIT_ASPECT;
+      const y = portrait ? (shot.offset.yPortrait ?? shot.offset.y) : shot.offset.y;
+      const zoom = shot.id === "home" ? overviewZoom() : shot.zoom;
+      view.focusOn(shot.id, { smooth: !instant && !reduced, zoom, offset: { x: shot.offset.x, y } });
+      chips.forEach((other, i) => other.classList.toggle("is-active", i === index));
+    };
+
+    /*
+     * `focusOn`'s percent offset rides the camera's screen basis, which the
+     * view only refreshes once it renders its first frame — so hold the boot
+     * focus (and the observer, whose initial delivery could pre-empt it) one
+     * frame back or the opening shot lands off its mark.
+     */
+    requestAnimationFrame(() => {
+      apply(0, true);
+      if (steps.length > 1) {
+        const observer = new IntersectionObserver(
+          (entries) => {
+            for (const entry of entries) {
+              if (entry.isIntersecting)
+                apply(Number(entry.target.getAttribute("data-tour-step")), false);
+            }
+          },
+          { rootMargin: "-50% 0px -50% 0px" },
+        );
+        for (const step of steps) observer.observe(step);
+      }
+    });
+
+    for (const [i, chip] of chips.entries()) {
+      chip.addEventListener("click", () => {
+        steps[i]?.scrollIntoView({ behavior: reduced ? "auto" : "smooth", block: "start" });
+      });
+    }
+
+    let resizeTimer: ReturnType<typeof setTimeout> | undefined;
+    window.addEventListener("resize", () => {
+      clearTimeout(resizeTimer);
+      resizeTimer = setTimeout(() => {
+        const reframe = active;
+        active = -1;
+        apply(reframe, false);
+      }, 150);
+    });
+
+    if (reduced) view.pause();
+  }
+</script>

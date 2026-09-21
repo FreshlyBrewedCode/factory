@@ -1,5 +1,6 @@
 ---
 import Header from "../components/Header.astro";
+import LandingNav from "../components/LandingNav.astro";
 import "../styles/global.css";
 
 interface Props {
@@ -7,12 +8,15 @@ interface Props {
   description?: string;
   /** Path to canonicalize to, for a page also served at another URL. Defaults to this page's own. */
   canonical?: string;
+  /** Landing variant: transparent corner nav and a forced light scheme, no theme toggle. */
+  landing?: boolean;
 }
 
 const {
   title,
   description = "Imperative TypeScript workflows over coding-agent sandboxes.",
   canonical,
+  landing = false,
 } = Astro.props;
 ---
 
@@ -27,17 +31,23 @@ const {
     <meta property="og:title" content={title} />
     <meta property="og:description" content={description} />
     <link rel="canonical" href={new URL(canonical ?? Astro.url.pathname, Astro.site)} />
-    {/* Resolve the scheme before first paint, or dark mode flashes white. */}
-    <script is:inline>
-      const stored = localStorage.getItem("theme");
-      const dark = stored ? stored === "dark" : matchMedia("(prefers-color-scheme: dark)").matches;
-      document.documentElement.classList.toggle("dark", dark);
-    </script>
+    {/*
+      Resolve the scheme before first paint, or dark mode flashes white. The
+      landing page is light by construction: the 3D scene paints a paper-white
+      backdrop, so no scheme script runs there at all.
+    */}
+    {!landing && (
+      <script is:inline>
+        const stored = localStorage.getItem("theme");
+        const dark = stored ? stored === "dark" : matchMedia("(prefers-color-scheme: dark)").matches;
+        document.documentElement.classList.toggle("dark", dark);
+      </script>
+    )}
   </head>
-  <body class="min-h-screen">
-    <Header />
+  <body class="relative min-h-screen">
+    {landing ? <LandingNav /> : <Header />}
     <slot />
-    <footer class="border-t border-border mt-24">
+    <footer class:list={["border-t border-border", landing ? "mt-28" : "mt-24"]}>
       <div
         class="mx-auto max-w-6xl px-6 py-8 flex items-center justify-between text-sm text-muted-foreground"
       >

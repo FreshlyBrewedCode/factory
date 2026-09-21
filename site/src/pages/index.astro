@@ -1,5 +1,7 @@
 ---
 import { Code } from "astro-expressive-code/components";
+import FactoryScene from "../components/FactoryScene.astro";
+import { shots } from "../lib/tour";
 import Base from "../layouts/Base.astro";
 
 const columns = [
@@ -45,43 +47,75 @@ export default defineWorkflow("hello-world", {
 });`;
 ---
 
-<Base title="factory — coding agents as TypeScript workflows">
-  <section class="mx-auto max-w-6xl px-6 pt-20 pb-16">
-    <p class="font-mono text-xs uppercase tracking-wider text-muted-foreground">
-      Imperative agent workflows
-    </p>
-    <h1 class="mt-4 text-4xl sm:text-5xl font-semibold tracking-tight max-w-2xl text-balance">
-      Sandboxed agent workflows as plain TypeScript.
-    </h1>
-    <p class="mt-5 text-lg text-muted-foreground max-w-xl">
-      Run a schedule, monitor in the web UI
-    </p>
-
-    <div class="mt-8 flex flex-wrap items-center gap-3">
-      <a
-        href="/docs"
-        class="inline-flex h-10 items-center rounded-md bg-primary px-5 font-medium text-primary-foreground hover:opacity-90 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
-      >
-        Read the docs
-      </a>
-      <code
-        class="inline-flex h-10 items-center rounded-md border border-border bg-card px-4 font-mono text-sm"
-      >
-        bunx @frebreco/factory init
-      </code>
+<Base title="factory — coding agents as TypeScript workflows" landing>
+  {/*
+    The scroll tour: the canvas is pinned for the whole tour, the hero copy
+    scrolls up over it, and each tour step below the fold advances the camera
+    to the next shot as it crosses the viewport's centre line — a guided tour
+    of the line by scrolling. The steps themselves are transparent triggers;
+    copy can be dropped into them later.
+  */}
+  <div class="relative">
+    <div class="sticky top-0 -mb-[100svh] h-[100svh] overflow-hidden">
+      <FactoryScene fill />
     </div>
-  </section>
 
-  <section class="mx-auto max-w-6xl px-6 pb-16">
+    <section class="pointer-events-none relative h-[100svh]" data-tour-step="0">
+      <div class="absolute inset-x-0 top-0 z-10 flex flex-col items-center px-6">
+        <p
+          class="pointer-events-auto pt-14 font-mono text-xs uppercase tracking-wider text-muted-foreground sm:pt-16"
+        >
+          Imperative agent workflows
+        </p>
+        <h1
+          class="mt-5 select-none font-mono text-7xl font-semibold tracking-tighter sm:mt-6 sm:text-8xl md:text-9xl"
+        >
+          factory
+        </h1>
+        <p class="mt-5 max-w-xl text-center text-lg text-muted-foreground text-balance">
+          Sandboxed coding-agent workflows as plain TypeScript. Dispatch them, run them on a
+          schedule, and watch them land in the web UI.
+        </p>
+
+        <div class="pointer-events-auto mt-7 flex flex-wrap items-center justify-center gap-3">
+          <a
+            href="/docs"
+            class="inline-flex h-10 items-center rounded-md bg-primary px-5 font-medium text-primary-foreground hover:opacity-90 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
+          >
+            Read the docs
+          </a>
+          <code
+            class="inline-flex h-10 items-center rounded-md border border-border bg-card px-4 font-mono text-sm"
+          >
+            bunx @frebreco/factory init
+          </code>
+        </div>
+      </div>
+    </section>
+
+    {
+      shots
+        .slice(1)
+        .map((_, i) => (
+          <div
+            class="pointer-events-none relative h-[100svh]"
+            data-tour-step={i + 1}
+            aria-hidden="true"
+          />
+        ))
+    }
+  </div>
+
+  <section class="mx-auto mt-24 w-full max-w-4xl px-6 sm:mt-28">
     <Code code={example} lang="ts" title="workflows/hello-world.ts" />
   </section>
 
-  <section class="mx-auto max-w-6xl px-6 grid gap-4 sm:grid-cols-3">
+  <section class="mx-auto mt-12 grid max-w-6xl gap-4 px-6 sm:grid-cols-3">
     {
       columns.map((column) => (
         <div class="rounded-lg border border-border bg-card p-5">
           <h2 class="font-mono text-sm font-semibold">{column.title}</h2>
-          <p class="mt-2 text-sm text-muted-foreground leading-relaxed">{column.body}</p>
+          <p class="mt-2 text-sm leading-relaxed text-muted-foreground">{column.body}</p>
         </div>
       ))
     }
