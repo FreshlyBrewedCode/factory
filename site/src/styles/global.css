@@ -11,7 +11,8 @@
  * real, so a token change lands in the app and the site together.
  */
 :root {
-  --background: oklch(0.96 0 0);
+  /* Pure white so the 3D scene's paper backdrop bleeds seamlessly into the page. */
+  --background: oklch(1 0 0);
   --card: oklch(1 0 0);
   --foreground: oklch(0.21 0 0);
   --muted: oklch(0.958 0 0);

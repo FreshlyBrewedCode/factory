@@ -1,0 +1,334 @@
+---
+import { shots } from "../lib/tour";
+
+/*
+ * The factory-3d line, embedded via the `FactoryView` consumer API.
+ *
+ * `public/factory-view.js` is the vendored `build:embed` output from the
+ * sibling factory-3d project: a classic script exposing a global
+ * `FactoryView`, which resolves THREE lazily at construction (nothing touches
+ * THREE at module-eval time). That lets this component load it as a plain
+ * `<script>` tag during parse and hand it the bundled `three` module from a
+ * deferred ES module script — no window.THREE global dance needed, the
+ * constructor takes `{ three }` directly.
+ *
+ * `interactive: false` on purpose: wheel-over-canvas would trap the page
+ * scroll on a hero. The camera instead tours the line through `focusOn()` —
+ * driven by the page's scroll steps (see `[data-tour-step]` in `index.astro`
+ * and the IntersectionObserver in the boot script) and, as a manual
+ * shortcut, by the chip row.
+ */
+interface Props {
+  class?: string;
+  /** Fill the nearest positioned ancestor, for the overlay hero. */
+  fill?: boolean;
+}
+
+const { class: className, fill = false } = Astro.props;
+
+---
+
+<div
+  class:list={[
+    fill
+      ? "absolute inset-0 overflow-hidden"
+      : "relative h-[44svh] min-h-[300px] overflow-hidden",
+    className,
+  ]}
+>
+  <div id="factory-view" class="absolute inset-0" aria-hidden="true"></div>
+  <div class="pointer-events-none absolute inset-x-0 bottom-3 flex flex-wrap items-center justify-center gap-1.5 px-3">
+    {
+      shots.map(
+        (shot, i) => (
+          <button type="button" data-shot={shot.id} class:list={["shot", i === 0 && "is-active"]}>
+            {shot.label}
+          </button>
+        ),
+      )
+    }
+  </div>
+</div>
+
+<style>
+  .shot {
+    pointer-events: auto;
+    cursor: pointer;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    background: color-mix(in oklab, var(--card) 78%, transparent);
+    backdrop-filter: blur(6px);
+    padding: 0.375rem 0.75rem;
+    font-family: var(--font-mono);
+    font-size: 0.6875rem;
+    font-weight: 500;
+    line-height: 1;
+    color: var(--muted-foreground);
+    transition:
+      color 0.15s ease,
+      background-color 0.15s ease,
+      border-color 0.15s ease;
+  }
+
+  .shot:hover {
+    color: var(--foreground);
+    border-color: var(--border-strong);
+  }
+
+  .shot.is-active {
+    background: var(--foreground);
+    border-color: var(--foreground);
+    color: var(--background);
+  }
+
+  .shot:focus-visible {
+    outline: 2px solid var(--ring);
+    outline-offset: 2px;
+  }
+
+  /*
+   * `.pr-tag` nodes are created imperatively (`createAnchor`) and appended
+   * into factory-view's own overlay layer, not this component's template —
+   * Astro's scoping attribute never lands on them, so this has to be global.
+   */
+  :global(.pr-tag) {
+    pointer-events: none;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0.125rem;
+    max-width: 12rem;
+    border: 1px solid var(--border);
+    border-radius: 0.5rem;
+    background: color-mix(in oklab, var(--card) 92%, transparent);
+    backdrop-filter: blur(6px);
+    padding: 0.375rem 0.75rem;
+    font-family: var(--font-mono);
+    font-size: 0.875rem;
+    line-height: 1.3;
+    text-align: left;
+    box-shadow: 0 2px 10px color-mix(in oklab, var(--foreground) 14%, transparent);
+    opacity: 0;
+    transition: opacity 0.3s ease;
+  }
+
+  :global(.pr-tag.is-visible) {
+    opacity: 1;
+  }
+
+  :global(.pr-tag .pr-number) {
+    display: flex;
+    align-items: center;
+    gap: 0.25rem;
+    white-space: nowrap;
+    color: var(--muted-foreground);
+  }
+
+  /* GitHub colors an open PR's icon green regardless of theme. */
+  :global(.pr-tag .pr-icon) {
+    width: 0.875rem;
+    height: 0.875rem;
+    flex-shrink: 0;
+    color: #22c55e;
+  }
+
+  :global(.pr-tag .pr-title) {
+    color: var(--foreground);
+    font-weight: 500;
+    white-space: normal;
+    overflow-wrap: break-word;
+  }
+</style>
+
+<script is:inline src="/factory-view.js"></script>
+<script>
+  import * as THREE from "three";
+  import { FAKE_PR_TITLES } from "../lib/fake-prs";
+  import { shots } from "../lib/tour";
+
+  const VIEW_SIZE = 33;
+  const PORTRAIT_ASPECT = 1.15;
+
+  // Lucide's `git-pull-request-arrow`, inlined: the PR tag is built at
+  // runtime via `innerHTML`, so it can't use the `@lucide/astro` component
+  // the rest of the site imports statically (see icon.node in
+  // `@lucide/astro/src/icons/git-pull-request-arrow.ts`).
+  const PR_ICON = `<svg class="pr-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="5" cy="6" r="3"/><path d="M5 9v12"/><circle cx="19" cy="18" r="3"/><path d="m15 9-3-3 3-3"/><path d="M12 6h5a2 2 0 0 1 2 2v7"/></svg>`;
+
+  interface View {
+    focusOn(
+      id: string,
+      opts?: { smooth?: boolean; zoom?: number; offset?: { x?: number; y?: number } },
+    ): boolean;
+    pause(): void;
+    getBoxes(opts?: { onlyOnScreen?: boolean }): Array<{ id: number }>;
+    createAnchor(
+      id: number,
+      opts?: { offsetX?: number; offsetY?: number; className?: string },
+    ): HTMLElement;
+    removeAnchor(node: HTMLElement): boolean;
+  }
+
+  const container = document.getElementById("factory-view");
+  const steps = Array.from(document.querySelectorAll<HTMLElement>("[data-tour-step]"));
+  const FactoryView = (globalThis as { FactoryView?: new (el: HTMLElement, opts?: object) => View })
+    .FactoryView;
+
+  if (container && FactoryView) {
+    const reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    const view = new FactoryView(container, {
+      three: THREE,
+      interactive: false,
+      zoomRange: [0.2, 16],
+    });
+
+    // The API surface is live on the page for tinkering, as in factory-3d's own embed demo.
+    (window as { factoryView?: View }).factoryView = view;
+
+    /*
+     * Fit the overview: the line's projected footprint (~42 world units wide)
+     * across the container — near two thirds on portrait screens where width
+     * is the binding constraint, capped at the shot's zoom on landscape. The
+     * belt's tail is allowed to run off the fold.
+     */
+    const overviewZoom = () => {
+      const { width, height } = container.getBoundingClientRect();
+      return Math.min(shots.find((s) => s.id === "home")?.zoom ?? 1, (0.78 * VIEW_SIZE * width) / (42 * height));
+    };
+
+    /*
+     * Ship-step easter egg: as cartons enter the frame on the final "rocket"
+     * shot, tag each with a fake PR number/title, using factory-3d's own
+     * screen-visibility tracking (`getBoxes({ onlyOnScreen })`) rather than
+     * projecting positions ourselves. Box ids are assigned once per spawn and
+     * never reused, so `seenBoxIds` only needs to grow — a given carton gets
+     * labelled at most once, the first time it's caught on screen.
+     */
+    const seenBoxIds = new Set<number>();
+    const prTimers = new Set<ReturnType<typeof setTimeout>>();
+    let prPollTimer: ReturnType<typeof setInterval> | undefined;
+    let prCounter = 1000 + Math.floor(Math.random() * 8000);
+
+    const spawnPrTag = (boxId: number) => {
+      const node = view.createAnchor(boxId, { offsetY: -56, className: "pr-tag" });
+      const title = FAKE_PR_TITLES[Math.floor(Math.random() * FAKE_PR_TITLES.length)];
+      node.innerHTML = `<div class="pr-number">${PR_ICON}#${++prCounter}</div><div class="pr-title">${title}</div>`;
+      // Appear ~2s after the carton is on screen, stay up for ~4s, then go.
+      const showTimer = setTimeout(() => node.classList.add("is-visible"), 2000);
+      const hideTimer = setTimeout(() => node.classList.remove("is-visible"), 5700);
+      const removeTimer = setTimeout(() => {
+        view.removeAnchor(node);
+        prTimers.delete(showTimer);
+        prTimers.delete(hideTimer);
+        prTimers.delete(removeTimer);
+      }, 6000);
+      prTimers.add(showTimer).add(hideTimer).add(removeTimer);
+    };
+
+    const startPrGame = () => {
+      if (prPollTimer || reduced) return;
+      prPollTimer = setInterval(() => {
+        for (const box of view.getBoxes({ onlyOnScreen: true })) {
+          if (seenBoxIds.has(box.id)) continue;
+          seenBoxIds.add(box.id);
+          spawnPrTag(box.id);
+        }
+      }, 250);
+    };
+
+    const stopPrGame = () => {
+      if (!prPollTimer) return;
+      clearInterval(prPollTimer);
+      prPollTimer = undefined;
+      for (const timer of prTimers) clearTimeout(timer);
+      prTimers.clear();
+      for (const node of container.querySelectorAll<HTMLElement>(".pr-tag")) view.removeAnchor(node);
+    };
+
+    // The chip row is the tour's legend: one chip per step, in step order.
+    const chips = Array.from(document.querySelectorAll<HTMLButtonElement>("[data-shot]"));
+    let active = -1;
+    // Set for the duration of a chip-triggered smooth scroll — see the click
+    // handler below for why the observer needs to stand down during it.
+    let suppressObserverUntil = 0;
+    const apply = (index: number, instant: boolean) => {
+      const shot = shots[index];
+      const chip = chips[index];
+      if (!shot || !chip || index === active) return;
+      active = index;
+      const { width, height } = container.getBoundingClientRect();
+      const portrait = width / height <= PORTRAIT_ASPECT;
+      const y = portrait ? (shot.offset.yPortrait ?? shot.offset.y) : shot.offset.y;
+      const zoom = shot.id === "home" ? overviewZoom() : shot.zoom;
+      view.focusOn(shot.id, { smooth: !instant && !reduced, zoom, offset: { x: shot.offset.x, y } });
+      chips.forEach((other, i) => other.classList.toggle("is-active", i === index));
+      if (shot.id === "rocket") startPrGame();
+      else stopPrGame();
+    };
+
+    /*
+     * `focusOn`'s percent offset rides the camera's screen basis, which the
+     * view only refreshes once it renders its first frame — so hold the boot
+     * focus (and the observer, whose initial delivery could pre-empt it) one
+     * frame back or the opening shot lands off its mark.
+     */
+    requestAnimationFrame(() => {
+      apply(0, true);
+      if (steps.length > 1) {
+        const observer = new IntersectionObserver(
+          (entries) => {
+            if (performance.now() < suppressObserverUntil) return;
+            for (const entry of entries) {
+              if (entry.isIntersecting)
+                apply(Number(entry.target.getAttribute("data-tour-step")), false);
+            }
+          },
+          { rootMargin: "-50% 0px -50% 0px" },
+        );
+        for (const step of steps) observer.observe(step);
+      }
+    });
+
+    /*
+     * Centre the clicked step in the viewport rather than
+     * `scrollIntoView({ block: "start" })`: steps are shorter than a
+     * viewport, so aligning their top edge to the viewport's top would land
+     * short of the point where the camera and the step's own fade both treat
+     * it as "active" (their shared centre-of-viewport line). `window.scrollTo`
+     * clamps out-of-range targets on its own — the first step clamps to 0,
+     * and the trailing spacer below the last step exists so *its* centred
+     * target lands exactly on the document's natural scroll max.
+     *
+     * `apply` runs here too, synchronously: a smooth scroll that spans
+     * several steps sails through each one's own centre-crossing on the way
+     * to the target, and the observer can end up applying one of those
+     * intermediate steps instead of the clicked one (they can fire out of
+     * settle-order during a fast animated scroll). Calling `apply` directly
+     * makes the click authoritative, and suppressing the observer for the
+     * scroll's duration stops it from re-litigating that in the meantime.
+     */
+    for (const [i, chip] of chips.entries()) {
+      chip.addEventListener("click", () => {
+        const step = steps[i];
+        if (!step) return;
+        const top =
+          step.getBoundingClientRect().top + window.scrollY + step.offsetHeight / 2 - window.innerHeight / 2;
+        suppressObserverUntil = performance.now() + 800;
+        apply(i, reduced);
+        window.scrollTo({ top, behavior: reduced ? "auto" : "smooth" });
+      });
+    }
+
+    let resizeTimer: ReturnType<typeof setTimeout> | undefined;
+    window.addEventListener("resize", () => {
+      clearTimeout(resizeTimer);
+      resizeTimer = setTimeout(() => {
+        const reframe = active;
+        active = -1;
+        apply(reframe, false);
+      }, 150);
+    });
+
+    if (reduced) view.pause();
+  }
+</script>
