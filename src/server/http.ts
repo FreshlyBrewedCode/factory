@@ -457,6 +457,9 @@ export function createHandler(options: ServerOptions): (req: Request) => Promise
         input: body.input,
         adapter: options.adapter,
         ...(typeof body.dedupeKey === "string" ? { dedupeKey: body.dedupeKey } : {}),
+        ...(body.clone !== undefined && typeof body.dir === "string"
+          ? { prepareWorkspace: true }
+          : {}),
       };
       let runId: string;
       try {
