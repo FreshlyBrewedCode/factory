@@ -348,7 +348,7 @@ export function createHandler(options: ServerOptions): (req: Request) => Promise
       const maxConcurrentRuns = options.config?.maxConcurrentRuns;
       if (maxConcurrentRuns !== undefined && !admitRun(maxConcurrentRuns, activeRunIds().length)) {
         return json(
-          { error: `concurrency limit reached (max ${maxConcurrentRuns} concurrent runs)` },
+          { error: new ConcurrencyLimitError({ maxConcurrentRuns }).message },
           { status: 409 },
         );
       }
@@ -399,19 +399,11 @@ export function createHandler(options: ServerOptions): (req: Request) => Promise
           runId = await startTrackedRun(options.db, workflow, startOptions);
         } catch (err) {
           if (err instanceof ConcurrencyLimitError) {
-            return json(
-              { error: `concurrency limit reached (max ${err.maxConcurrentRuns} concurrent runs)` },
-              { status: 409 },
-            );
+            return json({ error: err.message }, { status: 409 });
           }
-          if (err instanceof Error && (err as { _tag?: string })._tag === "DedupeKeyError") {
-            const dedupeErr = err as DedupeKeyError;
+          if (err instanceof DedupeKeyError) {
             return json(
-              {
-                error: `dedupe key held: "${dedupeErr.key}" is currently held by run ${dedupeErr.holderRunId}`,
-                dedupeKey: dedupeErr.key,
-                holderRunId: dedupeErr.holderRunId,
-              },
+              { error: err.message, dedupeKey: err.key, holderRunId: err.holderRunId },
               { status: 409 },
             );
           }
@@ -471,19 +463,11 @@ export function createHandler(options: ServerOptions): (req: Request) => Promise
         runId = await startTrackedRun(options.db, workflow, startOptions);
       } catch (err) {
         if (err instanceof ConcurrencyLimitError) {
-          return json(
-            { error: `concurrency limit reached (max ${err.maxConcurrentRuns} concurrent runs)` },
-            { status: 409 },
-          );
+          return json({ error: err.message }, { status: 409 });
         }
-        if (err instanceof Error && (err as { _tag?: string })._tag === "DedupeKeyError") {
-          const dedupeErr = err as DedupeKeyError;
+        if (err instanceof DedupeKeyError) {
           return json(
-            {
-              error: `dedupe key held: "${dedupeErr.key}" is currently held by run ${dedupeErr.holderRunId}`,
-              dedupeKey: dedupeErr.key,
-              holderRunId: dedupeErr.holderRunId,
-            },
+            { error: err.message, dedupeKey: err.key, holderRunId: err.holderRunId },
             { status: 409 },
           );
         }
@@ -557,7 +541,7 @@ export function createHandler(options: ServerOptions): (req: Request) => Promise
       const maxConcurrentRuns = options.config.maxConcurrentRuns;
       if (!admitRun(maxConcurrentRuns, activeRunIds().length)) {
         return json(
-          { error: `concurrency limit reached (max ${maxConcurrentRuns} concurrent runs)` },
+          { error: new ConcurrencyLimitError({ maxConcurrentRuns }).message },
           { status: 409 },
         );
       }
@@ -580,19 +564,11 @@ export function createHandler(options: ServerOptions): (req: Request) => Promise
         });
       } catch (err) {
         if (err instanceof ConcurrencyLimitError) {
-          return json(
-            { error: `concurrency limit reached (max ${err.maxConcurrentRuns} concurrent runs)` },
-            { status: 409 },
-          );
+          return json({ error: err.message }, { status: 409 });
         }
-        if (err instanceof Error && (err as { _tag?: string })._tag === "DedupeKeyError") {
-          const dedupeErr = err as DedupeKeyError;
+        if (err instanceof DedupeKeyError) {
           return json(
-            {
-              error: `dedupe key held: "${dedupeErr.key}" is currently held by run ${dedupeErr.holderRunId}`,
-              dedupeKey: dedupeErr.key,
-              holderRunId: dedupeErr.holderRunId,
-            },
+            { error: err.message, dedupeKey: err.key, holderRunId: err.holderRunId },
             { status: 409 },
           );
         }

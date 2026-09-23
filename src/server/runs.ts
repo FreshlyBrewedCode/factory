@@ -53,7 +53,12 @@ function isReserved(entry: RunHandle<unknown> | ReservedSlot | undefined): boole
 export class ConcurrencyLimitError extends Schema.TaggedError<ConcurrencyLimitError>()(
   "ConcurrencyLimitError",
   { maxConcurrentRuns: Schema.Number },
-) {}
+) {
+  /** The single source of truth for the message (HTTP, runtime, scheduler alike). */
+  override get message(): string {
+    return `concurrency limit reached (max ${this.maxConcurrentRuns} concurrent runs)`;
+  }
+}
 
 export function isActive(runId: string): boolean {
   return active.has(runId);
