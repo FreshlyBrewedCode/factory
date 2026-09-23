@@ -15,22 +15,21 @@
  */
 
 import { mkdir } from "node:fs/promises";
-import { dirname, resolve } from "node:path";
+import { dirname } from "node:path";
+import { Effect, FileSystem, Layer, Path, Stdio, Terminal } from "effect";
+import { ChildProcessSpawner } from "effect/unstable/process";
+import { CliError, Command } from "effect/unstable/cli";
 import type { RunEvent } from "./events";
-import { findFactoryConfig, loadFactoryConfig } from "./config";
-import { initCli } from "./init";
+import { loadFactoryConfig } from "./config";
 import type { RunRepo } from "./runtime/run";
-import { resetClone, type GitIdentity } from "./lib/clone";
+import type { GitIdentity } from "./lib/clone";
+import { resetClone } from "./lib/clone";
 import { loadWorkflow } from "./lib/load-workflow";
 import { streamSse } from "./lib/sse-client";
 import { appendEvent, getRunEvents, listRuns, openStore } from "./persistence/store";
 import type { AgentAdapter } from "./runtime/agent-adapter";
-import { opencodeAdapter } from "./runtime/opencode-adapter";
 import { startRun } from "./runtime/run";
-import { startDaemon, type DaemonOptions } from "./server/daemon";
-
-const DEFAULT_DB_PATH = ".factory/factory.db";
-const DEFAULT_DAEMON_URL = "http://localhost:3000";
+import { factoryCommand } from "./cli-commands";
 
 export interface CliOptions {
   readonly workflowPath: string;
@@ -232,193 +231,64 @@ export async function startCli(options: StartCliOptions): Promise<number> {
   return watchSse(options.baseUrl, body.runId);
 }
 
-const USAGE = [
-  "factory — imperative TypeScript workflows over coding agents.",
-  "",
-  "usage:",
-  "  factory init [--dir <path>] [--force]",
-  "      Scaffold .factory/ with a config and a starter workflow. Never",
-  "      overwrites an existing file unless --force is given.",
-  "",
-  "  factory serve [--port <n>] [--db <path>] [--config <path>]",
-  "      Run the daemon: HTTP API, live event stream, and the web UI.",
-  "      Finds .factory/factory.config.ts on its own when --config is omitted.",
-  "",
-  "  factory start <workflowId> --input <json> [--url <base-url>] [--watch]",
-  "      Start a run on a running daemon. --watch streams it and exits 0",
-  "      completed / 1 failed / 130 cancelled. Honours $FACTORY_URL.",
-  "",
-  "  factory runs [--db <path>]",
-  "      List every run this project has recorded.",
-  "",
-  "  factory log <runId> [--db <path>]",
-  "      Replay one run's full event history.",
-  "",
-  "  factory run <workflow.ts> --input <json> --dir <path>",
-  "        [--clone <sshUrl> --git-name <name> --git-email <email>]",
-  "        [--out <path>] [--db <path>]",
-  "      Run one workflow file directly — no daemon, no UI.",
-  "",
-].join("\n");
-
-function usageError(message: string): never {
-  console.error(`error: ${message}`);
-  console.error("");
-  console.error(USAGE);
-  process.exit(1);
-}
-
-function parseFlags(argv: ReadonlyArray<string>, startAt: number): Map<string, string> {
-  const flags = new Map<string, string>();
-  for (let i = startAt; i < argv.length; i += 2) {
-    const key = argv[i];
-    const value = argv[i + 1];
-    if (key === undefined || !key.startsWith("--") || value === undefined) {
-      usageError(`malformed flag at position ${i}: ${key ?? "<missing>"}`);
-    }
-    flags.set(key.slice(2), value);
-  }
-  return flags;
-}
-
-function parseArgs(argv: ReadonlyArray<string>): CliOptions {
-  if (argv[0] !== "run" || argv[1] === undefined) {
-    usageError("expected: factory run <workflow.ts> ...");
-  }
-
-  const workflowPath = argv[1] as string;
-  const flags = parseFlags(argv, 2);
-
-  const inputRaw = flags.get("input");
-  const dir = flags.get("dir");
-  const out = flags.get("out") ?? `.factory/runs/run-${Date.now()}/events.ndjson`;
-  const dbPath = flags.get("db") ?? DEFAULT_DB_PATH;
-  if (inputRaw === undefined) usageError("--input <json> is required");
-  if (dir === undefined) usageError("--dir <path> is required");
-
-  let input: unknown;
-  try {
-    input = JSON.parse(inputRaw);
-  } catch (err) {
-    usageError(`--input is not valid JSON: ${err instanceof Error ? err.message : String(err)}`);
-  }
-
-  const sshUrl = flags.get("clone");
-  let clone: CliOptions["clone"];
-  if (sshUrl !== undefined) {
-    const name = flags.get("git-name");
-    const email = flags.get("git-email");
-    if (name === undefined || email === undefined) {
-      usageError("--clone requires --git-name and --git-email");
-    }
-    clone = { sshUrl, identity: { name, email } };
-  }
-
-  return { workflowPath, input, dir, clone, outPath: out, dbPath, adapter: opencodeAdapter };
-}
-
-function parseStartArgs(argv: ReadonlyArray<string>): StartCliOptions {
-  const workflowId = argv[1];
-  if (workflowId === undefined) usageError("expected: factory start <workflowId> ...");
-
-  let inputRaw: string | undefined;
-  let url: string | undefined;
-  let watch = false;
-  for (let i = 2; i < argv.length; i++) {
-    const flag = argv[i];
-    if (flag === "--input") {
-      inputRaw = argv[++i];
-      if (inputRaw === undefined) usageError("--input needs a JSON value");
-    } else if (flag === "--url") {
-      url = argv[++i];
-      if (url === undefined) usageError("--url needs a base URL");
-    } else if (flag === "--watch") {
-      watch = true;
-    } else {
-      usageError(`unknown flag: ${flag ?? "<missing>"}`);
-    }
-  }
-
-  if (inputRaw === undefined) usageError("--input <json> is required");
-
-  let input: unknown;
-  try {
-    input = JSON.parse(inputRaw);
-  } catch (err) {
-    usageError(`--input is not valid JSON: ${err instanceof Error ? err.message : String(err)}`);
-  }
-
-  return {
-    workflowId,
-    input,
-    watch,
-    baseUrl: url ?? process.env.FACTORY_URL ?? DEFAULT_DAEMON_URL,
-  };
-}
-
-async function parseServeArgs(argv: ReadonlyArray<string>): Promise<DaemonOptions> {
-  const flags = parseFlags(argv, 1);
-  const dbPath = flags.get("db") ?? DEFAULT_DB_PATH;
-  const portRaw = flags.get("port");
-  const port = portRaw !== undefined ? Number(portRaw) : undefined;
-  // No `--config` means "find the project I am standing in" — the `factory
-  // init` layout first, then the pre-init root config. Finding neither is not
-  // an error: the daemon still serves the UI and the phase 3 path-based API,
-  // just with an empty workflow registry.
-  const configPath = flags.get("config") ?? (await findFactoryConfig());
-  const configLoaded =
-    configPath !== undefined ? loadFactoryConfig(configPath) : Promise.resolve(undefined);
-
-  return {
-    dbPath,
-    port,
-    ...(configPath !== undefined ? { config: await configLoaded } : {}),
-  };
-}
+// `effect@4.0.0-rc.115` ships no real platform layer for Stdio/Terminal/
+// FileSystem/ChildProcessSpawner — no `@effect/platform-node` or
+// `@effect/platform-bun` equivalent is installed, and this rc only exports
+// test/noop constructors (`Stdio.layerTest`, `FileSystem.layerNoop`,
+// `Terminal.make`, `ChildProcessSpawner.make`). This "environment" is
+// therefore assembled from those constructors even for the real binary, with
+// `args`/`columns`/`rows` wired to the real process so `effect/unstable/cli`
+// sees real argv and terminal size. `readInput`/`readLine` (used by
+// `Prompt`/`--wizard`) and `display` are stubbed and would die or no-op if
+// exercised, and `ChildProcessSpawner` dies on use — none of the commands
+// below hit those paths today: help/error text renders via `Console`
+// (real stdout/stderr) rather than the injected `Stdio` sink or
+// `Terminal.display`, and opencode is spawned elsewhere via `@tanstack/ai`,
+// not through `ChildProcessSpawner`. Revisit once a real platform adapter is
+// available, or before `--wizard` ships.
+const CliEnvLayer = Layer.mergeAll(
+  FileSystem.layerNoop({}),
+  Path.layer,
+  Stdio.layerTest({ args: Effect.succeed(process.argv.slice(2)) }),
+  Layer.succeed(
+    Terminal.Terminal,
+    Terminal.make({
+      columns: Effect.succeed(process.stdout.columns || 80),
+      rows: Effect.succeed(process.stdout.rows || 24),
+      readInput: Effect.die("unused"),
+      readLine: Effect.die("unused"),
+      display: () => Effect.void,
+    }),
+  ),
+  Layer.succeed(
+    ChildProcessSpawner.ChildProcessSpawner,
+    ChildProcessSpawner.make(() => Effect.die("unused")),
+  ),
+);
 
 if (import.meta.main) {
-  const argv = process.argv.slice(2);
-  if (argv.length === 0 || argv[0] === "--help" || argv[0] === "-h" || argv[0] === "help") {
-    console.log(USAGE);
-    process.exit(0);
-  } else if (argv[0] === "init") {
-    const flags = new Map<string, boolean | string>();
-    for (let i = 1; i < argv.length; i++) {
-      const flag = argv[i];
-      if (flag === "--force") flags.set("force", true);
-      else if (flag === "--dir") {
-        const dir = argv[++i];
-        if (dir === undefined) usageError("--dir needs a path");
-        flags.set("dir", dir);
-      } else usageError(`unknown flag: ${flag ?? "<missing>"}`);
-    }
-    const dir = flags.get("dir");
-    const exitCode = await initCli({
-      cwd: typeof dir === "string" ? resolve(dir) : process.cwd(),
-      force: flags.get("force") === true,
-    });
-    process.exit(exitCode);
-  } else if (argv[0] === "runs") {
-    listRunsCli(parseFlags(argv, 1).get("db") ?? DEFAULT_DB_PATH);
-  } else if (argv[0] === "log") {
-    const runId = argv[1];
-    if (runId === undefined) usageError("expected: factory log <runId> ...");
-    logRunCli(parseFlags(argv, 2).get("db") ?? DEFAULT_DB_PATH, runId);
-  } else if (argv[0] === "start") {
-    const exitCode = await startCli(parseStartArgs(argv));
-    process.exit(exitCode);
-  } else if (argv[0] === "serve") {
-    const daemonOptions = await parseServeArgs(argv);
-    const { server, schedulerFiber } = await startDaemon(daemonOptions);
-    console.log(`factory serve: listening on http://localhost:${server.port}`);
-    console.log(
-      schedulerFiber !== undefined
-        ? "scheduler: running (config schedules)"
-        : "scheduler: none (no schedules in config)",
-    );
-  } else {
-    const options = parseArgs(argv);
-    const exitCode = await runCli(options);
-    process.exit(exitCode);
-  }
+  const program = Command.run(factoryCommand, { version: "0.0.0" }).pipe(
+    Effect.provide(CliEnvLayer),
+  );
+  // `Command.run` fails with `CliError.ShowHelp` both for genuine parse errors
+  // and for "no subcommand given" / explicit `--help` (help is rendered by the
+  // command definition either way). `ShowHelp.errors` distinguishes them: a
+  // non-empty array is a real parse/validation failure (exit 1), an empty
+  // array means help was all that happened (exit 0) — matching this error's
+  // own documented exit-code mapping.
+  //
+  // We check that by hand instead of delegating to `Runtime.defaultTeardown`
+  // (the library's usual `makeRunMain`-style teardown): that helper calls
+  // `process.exit(0)` on *any* successful `Effect` completion, but `factory
+  // serve`'s handler effect resolves right after starting the long-lived
+  // HTTP server — forcing an exit there would kill the daemon immediately
+  // after startup. Only failures get an explicit exit call here; a
+  // successful run falls through to whatever keeps (or doesn't keep) the
+  // process alive on its own, same as before this file started handling
+  // `ShowHelp` specially.
+  Effect.runPromise(program).catch((error: unknown) => {
+    const isHelpOnly =
+      CliError.isCliError(error) && error._tag === "ShowHelp" && error.errors.length === 0;
+    if (!isHelpOnly) process.exit(1);
+  });
 }
