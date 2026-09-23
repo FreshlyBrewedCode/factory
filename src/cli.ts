@@ -231,6 +231,21 @@ export async function startCli(options: StartCliOptions): Promise<number> {
   return watchSse(options.baseUrl, body.runId);
 }
 
+// `effect@4.0.0-rc.115` ships no real platform layer for Stdio/Terminal/
+// FileSystem/ChildProcessSpawner — no `@effect/platform-node` or
+// `@effect/platform-bun` equivalent is installed, and this rc only exports
+// test/noop constructors (`Stdio.layerTest`, `FileSystem.layerNoop`,
+// `Terminal.make`, `ChildProcessSpawner.make`). This "environment" is
+// therefore assembled from those constructors even for the real binary, with
+// `args`/`columns`/`rows` wired to the real process so `effect/unstable/cli`
+// sees real argv and terminal size. `readInput`/`readLine` (used by
+// `Prompt`/`--wizard`) and `display` are stubbed and would die or no-op if
+// exercised, and `ChildProcessSpawner` dies on use — none of the commands
+// below hit those paths today: help/error text renders via `Console`
+// (real stdout/stderr) rather than the injected `Stdio` sink or
+// `Terminal.display`, and opencode is spawned elsewhere via `@tanstack/ai`,
+// not through `ChildProcessSpawner`. Revisit once a real platform adapter is
+// available, or before `--wizard` ships.
 const CliEnvLayer = Layer.mergeAll(
   FileSystem.layerNoop({}),
   Path.layer,
