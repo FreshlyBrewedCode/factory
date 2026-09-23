@@ -263,12 +263,12 @@ describe("scheduler tick (issue #16)", () => {
     class UnknownTaggedError extends Error {
       readonly _tag = "SomeFutureDomainError";
     }
-    const fx = fixture([schedule()]);
-    fx.setTime(DAY01_0259);
+    const fx = await fixture([schedule()]);
+    await fx.setTime(DAY01_0259);
     const state = createSchedulerState(fx.deps());
     fx.fireError.set("nightly", new UnknownTaggedError("mystery failure"));
 
-    fx.setTime(DAY01_0400);
+    await fx.setTime(DAY01_0400);
     const results = await tickOnce(fx.deps(), state);
 
     expect(results).toEqual([{ scheduleId: "nightly", action: "fire-failed" }]);
