@@ -20,8 +20,7 @@ import { Effect, FileSystem, Layer, ManagedRuntime, Path, Stdio, Terminal } from
 import { ChildProcessSpawner } from "effect/unstable/process";
 import { CliError, Command } from "effect/unstable/cli";
 import type { RunEvent } from "./events";
-import { findFactoryConfig, loadFactoryConfig } from "./config";
-import { initCli } from "./init";
+import { loadFactoryConfig } from "./config";
 import type { RunRepo } from "./runtime/run";
 import { resetClone, type GitIdentity } from "./lib/clone";
 import { loadWorkflow } from "./lib/load-workflow";
@@ -31,10 +30,7 @@ import type { AgentAdapter } from "./runtime/agent-adapter";
 import { opencodeAdapter } from "./runtime/opencode-adapter";
 import { AgentRuntimeLayer } from "./runtime/agent-runtime";
 import { startRun } from "./runtime/run";
-import { startDaemon, type DaemonOptions } from "./server/daemon";
-
-const DEFAULT_DB_PATH = ".factory/factory.db";
-const DEFAULT_DAEMON_URL = "http://localhost:3000";
+import { factoryCommand } from "./cli-commands";
 
 export interface CliOptions {
   readonly workflowPath: string;
@@ -83,6 +79,7 @@ export async function runCli(options: CliOptions): Promise<number> {
     runId,
     dir: options.dir,
     input: options.input,
+    prepareWorkspace: options.clone !== undefined,
     ...(repo !== undefined ? { repo } : {}),
     onEvent: (event) => {
       console.log(formatEvent(event));
