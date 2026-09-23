@@ -10,16 +10,28 @@
  * threaded by hand through `ServerOptions`, `StartTrackedRunOptions`,
  * `DispatchEnv` and the run/step options; it is resolved from context inside
  * `runtime/agent-step.ts`.
+ *
+ * #38: the daemon creates per-instance services (run registry, pubsub,
+ * dedupe registry, refresh gates) so two daemons can coexist in one process
+ * without sharing state.
  */
 
 import { mkdir } from "node:fs/promises";
 import { dirname } from "node:path";
-import { Effect, type Fiber, ManagedRuntime } from "effect";
+import { Clock, Effect, type Fiber, ManagedRuntime } from "effect";
 type AnyFiber = Fiber.Fiber<unknown, unknown>;
 import type { FactoryConfig } from "../config";
 import { openStore } from "../persistence/store";
 import { serve } from "./http";
-import { type DispatchEnv, type WorkspaceSpec } from "./runs";
+import {
+  createRunRegistry,
+  type DaemonServices,
+  type DispatchEnv,
+  type WorkspaceSpec,
+} from "./runs";
+import { createPubSub } from "./pubsub";
+import { createDedupeRegistry } from "../lib/dedupe";
+import { createRefreshGates } from "../lib/workspace";
 import {
   createSchedulerState,
   makeScheduleFire,
@@ -30,27 +42,33 @@ import {
 import { AgentRuntimeLayer } from "../runtime/agent-runtime";
 import { opencodeAdapter } from "../runtime/opencode-adapter";
 
+export function createLiveClock(): Clock.Clock {
+  return {
+    currentTimeMillisUnsafe: () => Date.now(),
+    currentTimeMillis: Effect.sync(() => Date.now()),
+    monotonicTimeNanosUnsafe: () => BigInt(Date.now()) * 1_000_000n,
+    monotonicTimeNanos: Effect.sync(() => BigInt(Date.now()) * 1_000_000n),
+    currentTimeNanosUnsafe: () => BigInt(Date.now()) * 1_000_000n,
+    currentTimeNanos: Effect.sync(() => BigInt(Date.now()) * 1_000_000n),
+    sleep: (duration) => Effect.sleep(duration),
+  };
+}
+
 export interface DaemonOptions {
   readonly dbPath: string;
   readonly port?: number;
   /** Issue #16: the tick cadence of the config schedules, over the default. */
   readonly schedulerIntervalMs?: number;
-  /**
-   * The run environment from `factory.config.ts` (D27). Present, every run —
-   * manual and scheduled alike — gets a per-run working tree under the
-   * configured `workspaceRoot` (D28) and shares one admission limit (D29).
-   * Absent, the legacy per-request `{dir, clone}` behaviour is kept.
-   */
   readonly config?: FactoryConfig;
+  readonly clock?: Clock.Clock;
 }
 
 export interface DaemonHandle {
   readonly server: ReturnType<typeof serve>;
-  /** Issue #16: the loop that fires the config's schedules, when it has any. */
   readonly schedulerFiber: AnyFiber | undefined;
+  readonly services: DaemonServices;
 }
 
-/** Issue #16: how often the scheduler's due window check runs. */
 export const DEFAULT_SCHEDULER_INTERVAL_MS = 30_000;
 
 export async function startDaemon(options: DaemonOptions): Promise<DaemonHandle> {
@@ -61,9 +79,17 @@ export async function startDaemon(options: DaemonOptions): Promise<DaemonHandle>
   const layer = AgentRuntimeLayer(adapter);
   const runtime = ManagedRuntime.make(layer);
 
+  const services: DaemonServices = {
+    registry: createRunRegistry(),
+    pubsub: createPubSub(),
+    dedupeRegistry: createDedupeRegistry(),
+    refreshGates: createRefreshGates(),
+  };
+
   const server = serve({
     db,
     runtime,
+    services,
     port: options.port,
     ...(options.config !== undefined ? { config: options.config } : {}),
   });
@@ -92,11 +118,14 @@ export async function startDaemon(options: DaemonOptions): Promise<DaemonHandle>
             fire: makeScheduleFire({
               db,
               runtime,
+              services,
               maxConcurrentRuns,
               workspace,
               repo,
               dispatchEnv,
             }),
+            dedupeRegistry: services.dedupeRegistry,
+            clock: options.clock ?? createLiveClock(),
           };
           const state = createSchedulerState(deps);
           return Effect.runFork(
@@ -109,5 +138,5 @@ export async function startDaemon(options: DaemonOptions): Promise<DaemonHandle>
         })()
       : undefined;
 
-  return { server, schedulerFiber };
+  return { server, schedulerFiber, services };
 }

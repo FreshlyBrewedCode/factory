@@ -58,6 +58,3 @@ export function createDedupeRegistry(): DedupeRegistry {
     },
   };
 }
-
-/** The daemon's shared registry — every run start and dispatch claim in this process goes through it. */
-export const dedupeRegistry: DedupeRegistry = createDedupeRegistry();
