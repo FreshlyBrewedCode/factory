@@ -2,7 +2,6 @@ import { Effect, Option } from "effect";
 import { Argument, Command, Flag } from "effect/unstable/cli";
 import { findFactoryConfig, loadFactoryConfig } from "./config";
 import { initCli } from "./init";
-import { opencodeAdapter } from "./runtime/opencode-adapter";
 import { resolve } from "node:path";
 import {
   runCli,
@@ -216,7 +215,6 @@ export const runCommand = Command.make("run", runConfig, (config) =>
       clone,
       outPath: Option.getOrElse(config.out, () => `.factory/runs/run-${Date.now()}/events.ndjson`),
       dbPath: config.db,
-      adapter: opencodeAdapter,
     };
 
     const exitCode = yield* Effect.promise(() => runCli(options));
