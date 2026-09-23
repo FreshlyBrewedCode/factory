@@ -23,7 +23,12 @@ import { Schema } from "effect";
 export class DedupeKeyError extends Schema.TaggedError<DedupeKeyError>()("DedupeKeyError", {
   key: Schema.String,
   holderRunId: Schema.String,
-}) {}
+}) {
+  /** The single source of truth for the collision message (HTTP, runtime, scheduler alike). */
+  override get message(): string {
+    return `dedupe key held: "${this.key}" is currently held by run ${this.holderRunId}`;
+  }
+}
 
 export interface DedupeRegistry {
   /** The run id currently holding `key`, or `undefined`. */

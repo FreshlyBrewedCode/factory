@@ -29,24 +29,17 @@ import type {
   WriteBackCallOptions,
 } from "../workflow";
 import { DedupeKeyError } from "../lib/dedupe";
-import type { ConcurrencyLimitError, DispatchCapError } from "../server/runs";
 import type { AgentAdapter } from "./agent-adapter";
 import { buildAgentStepEffect } from "./agent-step";
 
+/**
+ * The domain errors (`DedupeKeyError`, `ConcurrencyLimitError`,
+ * `DispatchCapError`) each carry their own `message` (a `Schema.TaggedError`
+ * field or getter — issue #34), so this is just the generic `Error` fallback,
+ * not a per-tag dispatch.
+ */
 function domainErrorMessage(err: unknown): string {
   if (!(err instanceof Error)) return String(err);
-  const tag = (err as { _tag?: string })._tag;
-  if (tag === "DedupeKeyError") {
-    const e = err as DedupeKeyError;
-    return `dedupe key held: "${e.key}" is currently held by run ${e.holderRunId}`;
-  }
-  if (tag === "ConcurrencyLimitError") {
-    const e = err as ConcurrencyLimitError;
-    return `concurrency limit reached (max ${e.maxConcurrentRuns} concurrent runs)`;
-  }
-  if (tag === "DispatchCapError") {
-    return (err as DispatchCapError).message;
-  }
   return err.message || String(err);
 }
 
@@ -400,8 +393,7 @@ export function startRun<I, O>(
 
       return result;
     } catch (err) {
-      if (err instanceof Error && (err as { _tag?: string })._tag === "RunCancelledSignal")
-        throw err;
+      if (err instanceof RunCancelledSignal) throw err;
       const message = domainErrorMessage(err);
       emit({
         _tag: "WriteBackFinished",
@@ -432,12 +424,11 @@ export function startRun<I, O>(
     try {
       childRunId = await options.dispatch(child, input, opts);
     } catch (err) {
-      if (err instanceof Error && (err as { _tag?: string })._tag === "DedupeKeyError") {
-        const dedupeErr = err as DedupeKeyError;
+      if (err instanceof DedupeKeyError) {
         emit({
           _tag: "DispatchCollision",
-          key: dedupeErr.key,
-          holderRunId: dedupeErr.holderRunId,
+          key: err.key,
+          holderRunId: err.holderRunId,
           childWorkflowId: child.id,
         });
       }
@@ -503,7 +494,7 @@ export function startRun<I, O>(
     } catch (err) {
       const durationMs = Date.now() - startedAt;
 
-      if (err instanceof Error && (err as { _tag?: string })._tag === "RunCancelledSignal") {
+      if (err instanceof RunCancelledSignal) {
         emit({ _tag: "RunCancelled", durationMs });
         return { outcome: "cancelled" };
       }
