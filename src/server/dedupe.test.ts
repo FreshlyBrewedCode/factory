@@ -268,8 +268,7 @@ describe("dedupe keys through startTrackedRun (issue #15)", () => {
     if (err instanceof DedupeKeyError) {
       expect(err.key).toBe("item:41");
       expect(err.holderRunId).toBe("run-holder");
-      expect(err.message).toContain("item:41");
-      expect(err.message).toContain("run-holder");
+      expect(err._tag).toBe("DedupeKeyError");
     }
 
     gate.release();

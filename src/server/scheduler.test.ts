@@ -13,7 +13,8 @@ import { describe, expect, test } from "bun:test";
 import { Cron } from "effect";
 import { createDedupeRegistry } from "../lib/dedupe";
 import type { WorkflowDefinition } from "../workflow";
-import { ConcurrencyLimitError } from "./runs";
+import { ConcurrencyLimitError, DispatchCapError } from "./runs";
+import { DedupeKeyError } from "../lib/dedupe";
 import {
   createSchedulerState,
   tickOnce,
@@ -141,7 +142,7 @@ describe("scheduler tick (issue #16)", () => {
     const fx = fixture([schedule()]);
     fx.setTime(DAY01_0259);
     const state = createSchedulerState(fx.deps());
-    fx.fireError.set("nightly", new ConcurrencyLimitError(1));
+    fx.fireError.set("nightly", new ConcurrencyLimitError({ maxConcurrentRuns: 1 }));
 
     fx.setTime(DAY01_0400);
     const results = await tickOnce(fx.deps(), state);
@@ -201,5 +202,57 @@ describe("scheduler tick (issue #16)", () => {
     expect(results.filter((r) => r.scheduleId === "b")).toEqual([
       { scheduleId: "b", action: "fired", runId: "run-for-b" },
     ]);
+  });
+
+  test("each domain error type is explicitly classified (exhaustive match, #34)", async () => {
+    const concurrencyFx = fixture([schedule({ id: "conc" })]);
+    concurrencyFx.setTime(DAY01_0259);
+    const concurrencyState = createSchedulerState(concurrencyFx.deps());
+    concurrencyFx.fireError.set("conc", new ConcurrencyLimitError({ maxConcurrentRuns: 1 }));
+    concurrencyFx.setTime(DAY01_0400);
+    expect(await tickOnce(concurrencyFx.deps(), concurrencyState)).toEqual([
+      { scheduleId: "conc", action: "skipped-concurrency" },
+    ]);
+
+    const dedupeFx = fixture([schedule({ id: "dedupe" })]);
+    dedupeFx.setTime(DAY01_0259);
+    const dedupeState = createSchedulerState(dedupeFx.deps());
+    dedupeFx.fireError.set(
+      "dedupe",
+      new DedupeKeyError({ key: "schedule:dedupe", holderRunId: "run-x" }),
+    );
+    dedupeFx.setTime(DAY01_0400);
+    expect(await tickOnce(dedupeFx.deps(), dedupeState)).toEqual([
+      { scheduleId: "dedupe", action: "fire-failed" },
+    ]);
+
+    const capFx = fixture([schedule({ id: "cap" })]);
+    capFx.setTime(DAY01_0259);
+    const capState = createSchedulerState(capFx.deps());
+    capFx.fireError.set("cap", new DispatchCapError({ message: "depth exceeded" }));
+    capFx.setTime(DAY01_0400);
+    expect(await tickOnce(capFx.deps(), capState)).toEqual([
+      { scheduleId: "cap", action: "fire-failed" },
+    ]);
+  });
+
+  test("a tagged error the match doesn't recognize still lands in fire-failed, not dropped (#34)", async () => {
+    // The regression this guards: a real bug had the switch fall through
+    // silently for any `_tag` outside its four known cases, so a schedule
+    // whose fire failed with an unrecognized tagged error got zero entries
+    // in `results` instead of one — worse than the wrong bucket, an outright
+    // vanished tick.
+    class UnknownTaggedError extends Error {
+      readonly _tag = "SomeFutureDomainError";
+    }
+    const fx = fixture([schedule()]);
+    fx.setTime(DAY01_0259);
+    const state = createSchedulerState(fx.deps());
+    fx.fireError.set("nightly", new UnknownTaggedError("mystery failure"));
+
+    fx.setTime(DAY01_0400);
+    const results = await tickOnce(fx.deps(), state);
+
+    expect(results).toEqual([{ scheduleId: "nightly", action: "fire-failed" }]);
   });
 });
