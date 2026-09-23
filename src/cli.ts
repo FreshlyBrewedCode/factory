@@ -18,7 +18,7 @@ import { mkdir } from "node:fs/promises";
 import { dirname } from "node:path";
 import { Effect, FileSystem, Layer, Path, Stdio, Terminal } from "effect";
 import { ChildProcessSpawner } from "effect/unstable/process";
-import { Command } from "effect/unstable/cli";
+import { CliError, Command } from "effect/unstable/cli";
 import type { RunEvent } from "./events";
 import { loadFactoryConfig } from "./config";
 import type { RunRepo } from "./runtime/run";
@@ -255,7 +255,25 @@ if (import.meta.main) {
   const program = Command.run(factoryCommand, { version: "0.0.0" }).pipe(
     Effect.provide(CliEnvLayer),
   );
-  Effect.runPromise(program).catch(() => {
-    process.exit(1);
+  // `Command.run` fails with `CliError.ShowHelp` both for genuine parse errors
+  // and for "no subcommand given" / explicit `--help` (help is rendered by the
+  // command definition either way). `ShowHelp.errors` distinguishes them: a
+  // non-empty array is a real parse/validation failure (exit 1), an empty
+  // array means help was all that happened (exit 0) — matching this error's
+  // own documented exit-code mapping.
+  //
+  // We check that by hand instead of delegating to `Runtime.defaultTeardown`
+  // (the library's usual `makeRunMain`-style teardown): that helper calls
+  // `process.exit(0)` on *any* successful `Effect` completion, but `factory
+  // serve`'s handler effect resolves right after starting the long-lived
+  // HTTP server — forcing an exit there would kill the daemon immediately
+  // after startup. Only failures get an explicit exit call here; a
+  // successful run falls through to whatever keeps (or doesn't keep) the
+  // process alive on its own, same as before this file started handling
+  // `ShowHelp` specially.
+  Effect.runPromise(program).catch((error: unknown) => {
+    const isHelpOnly =
+      CliError.isCliError(error) && error._tag === "ShowHelp" && error.errors.length === 0;
+    if (!isHelpOnly) process.exit(1);
   });
 }

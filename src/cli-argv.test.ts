@@ -4,6 +4,12 @@ import { Argument, Command, Flag } from "effect/unstable/cli";
 import { ChildProcessSpawner } from "effect/unstable/process";
 import { factoryCommand } from "./cli-commands";
 
+const CLI = `${import.meta.dir}/cli.ts`;
+
+async function readAll(stream: ReadableStream<Uint8Array>): Promise<string> {
+  return new Response(stream).text();
+}
+
 const CliTestLayer = Layer.mergeAll(
   FileSystem.layerNoop({}),
   Path.layer,
@@ -365,5 +371,56 @@ describe("factoryCommand exports", () => {
     expect(names).toContain("runs");
     expect(names).toContain("log");
     expect(names).toContain("run");
+  });
+});
+
+// The exit-code mapping for `Command.run`'s ShowHelp failure lives in the
+// `import.meta.main` block at the bottom of cli.ts, not in `runWith` (which
+// the `runFactory` helper above exercises in-process). It's only observable
+// by actually running the binary as a subprocess, matching the style of
+// cli.start.test.ts / cli.crash.test.ts.
+describe("factory binary: process exit codes", () => {
+  test("bare `factory` with no args prints root help to stdout and exits 0", async () => {
+    const proc = Bun.spawn(["bun", CLI], { stdout: "pipe", stderr: "pipe" });
+    const exitCode = await proc.exited;
+    const stdout = await readAll(proc.stdout);
+    const stderr = await readAll(proc.stderr);
+
+    expect(exitCode).toBe(0);
+    expect(stdout).toContain("USAGE");
+    expect(stderr).toBe("");
+  });
+
+  test("`factory --help` prints help and exits 0", async () => {
+    const proc = Bun.spawn(["bun", CLI, "--help"], { stdout: "pipe", stderr: "pipe" });
+    const exitCode = await proc.exited;
+    const stdout = await readAll(proc.stdout);
+
+    expect(exitCode).toBe(0);
+    expect(stdout).toContain("USAGE");
+  });
+
+  test("`factory -h` prints help and exits 0", async () => {
+    const proc = Bun.spawn(["bun", CLI, "-h"], { stdout: "pipe", stderr: "pipe" });
+    const exitCode = await proc.exited;
+
+    expect(exitCode).toBe(0);
+  });
+
+  test("a genuine parse error (--port abc) still exits non-zero", async () => {
+    const proc = Bun.spawn(["bun", CLI, "serve", "--port", "abc"], {
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const exitCode = await proc.exited;
+
+    expect(exitCode).not.toBe(0);
+  });
+
+  test("an unknown flag still exits non-zero", async () => {
+    const proc = Bun.spawn(["bun", CLI, "serve", "--nope"], { stdout: "pipe", stderr: "pipe" });
+    const exitCode = await proc.exited;
+
+    expect(exitCode).not.toBe(0);
   });
 });
