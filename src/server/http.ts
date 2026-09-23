@@ -28,13 +28,14 @@
  */
 
 import type { Database } from "bun:sqlite";
+import { ManagedRuntime } from "effect";
 import { isTerminal, type RunEvent } from "../events";
 import type { FactoryConfig } from "../config";
 import { Schema, SchemaParser } from "effect";
 import { resetClone, type GitIdentity } from "../lib/clone";
 import { loadWorkflow } from "../lib/load-workflow";
 import { getRunEvents, listRuns, type RunSummary } from "../persistence/store";
-import type { AgentAdapter } from "../runtime/agent-adapter";
+import { AgentRuntime } from "../runtime/agent-runtime";
 import index from "../web/index.html";
 import { admitRun } from "./admission";
 import { subscribe } from "./pubsub";
@@ -74,7 +75,12 @@ export interface ScheduleSummary {
 
 export interface ServerOptions {
   readonly db: Database;
-  readonly adapter: AgentAdapter;
+  /**
+   * Issue #36: the Effect managed runtime that provides the agent runtime
+   * service. The adapter is resolved from context inside `startTrackedRun`
+   * rather than threaded through `ServerOptions`.
+   */
+  readonly runtime: ManagedRuntime.ManagedRuntime<AgentRuntime, never>;
   /**
    * The loaded `factory.config.ts` (D27). Absent = the phase 3 path-based API
    * behaves exactly as before (no limit, explicit dir+clone, `/api/workflows`
@@ -131,7 +137,7 @@ function listSummaries(db: Database): ReadonlyArray<RunSummaryResponse> {
  * it `ctx.dispatch` throws, because in-process/path-based legacy runs have
  * no registry to start children from.
  */
-function dispatchEnvFor(config: FactoryConfig, adapter: AgentAdapter): DispatchEnv {
+function dispatchEnvFor(config: FactoryConfig): DispatchEnv {
   return {
     workspace: {
       workspaceRoot: config.workspaceRoot,
@@ -141,7 +147,6 @@ function dispatchEnvFor(config: FactoryConfig, adapter: AgentAdapter): DispatchE
     },
     repo: { slug: config.repo.slug, baseBranch: config.repo.baseBranch },
     maxConcurrentRuns: config.maxConcurrentRuns,
-    adapter,
     maxDispatchDepth: config.maxDispatchDepth,
     maxChildrenPerRun: config.maxChildrenPerRun,
   };
@@ -155,14 +160,13 @@ function dispatchEnvFor(config: FactoryConfig, adapter: AgentAdapter): DispatchE
  */
 function configRunOptions(
   config: FactoryConfig,
-  adapter: AgentAdapter,
   maxConcurrentRuns: number | undefined,
   extra: {
     readonly scheduleId?: string;
     readonly dedupeKey?: string;
     readonly agentOverrides?: { readonly model?: string };
   } = {},
-): Omit<StartTrackedRunOptions, "input" | "adapter"> {
+): Omit<StartTrackedRunOptions, "input"> {
   return {
     workspace: {
       workspaceRoot: config.workspaceRoot,
@@ -172,7 +176,7 @@ function configRunOptions(
     },
     repo: { slug: config.repo.slug, baseBranch: config.repo.baseBranch },
     maxConcurrentRuns,
-    dispatchEnv: dispatchEnvFor(config, adapter),
+    dispatchEnv: dispatchEnvFor(config),
     ...(extra.scheduleId !== undefined ? { scheduleId: extra.scheduleId } : {}),
     ...(extra.dedupeKey !== undefined ? { dedupeKey: extra.dedupeKey } : {}),
     ...(extra.agentOverrides !== undefined ? { agentOverrides: extra.agentOverrides } : {}),
@@ -388,15 +392,14 @@ export function createHandler(options: ServerOptions): (req: Request) => Promise
         }
 
         const startOptions: StartTrackedRunOptions = {
-          ...configRunOptions(runEnv, options.adapter, maxConcurrentRuns, {
+          ...configRunOptions(runEnv, maxConcurrentRuns, {
             dedupeKey: typeof body.dedupeKey === "string" ? body.dedupeKey : undefined,
           }),
           input: decodedInput,
-          adapter: options.adapter,
         };
         let runId: string;
         try {
-          runId = await startTrackedRun(options.db, workflow, startOptions);
+          runId = await startTrackedRun(options.runtime, options.db, workflow, startOptions);
         } catch (err) {
           if (err instanceof ConcurrencyLimitError) {
             return json({ error: err.message }, { status: 409 });
@@ -453,9 +456,8 @@ export function createHandler(options: ServerOptions): (req: Request) => Promise
             ? undefined
             : { slug: runEnv.repo.slug, baseBranch: runEnv.repo.baseBranch },
         ...(runEnv !== undefined ? { maxConcurrentRuns } : {}),
-        ...(runEnv !== undefined ? { dispatchEnv: dispatchEnvFor(runEnv, options.adapter) } : {}),
+        ...(runEnv !== undefined ? { dispatchEnv: dispatchEnvFor(runEnv) } : {}),
         input: body.input,
-        adapter: options.adapter,
         ...(typeof body.dedupeKey === "string" ? { dedupeKey: body.dedupeKey } : {}),
         ...(body.clone !== undefined && typeof body.dir === "string"
           ? { prepareWorkspace: true }
@@ -463,7 +465,7 @@ export function createHandler(options: ServerOptions): (req: Request) => Promise
       };
       let runId: string;
       try {
-        runId = await startTrackedRun(options.db, workflow, startOptions);
+        runId = await startTrackedRun(options.runtime, options.db, workflow, startOptions);
       } catch (err) {
         if (err instanceof ConcurrencyLimitError) {
           return json({ error: err.message }, { status: 409 });
@@ -556,14 +558,13 @@ export function createHandler(options: ServerOptions): (req: Request) => Promise
       // it fires regardless.
       let runId: string;
       try {
-        runId = await startTrackedRun(options.db, workflow, {
-          ...configRunOptions(options.config, options.adapter, maxConcurrentRuns, {
+        runId = await startTrackedRun(options.runtime, options.db, workflow, {
+          ...configRunOptions(options.config, maxConcurrentRuns, {
             scheduleId: schedule.id,
             ...(schedule.overlap === "skip" ? { dedupeKey: `schedule:${schedule.id}` } : {}),
             ...(schedule.agent !== undefined ? { agentOverrides: schedule.agent } : {}),
           }),
           input: schedule.input,
-          adapter: options.adapter,
         });
       } catch (err) {
         if (err instanceof ConcurrencyLimitError) {

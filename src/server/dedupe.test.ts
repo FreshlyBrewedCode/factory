@@ -12,6 +12,7 @@ import { join } from "node:path";
 import { describe, expect, test } from "bun:test";
 import { openStore, getRunEvents } from "../persistence/store";
 import { createSlowFakeAdapter } from "../replay/adapter";
+import { makeAgentRuntime } from "../runtime/agent-runtime";
 import { defineWorkflow, Schema } from "../workflow";
 import { createDedupeRegistry, DedupeKeyError } from "../lib/dedupe";
 import { activeRunIds, getActiveHandle, isActive, startTrackedRun } from "./runs";
@@ -31,6 +32,8 @@ const SLOW_ADAPTER = createSlowFakeAdapter(
   ],
   25,
 );
+
+const runtime = makeAgentRuntime(SLOW_ADAPTER);
 
 const echoWorkflow = defineWorkflow("echo-wf", {
   input: Schema.Struct({}),
@@ -72,10 +75,9 @@ interface StartOpts {
 }
 
 function start(db: ReturnType<typeof openStore>, opts: StartOpts): Promise<string> {
-  return startTrackedRun(db, echoWorkflow, {
+  return startTrackedRun(runtime, db, echoWorkflow, {
     dir: opts.dir,
     input: {},
-    adapter: SLOW_ADAPTER,
     dedupeRegistry: opts.registry ?? createDedupeRegistry(),
     maxConcurrentRuns: 4,
     ...(opts.runId !== undefined ? { runId: opts.runId } : {}),
@@ -111,13 +113,11 @@ function workspaces(root: string): WorkspaceSpec {
 function withWorkspaces(root: string): Record<string, unknown> {
   return {
     workspace: workspaces(root),
-    adapter: SLOW_ADAPTER,
     maxConcurrentRuns: 10,
   };
 }
 
 describe("dedupe keys through ctx.dispatch (issue #15)", () => {
-  const driftAdapter = SLOW_ADAPTER;
   const busyWorkflow = defineWorkflow("busy-wf", {
     input: Schema.Struct({ n: Schema.Number }),
     workspace: { kind: "scratch" },
@@ -147,12 +147,11 @@ describe("dedupe keys through ctx.dispatch (issue #15)", () => {
       },
     });
 
-    const parentRunId = await startTrackedRun(db, parent, {
+    const parentRunId = await startTrackedRun(runtime, db, parent, {
       input: { wait: 3 },
-      adapter: driftAdapter,
       workspace: workspaces(join(root)),
       maxConcurrentRuns: 10,
-      dispatchEnv: { ...withWorkspaces(join(root)), adapter: driftAdapter } as never,
+      dispatchEnv: withWorkspaces(join(root)),
     });
 
     await waitFor(() => !isActive(parentRunId));
@@ -207,13 +206,12 @@ describe("dedupe keys through ctx.dispatch (issue #15)", () => {
       },
     });
 
-    const parentRunId = (await startTrackedRun(db, parent, {
+    const parentRunId = await startTrackedRun(runtime, db, parent, {
       input: {},
-      adapter: driftAdapter,
       workspace: workspaces(join(root)),
       maxConcurrentRuns: 10,
-      dispatchEnv: { ...withWorkspaces(join(root)), adapter: driftAdapter } as never,
-    })) as string;
+      dispatchEnv: withWorkspaces(join(root)),
+    });
 
     await waitFor(() =>
       getRunEvents(db, parentRunId).some((event) => event.payload._tag === "RunDispatched"),
@@ -344,9 +342,8 @@ describe("dedupe keys through startTrackedRun (issue #15)", () => {
 
     // allocation of an explicitly undefined dir fails after the claim
     await expect(
-      startTrackedRun(db, echoWorkflow, {
+      startTrackedRun(runtime, db, echoWorkflow, {
         input: {},
-        adapter: SLOW_ADAPTER,
         dedupeKey: "item:44",
         dedupeRegistry: createDedupeRegistry(),
       }),
@@ -366,11 +363,10 @@ describe("dedupe keys through startTrackedRun (issue #15)", () => {
     const db = openStore(join(root, "factory.db"));
     const registry = createDedupeRegistry();
 
-    const holderRunId = await startTrackedRun(db, echoWorkflow, {
+    const holderRunId = await startTrackedRun(runtime, db, echoWorkflow, {
       runId: "run-cancelled",
       dir: join(root, "dir-1"),
       input: {},
-      adapter: SLOW_ADAPTER,
       dedupeKey: "item:45",
       dedupeRegistry: registry,
     });
@@ -381,10 +377,9 @@ describe("dedupe keys through startTrackedRun (issue #15)", () => {
 
     await waitFor(() => !isActive(holderRunId));
     const started = getRunEvents(db, holderRunId).some((e) => e.payload._tag === "RunStarted");
-    const retryRunId = await startTrackedRun(db, echoWorkflow, {
+    const retryRunId = await startTrackedRun(runtime, db, echoWorkflow, {
       dir: join(root, "dir-2"),
       input: {},
-      adapter: SLOW_ADAPTER,
       dedupeKey: "item:45",
       dedupeRegistry: registry,
     });
@@ -443,7 +438,7 @@ describe("dedupe keys over POST /api/runs (issue #15)", () => {
 
     const server = serve({
       db,
-      adapter: SLOW_ADAPTER,
+      runtime: makeAgentRuntime(SLOW_ADAPTER),
       port: 0,
       config: defineConfig({
         repo: {
@@ -517,7 +512,7 @@ describe("dedupe keys over POST /api/runs (issue #15)", () => {
 
     const server = serve({
       db,
-      adapter: SLOW_ADAPTER,
+      runtime: makeAgentRuntime(SLOW_ADAPTER),
       port: 0,
       config: defineConfig({
         repo: {

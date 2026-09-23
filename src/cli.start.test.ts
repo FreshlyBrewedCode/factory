@@ -25,15 +25,17 @@ async function startTestDaemon(delayMs: number, root: string): Promise<TestDaemo
   const daemon = await startDaemon({
     dbPath,
     port: 0,
-    adapter: createSlowFakeAdapter(
-      [
-        { type: "TEXT_MESSAGE_START" },
-        { type: "TEXT_MESSAGE_CONTENT", delta: "hi" },
-        { type: "TEXT_MESSAGE_END" },
-      ],
-      delayMs,
-    ),
     config: defineConfig({
+      agent: {
+        adapter: createSlowFakeAdapter(
+          [
+            { type: "TEXT_MESSAGE_START" },
+            { type: "TEXT_MESSAGE_CONTENT", delta: "hi" },
+            { type: "TEXT_MESSAGE_END" },
+          ],
+          delayMs,
+        ),
+      },
       repo: {
         sshUrl: seed,
         identity: { name: "Factory", email: "factory@factory.test" },

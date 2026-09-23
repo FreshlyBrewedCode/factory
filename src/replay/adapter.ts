@@ -23,6 +23,7 @@ import type {
   AgentAdapter,
   AgentAdapterOptions,
   AgentAdapterYield,
+  AgentSignal,
 } from "../runtime/agent-adapter";
 import { extractOpencodeSignal } from "../runtime/opencode-adapter";
 
@@ -94,17 +95,34 @@ export function createCorpusReplayAdapter(path: string): AgentAdapter {
  * chunk arrives and reliably interrupt mid-stream. Used by the cancellation
  * regression test in place of a corpus (no recorded trace can be paused on
  * demand; a corpus is a fixed sequence, not a controllable one).
+ *
+ * Signals can be attached declaratively by index, so a test can exercise the
+ * signal path without imitating any vendor chunk shape (ADR 0012 §2).
  */
-export function createSlowFakeAdapter(chunks: ReadonlyArray<unknown>, delayMs = 20): AgentAdapter {
+export interface AttachedSignal {
+  /** The zero-based position of the chunk this signal attaches to. */
+  readonly index: number;
+  readonly signal: AgentSignal;
+}
+
+export function createSlowFakeAdapter(
+  chunks: ReadonlyArray<unknown>,
+  delayMs = 20,
+  signals: ReadonlyArray<AttachedSignal> = [],
+): AgentAdapter {
+  const byIndex = new Map(signals.map((s) => [s.index, s.signal]));
   return {
     async prepareWorkspace(_dir: string): Promise<void> {},
 
     stream(_options: AgentAdapterOptions): AsyncIterable<AgentAdapterYield> {
       return {
         async *[Symbol.asyncIterator]() {
-          for (const chunk of chunks) {
+          for (let index = 0; index < chunks.length; index++) {
             await new Promise<void>((resolve) => setTimeout(resolve, delayMs));
-            yield { chunk };
+            const signal = byIndex.get(index);
+            yield signal === undefined
+              ? { chunk: chunks[index] }
+              : { chunk: chunks[index], signal };
           }
         },
       };
