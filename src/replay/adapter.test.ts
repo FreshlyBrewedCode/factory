@@ -1,6 +1,7 @@
 import { Effect } from "effect";
 import { describe, expect, test } from "bun:test";
 import { buildAgentStepEffect } from "../runtime/agent-step";
+import type { AgentAdapterYield } from "../runtime/agent-adapter";
 import { createCorpusReplayAdapter, createSlowFakeAdapter, loadCorpusBlocks } from "./adapter";
 
 const FULL_ROUND_TRIP_CORPUS = `${import.meta.dir}/../../test/corpus/run-1789308170212.ndjson`;
@@ -64,6 +65,29 @@ describe("createCorpusReplayAdapter", () => {
     expect(outcome.sessionId).toBe("ses_f64ec04acffeJ0tjsHSkjAEqZF");
     expect(outcome.finalText.length).toBeGreaterThan(0);
     expect(outcome.runError).toBeUndefined();
+  });
+
+  test("yields AgentAdapterYield items with signals extracted from opencode chunks", async () => {
+    const adapter = createCorpusReplayAdapter(FULL_ROUND_TRIP_CORPUS);
+    const stream = adapter.stream({
+      threadId: "t",
+      dir: "/tmp",
+      model: "m",
+      prompt: "p",
+      abortController: new AbortController(),
+    });
+
+    const yields: AgentAdapterYield[] = [];
+    for await (const y of stream) {
+      yields.push(y as AgentAdapterYield);
+    }
+
+    expect(yields.length).toBe(39);
+    const sessionIdYield = yields.find((y) => y.signal?._tag === "sessionId");
+    expect(sessionIdYield).toBeDefined();
+    expect(sessionIdYield?.signal?.value).toBe("ses_f64ec04acffeJ0tjsHSkjAEqZF");
+    const textYields = yields.filter((y) => y.signal === undefined);
+    expect(textYields.length).toBeGreaterThan(0);
   });
 });
 
