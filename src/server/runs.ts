@@ -12,6 +12,16 @@
  * `cancel` that arrives while a run is still reserving is deferred into run
  * start rather than dropped.
  *
+ * Shutdown cancels what the registry holds: `RunRegistryShape.shutdown`
+ * refuses further starts, cancels every running handle, marks every reserved
+ * slot cancelled (so the run is cancelled the moment it starts, exactly like
+ * a deferred API cancel), and waits — bounded — for all of them to settle.
+ * Settled means each run persisted its `RunCancelled` and its `ctx.exec`
+ * children were killed, rather than being orphaned by process exit and read
+ * back as "interrupted" after a restart. `DaemonHandle.stop` runs it while
+ * the daemon runtime is still live; the registry layer's finalizer runs it
+ * again as a safety net when the runtime is disposed without `stop`.
+ *
  * #38 (ADR 0009 §5): the registry is a `Context.Service` (`RunRegistry`)
  * whose layer builds a fresh map per daemon runtime, alongside the pubsub,
  * dedupe registry and refresh gates. Nothing here holds module-level state:
@@ -22,7 +32,7 @@
  * code over plain maps.
  */
 
-import { Context, Layer, Schema } from "effect";
+import { Context, Effect, Layer, Schema } from "effect";
 import type { Database } from "bun:sqlite";
 import { rm } from "node:fs/promises";
 import { admitRun } from "./admission";
@@ -56,6 +66,30 @@ export class DispatchCapError extends Schema.TaggedError<DispatchCapError>()("Di
 function isReserved(entry: RunHandle<unknown> | ReservedSlot | undefined): boolean {
   return entry !== undefined && !("result" in entry) && "cancelled" in entry;
 }
+
+/**
+ * A start refused because the daemon is shutting down — its registry stopped
+ * admitting runs. HTTP maps it to 503; a `ctx.dispatch` surfaces it to the
+ * parent, which is itself being cancelled.
+ */
+export class DaemonShuttingDownError extends Schema.TaggedError<DaemonShuttingDownError>()(
+  "DaemonShuttingDownError",
+  { message: Schema.String },
+) {
+  // Same `.stack` header fix as `ConcurrencyLimitError` below.
+  static {
+    this.prototype.name = "DaemonShuttingDownError";
+  }
+
+  static of(): DaemonShuttingDownError {
+    return new DaemonShuttingDownError({
+      message: "the daemon is shutting down and no longer starts runs",
+    });
+  }
+}
+
+/** How long shutdown waits for cancelled runs to settle before giving up on them. */
+export const DEFAULT_SHUTDOWN_TIMEOUT_MS = 5_000;
 
 export class ConcurrencyLimitError extends Schema.TaggedError<ConcurrencyLimitError>()(
   "ConcurrencyLimitError",
@@ -96,6 +130,16 @@ export interface RunRegistryShape {
     | { readonly kind: "reserved" }
     | undefined;
   reserve(runId: string): void;
+  /** True once `shutdown` has begun: starts are refused from then on. */
+  readonly closed: boolean;
+  /**
+   * Close admission, cancel every run held — running handles directly,
+   * reserved slots by marking them for cancel-on-start — and resolve once the
+   * registry is empty or `timeoutMs` has passed (runs still held then are
+   * logged and abandoned). Idempotent: every call returns the first call's
+   * promise.
+   */
+  shutdown(timeoutMs: number): Promise<void>;
   setHandle(runId: string, handle: RunHandle<unknown>): void;
   delete(runId: string): void;
   get(runId: string): RunHandle<unknown> | ReservedSlot | undefined;
@@ -104,6 +148,12 @@ export interface RunRegistryShape {
 
 export function createRunRegistry(): RunRegistryShape {
   const active = new Map<string, RunHandle<unknown> | ReservedSlot>();
+  let closed = false;
+  let shutdownPromise: Promise<void> | undefined;
+  const onEmpty: Array<() => void> = [];
+  const notifyIfEmpty = (): void => {
+    if (active.size === 0) for (const resolve of onEmpty.splice(0)) resolve();
+  };
   return {
     isActive: (runId) => active.has(runId),
     activeRunIds: () => [...active.keys()],
@@ -129,6 +179,36 @@ export function createRunRegistry(): RunRegistryShape {
     },
     delete(runId) {
       active.delete(runId);
+      notifyIfEmpty();
+    },
+    get closed() {
+      return closed;
+    },
+    shutdown(timeoutMs) {
+      if (shutdownPromise !== undefined) return shutdownPromise;
+      closed = true;
+      for (const entry of active.values()) {
+        if (isReserved(entry)) (entry as ReservedSlot).cancelled = true;
+        else void (entry as RunHandle<unknown>).cancel();
+      }
+      const drained = new Promise<"drained">((resolve) => {
+        onEmpty.push(() => resolve("drained"));
+        notifyIfEmpty();
+      });
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const timedOut = new Promise<"timeout">((resolve) => {
+        timer = setTimeout(() => resolve("timeout"), timeoutMs);
+      });
+      shutdownPromise = Promise.race([drained, timedOut]).then((outcome) => {
+        clearTimeout(timer);
+        if (outcome === "timeout") {
+          console.error(
+            `[daemon] shutdown: ${active.size} run(s) did not settle within ${timeoutMs}ms ` +
+              `and are abandoned: ${[...active.keys()].join(", ")}`,
+          );
+        }
+      });
+      return shutdownPromise;
     },
     get(runId) {
       return active.get(runId);
@@ -145,10 +225,19 @@ export function createRunRegistry(): RunRegistryShape {
  */
 export class RunRegistry extends Context.Service<RunRegistry, RunRegistryShape>()("RunRegistry") {}
 
-/** A fresh, empty registry per layer build — i.e. per daemon runtime. */
-export const RunRegistryLayer: Layer.Layer<RunRegistry> = Layer.sync(
+/**
+ * A fresh, empty registry per layer build — i.e. per daemon runtime. Its
+ * finalizer shuts the registry down, so disposing a daemon runtime never
+ * orphans a run. It is the safety net, not the main path: by the time it
+ * runs the runtime is already disposed, so a reserved run that starts during
+ * it cannot resolve its adapter (`DaemonHandle.stop` shuts the registry down
+ * first, while the runtime is live, and this is then a no-op).
+ */
+export const RunRegistryLayer: Layer.Layer<RunRegistry> = Layer.effect(
   RunRegistry,
-  createRunRegistry,
+  Effect.acquireRelease(Effect.sync(createRunRegistry), (registry) =>
+    Effect.promise(() => registry.shutdown(DEFAULT_SHUTDOWN_TIMEOUT_MS)),
+  ),
 );
 
 export interface WorkspaceSpec {
@@ -283,6 +372,7 @@ async function dispatchChildRun(
   const registry = serviceOf(runtime, RunRegistry);
   const dedupeRegistry = serviceOf(runtime, DedupeRegistry);
 
+  if (registry.closed) throw DaemonShuttingDownError.of();
   if (
     env.maxConcurrentRuns !== undefined &&
     !admitRun(env.maxConcurrentRuns, registry.activeRunIds().length)
@@ -365,6 +455,10 @@ export async function startTrackedRun(
   const pubsub = serviceOf(runtime, RunPubSub);
   const refreshGates = serviceOf(runtime, RefreshGates);
 
+  // Shutdown closed admission: nothing new starts, so nothing escapes the
+  // cancel-and-wait.
+  if (registry.closed) throw DaemonShuttingDownError.of();
+
   const existing = registry.get(runId);
   if (existing !== undefined && !isReserved(existing)) {
     throw new Error(`run ${runId} is already active`);
@@ -384,7 +478,9 @@ export async function startTrackedRun(
   if (options.dedupeKey !== undefined && options.dedupeKeyClaimed !== true) {
     dedupeRegistry.claim(options.dedupeKey, runId);
   }
-  if (limit !== undefined) registry.reserve(runId);
+  // Every run reserves — not only limited ones — so shutdown sees runs that
+  // are still allocating whether or not an admission limit applies.
+  if (existing === undefined) registry.reserve(runId);
 
   try {
     // Issue #13: a scratch workspace takes its kind from the workflow and

@@ -17,6 +17,13 @@
  * state, so two daemons are two runtimes and coexist in one process without
  * sharing anything. The scheduler loop is forked on it and resolves its
  * dedupe registry and clock from its context.
+ *
+ * Shutdown order (`DaemonHandle.stop`, which `factory serve`'s SIGINT/SIGTERM
+ * handler calls): interrupt the scheduler so nothing new fires; shut the run
+ * registry down — refuse new starts, cancel every active run and reserved
+ * slot, and wait (bounded) for them to persist `RunCancelled` and kill their
+ * `ctx.exec` children; only then stop the HTTP server (so live SSE tails see
+ * the cancellations) and dispose the runtime.
  */
 
 import { mkdir } from "node:fs/promises";
@@ -26,9 +33,14 @@ type AnyFiber = Fiber.Fiber<unknown, unknown>;
 import type { FactoryConfig } from "../config";
 import { openStore } from "../persistence/store";
 import { serve } from "./http";
-import type { DispatchEnv, WorkspaceSpec } from "./runs";
+import {
+  DEFAULT_SHUTDOWN_TIMEOUT_MS,
+  RunRegistry,
+  type DispatchEnv,
+  type WorkspaceSpec,
+} from "./runs";
 import { makeScheduleFire, runSchedulerLoop, toRuntimeSchedules } from "./scheduler";
-import { makeDaemonRuntime, type DaemonRuntime } from "./daemon-runtime";
+import { makeDaemonRuntime, serviceOf, type DaemonRuntime } from "./daemon-runtime";
 
 export interface DaemonOptions {
   readonly dbPath: string;
@@ -42,6 +54,11 @@ export interface DaemonOptions {
    * Absent, the legacy per-request `{dir, clone}` behaviour is kept.
    */
   readonly config?: FactoryConfig;
+  /**
+   * How long `stop()` waits for cancelled runs to settle before abandoning
+   * them, over `DEFAULT_SHUTDOWN_TIMEOUT_MS`.
+   */
+  readonly shutdownTimeoutMs?: number;
 }
 
 export interface DaemonHandle {
@@ -55,8 +72,10 @@ export interface DaemonHandle {
    */
   readonly runtime: DaemonRuntime;
   /**
-   * Shut the daemon down: interrupt the scheduler, stop the HTTP server, and
-   * dispose the agent runtime (issue #36).
+   * Shut the daemon down: interrupt the scheduler, cancel every active run
+   * and wait (bounded) for them to settle, stop the HTTP server, and dispose
+   * the daemon runtime (issue #36). Idempotent: every call returns the first
+   * call's promise.
    */
   readonly stop: () => Promise<void>;
 }
@@ -114,11 +133,16 @@ export async function startDaemon(options: DaemonOptions): Promise<DaemonHandle>
         })()
       : undefined;
 
-  const stop = async (): Promise<void> => {
-    if (schedulerFiber !== undefined) await Effect.runPromise(Fiber.interrupt(schedulerFiber));
-    await server.stop(true);
-    await runtime.dispose();
-  };
+  let stopping: Promise<void> | undefined;
+  const stop = (): Promise<void> =>
+    (stopping ??= (async () => {
+      if (schedulerFiber !== undefined) await Effect.runPromise(Fiber.interrupt(schedulerFiber));
+      await serviceOf(runtime, RunRegistry).shutdown(
+        options.shutdownTimeoutMs ?? DEFAULT_SHUTDOWN_TIMEOUT_MS,
+      );
+      await server.stop(true);
+      await runtime.dispose();
+    })());
 
   return { server, schedulerFiber, runtime, stop };
 }

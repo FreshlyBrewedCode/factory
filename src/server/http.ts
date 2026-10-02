@@ -46,6 +46,7 @@ import { serviceOf, type DaemonRuntime } from "./daemon-runtime";
 import { RunPubSub, type PubSub } from "./pubsub";
 import {
   ConcurrencyLimitError,
+  DaemonShuttingDownError,
   RunRegistry,
   startTrackedRun,
   type DispatchEnv,
@@ -419,6 +420,9 @@ export function createHandler(options: ServerOptions): (req: Request) => Promise
           if (err instanceof ConcurrencyLimitError) {
             return json({ error: err.message }, { status: 409 });
           }
+          if (err instanceof DaemonShuttingDownError) {
+            return json({ error: err.message }, { status: 503 });
+          }
           // Issue #15: the key collision surfaces as a conflict that names both
           // the key and the run holding it, so a client can see exactly whom it
           // raced with.
@@ -487,6 +491,9 @@ export function createHandler(options: ServerOptions): (req: Request) => Promise
       } catch (err) {
         if (err instanceof ConcurrencyLimitError) {
           return json({ error: err.message }, { status: 409 });
+        }
+        if (err instanceof DaemonShuttingDownError) {
+          return json({ error: err.message }, { status: 503 });
         }
         if (err instanceof DedupeKeyError) {
           return json(
@@ -587,6 +594,9 @@ export function createHandler(options: ServerOptions): (req: Request) => Promise
       } catch (err) {
         if (err instanceof ConcurrencyLimitError) {
           return json({ error: err.message }, { status: 409 });
+        }
+        if (err instanceof DaemonShuttingDownError) {
+          return json({ error: err.message }, { status: 503 });
         }
         if (err instanceof DedupeKeyError) {
           return json(
