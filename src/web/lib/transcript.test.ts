@@ -2,7 +2,13 @@ import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { RunEvent, RunEventPayload } from "../../events";
-import { deriveTranscript, toTranscriptRows, type TranscriptRow } from "./transcript";
+import { ACP_CHUNK } from "../../runtime/acp-adapter";
+import {
+  ACP_TOOL_CALL_CHUNK,
+  deriveTranscript,
+  toTranscriptRows,
+  type TranscriptRow,
+} from "./transcript";
 
 const CORPUS_DIR = join(import.meta.dir, "..", "..", "..", "test", "corpus");
 const ROUND_TRIP = "run-1789308170212.ndjson";
@@ -297,6 +303,7 @@ describe("deriveTranscript without a corpus", () => {
         kind: "tool-call",
         toolCallId: "c1",
         name: "read",
+        title: undefined,
         args: '{"path":"a.ts"}',
         state: "complete",
         result: "file body",
@@ -307,5 +314,112 @@ describe("deriveTranscript without a corpus", () => {
 
   test("a prompt header with no stream produces no rows", () => {
     expect(toTranscriptRows([])).toEqual([]);
+  });
+});
+
+/**
+ * Tool calls as the ACP adapter stores them, shaped after the recorded
+ * finding-13 runs: `translateAcpStream` keeps the first title only, inside
+ * the arguments, and the adapter adds `acp.tool-call` chunks with the
+ * descriptive title and the real input.
+ */
+describe("ACP tool call titles", () => {
+  const chunk = (seq: number, value: Record<string, unknown>): RunEvent =>
+    event(seq, {
+      _tag: "AgentChunk",
+      stepId: "s",
+      chunkType: String(value.type),
+      chunk: value as never,
+    });
+  const open = (seq: number, id: string, kind: string, title: string): RunEvent[] => [
+    chunk(seq, { type: "TOOL_CALL_START", toolCallId: id, toolCallName: kind, toolName: kind }),
+    chunk(seq + 1, {
+      type: "TOOL_CALL_ARGS",
+      toolCallId: id,
+      delta: JSON.stringify({ title }),
+      args: JSON.stringify({ title }),
+    }),
+    chunk(seq + 2, {
+      type: "TOOL_CALL_END",
+      toolCallId: id,
+      toolCallName: kind,
+      toolName: kind,
+      input: { title },
+    }),
+  ];
+  const info = (seq: number, value: Record<string, unknown>) =>
+    chunk(seq, { type: "CUSTOM", name: ACP_TOOL_CALL_CHUNK, value });
+  const result = (seq: number, id: string, content: string) =>
+    chunk(seq, { type: "TOOL_CALL_RESULT", toolCallId: id, messageId: `m${seq}`, content });
+
+  test("the chunk name is the one the adapter emits", () => {
+    expect(ACP_TOOL_CALL_CHUNK).toBe(ACP_CHUNK.toolCall);
+  });
+
+  test("shows the latest acp.tool-call title, and its input as the arguments", () => {
+    const transcript = deriveTranscript(
+      [
+        chunk(0, { type: "RUN_STARTED" }),
+        ...open(1, "toolu_1", "edit", "Edit"),
+        info(4, { toolCallId: "toolu_1", title: "Edit" }),
+        info(5, { toolCallId: "toolu_1", title: "Edit math.ts", input: { file_path: "math.ts" } }),
+        result(6, "toolu_1", "The file math.ts has been updated."),
+      ],
+      "s",
+    );
+    const rows = toTranscriptRows(transcript.messages, transcript.tools);
+    expect(rows).toEqual([
+      {
+        kind: "tool-call",
+        toolCallId: "toolu_1",
+        name: "edit",
+        title: "Edit math.ts",
+        args: '{"file_path":"math.ts"}',
+        state: "complete",
+        result: "The file math.ts has been updated.",
+        isError: false,
+      },
+    ]);
+  });
+
+  test("a later title without input keeps the input it had (opencode's completed update)", () => {
+    const transcript = deriveTranscript(
+      [
+        ...open(0, "call_1", "execute", "bash"),
+        info(3, { toolCallId: "call_1", title: "git status", input: { command: "git status" } }),
+        info(4, { toolCallId: "call_1", title: "Shows working tree status" }),
+        result(5, "call_1", "clean"),
+      ],
+      "s",
+    );
+    const [row] = toTranscriptRows(transcript.messages, transcript.tools);
+    expect(row).toMatchObject({
+      title: "Shows working tree status",
+      args: '{"command":"git status"}',
+    });
+  });
+
+  test("without acp.tool-call chunks, the title in the arguments is used", () => {
+    // Logs written by the ACP adapter before it added the chunk.
+    const transcript = deriveTranscript([...open(0, "toolu_1", "read", "Read File")], "s");
+    const [row] = toTranscriptRows(transcript.messages, transcript.tools);
+    expect(row).toMatchObject({ name: "read", title: "Read File", args: '{"title":"Read File"}' });
+  });
+
+  test("the acp.tool-call chunks are not transcript rows of their own", () => {
+    const transcript = deriveTranscript(
+      [...open(0, "t", "read", "Read"), info(3, { toolCallId: "t", title: "Read a.ts" })],
+      "s",
+    );
+    expect(toTranscriptRows(transcript.messages, transcript.tools)).toHaveLength(1);
+  });
+
+  test("an old opencode log has no title: the tool name stands", () => {
+    const transcript = deriveTranscript(corpusEvents(ROUND_TRIP, "implement"), STEP_ID);
+    const tools = toTranscriptRows(transcript.messages, transcript.tools).filter(
+      (row) => row.kind === "tool-call",
+    );
+    expect(tools.length).toBeGreaterThan(0);
+    for (const row of tools) expect(row.title).toBeUndefined();
   });
 });

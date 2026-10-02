@@ -1,4 +1,9 @@
-import type { AgentStepUsage, RunEvent } from "../../events";
+import {
+  agentStepContextTokens,
+  type AgentStepCost,
+  type AgentStepUsage,
+  type RunEvent,
+} from "../../events";
 
 /**
  * S3's read-only projection of the typed event spine (`src/events.ts`) for the
@@ -11,7 +16,33 @@ import type { AgentStepUsage, RunEvent } from "../../events";
  * peek into `RUN_FINISHED`'s raw JSON is gone: that route could only see the
  * adapter's `usage.totalTokens`, which omits the cached prefix and under-reports
  * a step's context by ~100x.
+ *
+ * One exception to "never decoded" (ADR 0013 §5): the ACP adapter's
+ * `acp.usage` CUSTOM chunks are read for a running step's context and cost,
+ * so the steps list shows the context filling up before `AgentStepFinished`
+ * records the last figure.
  */
+
+/**
+ * The CUSTOM chunk name the ACP adapter gives each `usage_update`
+ * (`ACP_CHUNK.usage` in `src/runtime/acp-adapter.ts`; a test pins the two
+ * together). Spelled out here so the SPA bundle does not import the runtime.
+ */
+export const ACP_USAGE_CHUNK = "acp.usage";
+
+/**
+ * A step's context: tokens in use, and the window size when the agent said.
+ *
+ * - `reported`: the agent measured it (`AgentStepFinished.context`, or the
+ *   step's latest `acp.usage` chunk while it runs);
+ * - `derived`: a log from before ACP, where `agentStepContextTokens(usage)` is
+ *   the figure and the window is unknown.
+ */
+export interface StepContext {
+  readonly used: number;
+  readonly size: number | undefined;
+  readonly source: "reported" | "derived";
+}
 
 export type StepStatus =
   | "running"
@@ -44,8 +75,16 @@ export interface AgentStepView extends StepBase {
   readonly prompt: string;
   readonly chunkCount: number;
   readonly sessionId: string | undefined;
-  /** Final-turn token counts; absent for steps that never reached `RUN_FINISHED`. */
+  /**
+   * Token counts as the agent reports them (`AgentStepFinished.usage`): the
+   * last message on opencode, the whole turn on Claude. Absent for steps that
+   * never reached `RUN_FINISHED`.
+   */
   readonly usage: AgentStepUsage | undefined;
+  /** Context in use; live from `acp.usage` chunks while the step runs. */
+  readonly context: StepContext | undefined;
+  /** What the agent says the step cost; live from `acp.usage` chunks too. */
+  readonly cost: AgentStepCost | undefined;
   readonly finalText: string | undefined;
   readonly output: unknown;
   readonly error: string | undefined;
@@ -150,6 +189,8 @@ export function deriveSteps(
           chunkCount: 0,
           sessionId: undefined,
           usage: undefined,
+          context: undefined,
+          cost: undefined,
           finalText: undefined,
           output: undefined,
           error: undefined,
@@ -162,7 +203,15 @@ export function deriveSteps(
         const index = agentIndex.get(payload.stepId);
         const current = index === undefined ? undefined : steps[index];
         if (index !== undefined && current?.kind === "agent") {
-          steps[index] = { ...current, chunkCount: current.chunkCount + 1 };
+          const usage = usageChunk(payload.chunk);
+          steps[index] = {
+            ...current,
+            chunkCount: current.chunkCount + 1,
+            ...(usage !== undefined && {
+              context: { ...usage.context, source: "reported" as const },
+              cost: usage.cost ?? current.cost,
+            }),
+          };
         }
         break;
       }
@@ -191,6 +240,20 @@ export function deriveSteps(
           chunkCount: payload.chunkCount,
           sessionId: payload.sessionId,
           usage: payload.usage,
+          // Recorded fields first; then what the chunks said (logs from before
+          // the fields, written by an ACP adapter); then the derivation.
+          context:
+            payload.context !== undefined
+              ? { ...payload.context, source: "reported" }
+              : (base?.context ??
+                (payload.usage !== undefined
+                  ? {
+                      used: agentStepContextTokens(payload.usage),
+                      size: undefined,
+                      source: "derived",
+                    }
+                  : undefined)),
+          cost: payload.cost ?? base?.cost,
           finalText: payload.finalText,
           output: payload.output,
           error: payload.error,
@@ -319,6 +382,45 @@ export function deriveSteps(
   }
 
   return steps;
+}
+
+/** The `{context, cost}` of an `acp.usage` chunk, or undefined for any other chunk. */
+function usageChunk(
+  chunk: unknown,
+): { context: { used: number; size: number }; cost: AgentStepCost | undefined } | undefined {
+  if (typeof chunk !== "object" || chunk === null) return undefined;
+  const record = chunk as { type?: unknown; name?: unknown; value?: unknown };
+  if (record.type !== "CUSTOM" || record.name !== ACP_USAGE_CHUNK) return undefined;
+  const value = record.value as
+    | {
+        context?: { used?: unknown; size?: unknown };
+        cost?: { amount?: unknown; currency?: unknown };
+      }
+    | undefined;
+  const used = value?.context?.used;
+  const size = value?.context?.size;
+  if (typeof used !== "number" || typeof size !== "number") return undefined;
+  const amount = value?.cost?.amount;
+  const currency = value?.cost?.currency;
+  return {
+    context: { used, size },
+    cost:
+      typeof amount === "number" && typeof currency === "string" ? { amount, currency } : undefined,
+  };
+}
+
+/**
+ * The run's cost: every agent step's `cost`, summed per currency, in the
+ * order the currencies first appear. Running steps count with what they
+ * reported so far. Empty when no step reported a cost.
+ */
+export function runCost(steps: ReadonlyArray<StepView>): ReadonlyArray<AgentStepCost> {
+  const totals = new Map<string, number>();
+  for (const step of steps) {
+    if (step.kind !== "agent" || step.cost === undefined) continue;
+    totals.set(step.cost.currency, (totals.get(step.cost.currency) ?? 0) + step.cost.amount);
+  }
+  return [...totals].map(([currency, amount]) => ({ amount, currency }));
 }
 
 export interface RunSession {

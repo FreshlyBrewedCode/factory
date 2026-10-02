@@ -18,13 +18,22 @@ import {
   ResizablePanelGroup,
 } from "@/web/components/ui/resizable";
 import { useRun, useRunEvents, useTickingNow } from "@/web/hooks";
-import { agentStepContextTokens, type AgentStepUsage } from "@/events";
-import { formatAgo, formatClock, formatDuration, formatTokenCount } from "@/web/lib/format";
+import type { AgentStepCost, AgentStepUsage } from "@/events";
+import {
+  formatAgo,
+  formatClock,
+  formatContext,
+  formatCost,
+  formatDuration,
+  formatTokenCount,
+} from "@/web/lib/format";
 import {
   deriveRunMeta,
   deriveSteps,
+  runCost,
   summarizeEvent,
   type AgentStepView,
+  type StepContext,
   type StepView,
 } from "@/web/lib/run-events";
 import { deriveTranscript, toTranscriptRows, type TranscriptRow } from "@/web/lib/transcript";
@@ -99,6 +108,7 @@ function MetaTable({
   dispatched,
   dedupeKey,
   collisions,
+  cost,
 }: {
   readonly runId: string;
   readonly workflowId: string | undefined;
@@ -122,6 +132,8 @@ function MetaTable({
     readonly holderRunId: string;
     readonly childWorkflowId: string;
   }>;
+  /** Agent-reported cost summed per currency (`runCost`); empty when none was reported. */
+  readonly cost: ReadonlyArray<AgentStepCost>;
 }) {
   return (
     <table data-testid="run-meta" className="w-full border-collapse">
@@ -139,6 +151,15 @@ function MetaTable({
         )}
         {finishedAt !== undefined ? metaRow("finished", formatClock(finishedAt), true) : null}
         {metaRow("duration", duration, true)}
+        {metaRow(
+          "cost",
+          cost.length > 0 ? (
+            <span data-testid="run-cost">{cost.map(formatCost).join(" + ")}</span>
+          ) : (
+            <span className="text-muted-foreground">—</span>
+          ),
+          true,
+        )}
         {/*
          * Parent ↔ child navigation (issue #14): "origin" links child → parent,
          * "children" links parent → each dispatched child, straight to run
@@ -228,15 +249,19 @@ function stepKindLabel(step: StepView): string {
 }
 
 /**
- * "ctx", not "tok": this is the size of the context the step's final turn ran
- * against, not the tokens the step burned — `@tanstack/ai-opencode` reports
- * only the last of the step's assistant messages. See `AgentStepFinished.usage`.
+ * "ctx", not "tok": the context in use (`AgentStepView.context`), not the
+ * tokens the step burned. Live while the step runs, from the agent's own
+ * usage updates. Cost follows when the agent reported one.
  */
 function stepMeta(step: StepView): string {
-  if (step.kind === "agent" && step.usage !== undefined) {
-    return `${step.descriptor} · ${formatTokenCount(agentStepContextTokens(step.usage))} ctx`;
+  if (step.kind !== "agent") return step.descriptor;
+  const parts = [step.descriptor];
+  if (step.context !== undefined) {
+    const size = step.context.size !== undefined ? `/${formatTokenCount(step.context.size)}` : "";
+    parts.push(`${formatTokenCount(step.context.used)}${size} ctx`);
   }
-  return step.descriptor;
+  if (step.cost !== undefined) parts.push(formatCost(step.cost));
+  return parts.join(" · ");
 }
 
 /*
@@ -339,6 +364,7 @@ function StepRow({
         </span>
         <span
           title={stepMeta(step)}
+          data-testid="step-meta"
           className={cn(
             "max-w-[32ch] min-w-0 overflow-hidden text-right font-mono text-[11px] whitespace-nowrap text-ellipsis text-muted-foreground",
             STEP_AREA_META,
@@ -509,7 +535,15 @@ function TranscriptRowView({ row }: { readonly row: TranscriptRow }) {
       );
     case "tool-call":
       return (
-        <Disclosure testId="transcript-tool" label={row.name} hint={row.state}>
+        <Disclosure
+          testId="transcript-tool"
+          label={row.title ?? row.name}
+          hint={
+            row.title !== undefined && row.title !== row.name
+              ? `${row.name} · ${row.state}`
+              : row.state
+          }
+        >
           {row.args !== "" ? <div data-testid="transcript-tool-args">{row.args}</div> : null}
           {row.result !== undefined ? (
             <div
@@ -550,11 +584,11 @@ function TranscriptPanel({
   readonly events: ReadonlyArray<RunEvent>;
   readonly onBack: () => void;
 }) {
-  const { prompt, messages } = useMemo(
+  const { prompt, messages, tools } = useMemo(
     () => deriveTranscript(events, step.stepId),
     [events, step.stepId],
   );
-  const rows = useMemo(() => toTranscriptRows(messages), [messages]);
+  const rows = useMemo(() => toTranscriptRows(messages, tools), [messages, tools]);
   const live = step.status === "running";
 
   return (
@@ -602,13 +636,44 @@ function TranscriptPanel({
 }
 
 /**
- * The final assistant turn's context size, with its components spelled out so
- * the cached prefix — usually the overwhelming majority — is visible rather
- * than folded into one opaque figure.
- *
- * Labelled "context", not "tokens": this is the last turn of the step, not the
- * step's cumulative spend, which `@tanstack/ai-opencode` does not report. See
- * `AgentStepFinished.usage`.
+ * The context in use against the window, with a meter when the window is
+ * known. A `derived` figure (a log from before ACP) is the final turn's
+ * prompt + completion + cached prefix, and says so.
+ */
+function ContextField({ context }: { readonly context: StepContext | undefined }) {
+  if (context === undefined) return "—";
+  const share =
+    context.size !== undefined && context.size > 0
+      ? Math.min(1, context.used / context.size)
+      : undefined;
+  return (
+    <span data-testid="step-context" className="inline-flex flex-wrap items-center gap-2">
+      <span>{formatContext(context)}</span>
+      {share !== undefined ? (
+        // Decorative: the figure beside it is the accessible reading.
+        <span
+          aria-hidden
+          data-testid="step-context-meter"
+          data-share={share.toFixed(3)}
+          className="inline-block h-1.5 w-20 overflow-hidden rounded-full bg-muted"
+        >
+          <span
+            className="block h-full rounded-full bg-foreground/50"
+            style={{ width: `${share * 100}%` }}
+          />
+        </span>
+      ) : null}
+      {context.source === "derived" ? (
+        <span className="text-muted-foreground">(final turn)</span>
+      ) : null}
+    </span>
+  );
+}
+
+/**
+ * The four token components as the agent reports them: the last message on
+ * opencode, the whole turn on Claude (`AgentStepFinished.usage`), so the
+ * cached figure can exceed the context. Not a bill; see `cost`.
  */
 function UsageField({ usage }: { readonly usage: AgentStepUsage | undefined }) {
   if (usage === undefined) return "—";
@@ -618,12 +683,7 @@ function UsageField({ usage }: { readonly usage: AgentStepUsage | undefined }) {
     `cached ${formatTokenCount(usage.cachedInputTokens)}`,
     ...(usage.reasoningTokens > 0 ? [`reasoning ${formatTokenCount(usage.reasoningTokens)}`] : []),
   ];
-  return (
-    <span>
-      {formatTokenCount(agentStepContextTokens(usage))}
-      <span className="ml-2 text-muted-foreground">({parts.join(" · ")})</span>
-    </span>
-  );
+  return <span className="text-muted-foreground">{parts.join(" · ")}</span>;
 }
 
 function fieldRow(label: string, value: React.ReactNode) {
@@ -654,7 +714,16 @@ function StepDetails({
         fieldRow("outcome", <StatusCell status={step.status} />),
         fieldRow("chunks", String(step.chunkCount)),
         fieldRow("duration", formatDuration(step.durationMs)),
-        fieldRow("context", <UsageField usage={step.usage} />),
+        fieldRow("context", <ContextField context={step.context} />),
+        fieldRow(
+          "cost",
+          step.cost !== undefined ? (
+            <span data-testid="step-cost">{formatCost(step.cost)}</span>
+          ) : (
+            "—"
+          ),
+        ),
+        fieldRow("tokens", <UsageField usage={step.usage} />),
         fieldRow("sessionId", step.sessionId ?? "—"),
       );
       break;
@@ -1011,6 +1080,7 @@ function RunDetailView({ runId }: { readonly runId: string }) {
           dispatched={meta.dispatched}
           dedupeKey={meta.dedupeKey}
           collisions={meta.collisions}
+          cost={runCost(steps)}
         />
       </header>
 

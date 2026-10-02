@@ -76,3 +76,28 @@ export function formatAhead(ts: number, now: number = Date.now()): string {
   const days = Math.floor(hours / 24);
   return `in ${days}d ${hours % 24}h`;
 }
+
+/**
+ * An agent-reported cost: `$0.039`, `$1.24`, `0.25 EUR`. Small amounts keep
+ * enough digits to tell steps apart (`$0.0004`); zero, which opencode reports
+ * for a free model, reads `$0`.
+ */
+export function formatCost(cost: { readonly amount: number; readonly currency: string }): string {
+  const { amount, currency } = cost;
+  const digits = amount === 0 ? 0 : amount >= 1 ? 2 : amount >= 0.01 ? 3 : 4;
+  const figure = amount.toFixed(digits);
+  return currency === "USD" ? `$${figure}` : `${figure} ${currency}`;
+}
+
+/**
+ * Context in use against the window: `15.3k / 200k · 8%`. Without a window
+ * (a log from before ACP) just the figure.
+ */
+export function formatContext(context: {
+  readonly used: number;
+  readonly size: number | undefined;
+}): string {
+  if (context.size === undefined || context.size <= 0) return formatTokenCount(context.used);
+  const percent = Math.round((context.used / context.size) * 100);
+  return `${formatTokenCount(context.used)} / ${formatTokenCount(context.size)} · ${percent}%`;
+}

@@ -25,12 +25,27 @@ import type { RunEvent } from "../../events";
  * (it ships no renderer); no `@tanstack/ai-react*` surface fits a replayed log.
  */
 
+/**
+ * The CUSTOM chunk the ACP adapter adds after each tool call update that
+ * carries a title (`ACP_CHUNK.toolCall` in `src/runtime/acp-adapter.ts`; a
+ * test pins the two together). Its value is `{ toolCallId, title, input? }`.
+ */
+export const ACP_TOOL_CALL_CHUNK = "acp.tool-call";
+
+/** What the agent said about one tool call beyond the AG-UI chunks: its latest title and input. */
+export interface ToolCallInfo {
+  readonly title: string;
+  readonly input: unknown;
+}
+
 export interface Transcript {
   readonly stepId: string;
   /** `AgentStepStarted.prompt`, the header block. Empty if the event is absent. */
   readonly prompt: string;
   /** The step's assistant messages, with the leading prompt echo removed. */
   readonly messages: ReadonlyArray<UIMessage>;
+  /** Per `toolCallId`, the latest `acp.tool-call` chunk's title and input. */
+  readonly tools: ReadonlyMap<string, ToolCallInfo>;
 }
 
 /**
@@ -43,20 +58,39 @@ export interface Transcript {
 export function deriveTranscript(events: ReadonlyArray<RunEvent>, stepId: string): Transcript {
   let prompt = "";
   const chunks: Array<StreamChunk> = [];
+  const tools = new Map<string, ToolCallInfo>();
 
   for (const event of events) {
     const payload = event.payload;
     if (payload._tag === "AgentStepStarted" && payload.stepId === stepId) {
       prompt = payload.prompt;
     } else if (payload._tag === "AgentChunk" && payload.stepId === stepId) {
-      chunks.push(payload.chunk as unknown as StreamChunk);
+      const tool = toolCallChunk(payload.chunk);
+      if (tool !== undefined) {
+        const previous = tools.get(tool.toolCallId);
+        tools.set(tool.toolCallId, {
+          title: tool.title,
+          input: tool.input !== undefined ? tool.input : previous?.input,
+        });
+      } else chunks.push(payload.chunk as unknown as StreamChunk);
     }
   }
 
   const processor = new StreamProcessor({});
   for (const chunk of chunks) processor.processChunk(chunk);
 
-  return { stepId, prompt, messages: stripEchoedPrompt(processor.getMessages(), prompt) };
+  return { stepId, prompt, messages: stripEchoedPrompt(processor.getMessages(), prompt), tools };
+}
+
+function toolCallChunk(
+  chunk: unknown,
+): { toolCallId: string; title: string; input: unknown } | undefined {
+  if (typeof chunk !== "object" || chunk === null) return undefined;
+  const record = chunk as { type?: unknown; name?: unknown; value?: unknown };
+  if (record.type !== "CUSTOM" || record.name !== ACP_TOOL_CALL_CHUNK) return undefined;
+  const value = record.value as { toolCallId?: unknown; title?: unknown; input?: unknown };
+  if (typeof value?.toolCallId !== "string" || typeof value.title !== "string") return undefined;
+  return { toolCallId: value.toolCallId, title: value.title, input: value.input };
 }
 
 /**
@@ -88,7 +122,14 @@ export type TranscriptRow =
   | {
       readonly kind: "tool-call";
       readonly toolCallId: string;
+      /** The tool's name; on ACP, its kind (`read`, `edit`, `execute`). */
       readonly name: string;
+      /**
+       * What the agent calls this call (`Edit math.ts`, `git status`): the
+       * latest `acp.tool-call` title, else a `title` in the arguments (what
+       * `translateAcpStream` puts there). Absent for pre-ACP logs.
+       */
+      readonly title: string | undefined;
       readonly args: string;
       readonly state: string;
       /** The matching `tool-result` content, joined by `toolCallId`, if it arrived. */
@@ -108,7 +149,10 @@ export type TranscriptRow =
  * id, never by nesting) and lay every part out as one ordered row list. The
  * result is emitted with its call, never as its own row.
  */
-export function toTranscriptRows(messages: ReadonlyArray<UIMessage>): ReadonlyArray<TranscriptRow> {
+export function toTranscriptRows(
+  messages: ReadonlyArray<UIMessage>,
+  tools: ReadonlyMap<string, ToolCallInfo> = new Map(),
+): ReadonlyArray<TranscriptRow> {
   const results = new Map<string, ToolResultPart>();
   for (const message of messages) {
     for (const part of message.parts) {
@@ -119,7 +163,7 @@ export function toTranscriptRows(messages: ReadonlyArray<UIMessage>): ReadonlyAr
   const rows: Array<TranscriptRow> = [];
   for (const message of messages) {
     for (const part of message.parts) {
-      const row = rowFor(part, results);
+      const row = rowFor(part, results, tools);
       if (row !== undefined) rows.push(row);
     }
   }
@@ -129,6 +173,7 @@ export function toTranscriptRows(messages: ReadonlyArray<UIMessage>): ReadonlyAr
 function rowFor(
   part: MessagePart,
   results: ReadonlyMap<string, ToolResultPart>,
+  tools: ReadonlyMap<string, ToolCallInfo>,
 ): TranscriptRow | undefined {
   switch (part.type) {
     case "text":
@@ -137,11 +182,15 @@ function rowFor(
       return { kind: "thinking", content: part.content };
     case "tool-call": {
       const result = results.get(part.id);
+      const tool = tools.get(part.id);
       return {
         kind: "tool-call",
         toolCallId: part.id,
         name: part.name,
-        args: part.arguments,
+        title: tool?.title ?? titleInArguments(part.arguments),
+        // The agent's own input beats the processor's string, which for a
+        // re-sent ACP input is two JSON objects end to end.
+        args: tool?.input !== undefined ? JSON.stringify(tool.input) : part.arguments,
         state: part.state,
         result: result === undefined ? undefined : contentToText(result.content),
         isError: part.state === "error" || result?.state === "error",
@@ -152,6 +201,17 @@ function rowFor(
     // `tool-result` renders with its call; media parts do not come from opencode.
     default:
       return undefined;
+  }
+}
+
+/** A string `title` in a tool call's JSON arguments, as `translateAcpStream` writes them. */
+function titleInArguments(args: string): string | undefined {
+  try {
+    const parsed: unknown = JSON.parse(args);
+    const title = (parsed as { title?: unknown } | null)?.title;
+    return typeof title === "string" && title !== "" ? title : undefined;
+  } catch {
+    return undefined;
   }
 }
 
