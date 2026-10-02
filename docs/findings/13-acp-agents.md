@@ -162,3 +162,32 @@ Both agents produced only AG-UI types the SPA already folds (`RUN_*`, `TEXT_MESS
 - **Session resume** (`session/load`) was not exercised; every step is a fresh session.
 - **Long or messy runs.** All steps were small. Tier-2 output, `RUN_ERROR` from an agent, and
   an agent crashing mid-turn (the `exited` race is wired but was not triggered) are untested.
+
+## Addendum: switching off the host's settings (probe, same day)
+
+`session/new` only, with no prompt, comparing the config options each agent reports.
+
+| | setting | starting model | models offered |
+|---|---|---|---|
+| Claude Code | default (`settingSources: user, project, local`) | `haiku` | 12 |
+| Claude Code | `_meta.claudeCode.options.settingSources: ["project", "local"]` | `haiku` | 12 |
+| Claude Code | `settingSources: []` | `haiku` | 12 |
+| opencode | default | `opencode/big-pickle` | 715 (providers `opencode-go`, `opencode`, `omniroute`) |
+| opencode | `XDG_CONFIG_HOME` → empty dir | `opencode/big-pickle` | 39 (`opencode-go`, `opencode`) |
+
+- **Claude's starting model ignores `settingSources`.** claude-agent-acp builds its own
+  `SettingsManager` (`dist/acp-agent.js`, `new SettingsManager(params.cwd, …)`) and takes the
+  user's `model`, `permissions.defaultMode` and `availableModels` from it, whatever the SDK is
+  told. `settingSources` still reaches the SDK (the adapter spreads the client's options over its
+  own `["user", "project", "local"]`); its effect on skills and `CLAUDE.md` needs a prompt to
+  observe and was not checked. Practical consequence: the only reliable way off the host's model
+  is to always set one.
+- **opencode's global config is `~/.config/opencode/opencode.jsonc`.** Hiding it removes its
+  plugins and the custom `omniroute` provider. The auth-based providers stay, because their
+  credentials live in the data dir, not the config dir. `XDG_CONFIG_HOME` is a blunt way to hide
+  it: every tool the agent runs inherits the variable (gh keeps its auth in `~/.config/gh`).
+- **The parent's environment leaks into the agent.** When run from inside a Claude Code session,
+  the agent inherits `CLAUDECODE=1`, `CLAUDE_EFFORT`, `CLAUDE_CODE_SUBAGENT_MODEL`,
+  `CLAUDE_CODE_SESSION_ID`, …
+
+Conclusions → [`adr/0013-agents-over-acp.md`](../adr/0013-agents-over-acp.md).

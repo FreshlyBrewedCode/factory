@@ -85,3 +85,5 @@ Conclusions → D43 ([`decisions.md`](../decisions.md)); ADR 0004 carries a supe
 | Document | Subtask | Headline finding |
 |---|---|---|
 | [`13-acp-agents.md`](./13-acp-agents.md) | Spike: one ACP adapter for opencode and Claude Code, through the real runtime | Both agents ran the hello-shaped workflow end to end with a workflow-chosen model, tier-1 structured output, permission answered client-side and a 2–3 ms clean cancel; model ids are per agent (opencode's big-pickle is `opencode/big-pickle`), and usage means "last message" on opencode but "whole turn" on Claude. |
+
+Conclusions → [`adr/0013-agents-over-acp.md`](../adr/0013-agents-over-acp.md) (proposed).
