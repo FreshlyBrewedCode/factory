@@ -376,27 +376,29 @@ export function acpAdapter(
           throw new AcpAgentError(
             `${name} offers no model option; cannot select "${options.model}"`,
           );
-        if (modelOption.currentValue !== options.model) {
-          const choices = choicesOf(modelOption);
-          if (!choices.includes(options.model))
-            throw new AcpAgentError(
-              `${name} has no model "${options.model}" (${choices.length} offered, e.g. ${choices.slice(0, 8).join(", ")})`,
-            );
-          const response = await race(
-            acp.setSessionConfigOption({
-              sessionId,
-              configId: modelOption.id,
-              value: options.model,
-            }),
+        // Set even when `currentValue` already matches: with host settings
+        // ignored, claude-agent-acp still reports the user's `model` setting
+        // as current while the Agent SDK runs its own default, so a match
+        // proves nothing. Only an explicit set pins the session.
+        const choices = choicesOf(modelOption);
+        if (!choices.includes(options.model) && modelOption.currentValue !== options.model)
+          throw new AcpAgentError(
+            `${name} has no model "${options.model}" (${choices.length} offered, e.g. ${choices.slice(0, 8).join(", ")})`,
           );
-          observe({
-            kind: "configured",
-            at: Date.now(),
+        const response = await race(
+          acp.setSessionConfigOption({
+            sessionId,
             configId: modelOption.id,
             value: options.model,
-            configOptions: response.configOptions,
-          });
-        }
+          }),
+        );
+        observe({
+          kind: "configured",
+          at: Date.now(),
+          configId: modelOption.id,
+          value: options.model,
+          configOptions: response.configOptions,
+        });
         if (signal.aborted) return;
 
         const prompt =

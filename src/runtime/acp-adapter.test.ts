@@ -103,10 +103,13 @@ describe("acpAdapter", () => {
     expect(text(c)).toBe("hello from fake/fast");
   });
 
-  test("does not set the model when the agent already runs it", async () => {
+  test("sets the model even when the agent reports it as current", async () => {
+    // claude-agent-acp reports the user's `model` setting as current even
+    // when host settings are ignored and the SDK runs another model.
     const c = await collect("hello", { model: "fake/default" });
     expect(text(c)).toBe("hello from fake/default");
-    expect(c.diagnostics.some((d) => d.kind === "configured")).toBe(false);
+    const configured = c.diagnostics.find((d) => d.kind === "configured");
+    expect(configured).toMatchObject({ configId: "model", value: "fake/default" });
   });
 
   test("fails before the prompt on a model the agent does not offer", async () => {
