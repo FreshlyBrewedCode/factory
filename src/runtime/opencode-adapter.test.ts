@@ -26,7 +26,7 @@ describe("extractOpencodeSignal", () => {
     expect(extractOpencodeSignal(chunk)).toEqual({ _tag: "runError", value: "oops" });
   });
 
-  test("returns undefined for RUN_ERROR with non-string message", () => {
+  test("returns runError with the stringified chunk for RUN_ERROR with non-string message", () => {
     const chunk = { type: "RUN_ERROR", message: 42 };
     expect(extractOpencodeSignal(chunk)).toEqual({
       _tag: "runError",

@@ -26,7 +26,8 @@ describe("buildAgentStepEffect signal extraction", () => {
       makeYield({ type: "TEXT_MESSAGE_CONTENT", delta: "hello" }),
       makeYield({ type: "TEXT_MESSAGE_END" }),
       makeYield(
-        { type: "CUSTOM", name: "opencode.session-id", value: { sessionId: "ses_abc" } },
+        // Neutral chunk: the runtime must read the signal, not the chunk shape.
+        { type: "CUSTOM", name: "anything" },
         { _tag: "sessionId", value: "ses_abc" },
       ),
     ]);
@@ -53,7 +54,7 @@ describe("buildAgentStepEffect signal extraction", () => {
       makeYield({ type: "TEXT_MESSAGE_CONTENT", delta: "done" }),
       makeYield({ type: "TEXT_MESSAGE_END" }),
       makeYield(
-        { type: "CUSTOM", name: "structured-output.complete", value: { object: outputObject } },
+        { type: "CUSTOM", name: "anything" },
         { _tag: "structuredOutput", value: outputObject },
       ),
     ]);
@@ -73,8 +74,9 @@ describe("buildAgentStepEffect signal extraction", () => {
 
   test("extracts runError from a runError signal", async () => {
     const adapter = signalAdapter([
+      // No RUN_ERROR chunk: the error comes from the signal alone.
       makeYield(
-        { type: "RUN_ERROR", message: "something broke" },
+        { type: "CUSTOM", name: "anything" },
         { _tag: "runError", value: "something broke" },
       ),
     ]);
