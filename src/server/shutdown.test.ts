@@ -15,6 +15,10 @@ import { defineConfig } from "../config";
 import { RefreshGates } from "../lib/workspace";
 import { getRunEvents, openStore } from "../persistence/store";
 import { createSlowFakeAdapter } from "../replay/adapter";
+import type { AgentAdapter, AgentAdapterYield } from "../runtime/agent-adapter";
+import { makeAgentRuntime } from "../runtime/agent-runtime";
+import { startRun } from "../runtime/run";
+import type { RunEvent } from "../events";
 import { defineWorkflow } from "../workflow";
 import { startDaemon, type DaemonHandle } from "./daemon";
 import { makeDaemonRuntime, serviceOf } from "./daemon-runtime";
@@ -38,6 +42,51 @@ const cloneLongExec = defineWorkflow("shutdown-clone-long-exec", {
     return {};
   },
 });
+
+/** One agent step and nothing else: the run is mid-step until cancelled. */
+const agentStep = defineWorkflow("shutdown-agent-step", {
+  input: Schema.Struct({}),
+  workspace: { kind: "scratch" },
+  run: async (ctx) => {
+    await ctx.agent("think", "waiting on the model");
+    return {};
+  },
+});
+
+/**
+ * An adapter waiting on the model, like opencode between chunks: its
+ * generator's `next()` is pending until the step's abort reaches it, then
+ * takes `abortLatencyMs` to wind down (the HTTP `session.abort()` round trip)
+ * before its `finally` — the process kill — runs. Before #38's fix the
+ * stream's implicit `return()` queued behind that `next()`, and the abort that
+ * would release it only fired after `return()` finished: a deadlock until the
+ * next chunk. `cooperative: false` never ends at all, abort or not.
+ */
+function waitingAdapter(options: {
+  readonly cooperative: boolean;
+  readonly abortLatencyMs?: number;
+}): AgentAdapter & {
+  readonly tornDown: () => boolean;
+} {
+  let tornDown = false;
+  return {
+    tornDown: () => tornDown,
+    async prepareWorkspace(): Promise<void> {},
+    async *stream({ abortController }): AsyncIterable<AgentAdapterYield> {
+      try {
+        yield { chunk: { type: "RUN_STARTED" } };
+        await new Promise<void>((resolve) => {
+          if (!options.cooperative) return;
+          abortController.signal.addEventListener("abort", () =>
+            setTimeout(resolve, options.abortLatencyMs ?? 0),
+          );
+        });
+      } finally {
+        tornDown = true;
+      }
+    },
+  };
+}
 
 function isAlive(pid: number): boolean {
   try {
@@ -213,6 +262,62 @@ describe("daemon shutdown cancels active runs (#38)", () => {
       expect(isAlive(pid)).toBe(false);
     } finally {
       db.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("a cancel mid-agent-step records RunCancelled promptly even if the adapter never yields again", async () => {
+    const adapter = waitingAdapter({ cooperative: false });
+    const events: Array<RunEvent> = [];
+    const handle = startRun(agentStep, makeAgentRuntime(adapter), {
+      runId: "run-blocked-agent",
+      dir: tmpdir(),
+      input: {},
+      onEvent: (event) => events.push(event),
+    });
+    await waitFor(() => events.some((e) => e.payload._tag === "AgentChunk"));
+
+    const started = Date.now();
+    await handle.cancel();
+    expect(Date.now() - started).toBeLessThan(500);
+    expect(events.at(-1)?.payload._tag).toBe("RunCancelled");
+    expect(
+      events.find((e) => e.payload._tag === "AgentStepFinished")?.payload as { outcome?: string },
+    ).toMatchObject({ outcome: "cancelled" });
+  });
+
+  test("stop() mid-agent-step finishes well within budget and the adapter is torn down", async () => {
+    const root = mkdtempSync(join(tmpdir(), "factory-shutdown-agent-"));
+    const adapter = waitingAdapter({ cooperative: true, abortLatencyMs: 100 });
+    const handle = await startDaemon({
+      dbPath: join(root, "factory.db"),
+      port: 0,
+      config: defineConfig({
+        agent: { adapter },
+        repo: {
+          sshUrl: join(root, "no-remote"),
+          identity: { name: "Factory", email: "factory@factory.test" },
+          baseBranch: "main",
+          slug: "acme/widgets",
+        },
+        workflows: [agentStep],
+        workspaceRoot: join(root, "workspaces"),
+        retainedWorkspaces: 10,
+      }),
+    });
+    try {
+      const res = await post(handle, { workflowId: "shutdown-agent-step", input: {} });
+      const { runId } = (await res.json()) as { runId: string };
+      await waitFor(() => tagsOf(join(root, "factory.db"), runId).includes("AgentChunk"));
+
+      const started = Date.now();
+      await handle.stop();
+      expect(Date.now() - started).toBeLessThan(1_000);
+      expect(tagsOf(join(root, "factory.db"), runId).at(-1)).toBe("RunCancelled");
+      // stop() waited for the adapter's own teardown, not just the run's end.
+      expect(adapter.tornDown()).toBe(true);
+    } finally {
+      await handle.stop();
       rmSync(root, { recursive: true, force: true });
     }
   });

@@ -135,9 +135,9 @@ export interface RunRegistryShape {
   /**
    * Close admission, cancel every run held — running handles directly,
    * reserved slots by marking them for cancel-on-start — and resolve once the
-   * registry is empty or `timeoutMs` has passed (runs still held then are
-   * logged and abandoned). Idempotent: every call returns the first call's
-   * promise.
+   * registry is empty and every cancelled run has `settled` (its agent
+   * processes torn down), or `timeoutMs` has passed (runs still pending then
+   * are logged). Idempotent: every call returns the first call's promise.
    */
   shutdown(timeoutMs: number): Promise<void>;
   setHandle(runId: string, handle: RunHandle<unknown>): void;
@@ -151,6 +151,25 @@ export function createRunRegistry(): RunRegistryShape {
   let closed = false;
   let shutdownPromise: Promise<void> | undefined;
   const onEmpty: Array<() => void> = [];
+  // The runs shutdown cancelled (or that started after it began), so it can
+  // wait for their `settled`, not merely for the registry to empty.
+  const cancelled: Array<RunHandle<unknown>> = [];
+  const allSettled = (): Promise<void> =>
+    new Promise<void>((resolve) => {
+      onEmpty.push(resolve);
+      notifyIfEmpty();
+    })
+      .then(() => Promise.allSettled(cancelled.map((handle) => handle.settled)))
+      .then(() => undefined);
+  const within = async (promise: Promise<void>, timeoutMs: number): Promise<boolean> => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timedOut = new Promise<false>((resolve) => {
+      timer = setTimeout(() => resolve(false), timeoutMs);
+    });
+    const outcome = await Promise.race([promise.then(() => true as const), timedOut]);
+    clearTimeout(timer);
+    return outcome;
+  };
   const notifyIfEmpty = (): void => {
     if (active.size === 0) for (const resolve of onEmpty.splice(0)) resolve();
   };
@@ -176,6 +195,7 @@ export function createRunRegistry(): RunRegistryShape {
     },
     setHandle(runId, handle) {
       active.set(runId, handle);
+      if (closed) cancelled.push(handle);
     },
     delete(runId) {
       active.delete(runId);
@@ -188,23 +208,19 @@ export function createRunRegistry(): RunRegistryShape {
       if (shutdownPromise !== undefined) return shutdownPromise;
       closed = true;
       for (const entry of active.values()) {
-        if (isReserved(entry)) (entry as ReservedSlot).cancelled = true;
-        else void (entry as RunHandle<unknown>).cancel();
+        if (isReserved(entry)) {
+          (entry as ReservedSlot).cancelled = true;
+        } else {
+          const handle = entry as RunHandle<unknown>;
+          cancelled.push(handle);
+          void handle.cancel();
+        }
       }
-      const drained = new Promise<"drained">((resolve) => {
-        onEmpty.push(() => resolve("drained"));
-        notifyIfEmpty();
-      });
-      let timer: ReturnType<typeof setTimeout> | undefined;
-      const timedOut = new Promise<"timeout">((resolve) => {
-        timer = setTimeout(() => resolve("timeout"), timeoutMs);
-      });
-      shutdownPromise = Promise.race([drained, timedOut]).then((outcome) => {
-        clearTimeout(timer);
-        if (outcome === "timeout") {
+      shutdownPromise = within(allSettled(), timeoutMs).then((settled) => {
+        if (!settled) {
           console.error(
-            `[daemon] shutdown: ${active.size} run(s) did not settle within ${timeoutMs}ms ` +
-              `and are abandoned: ${[...active.keys()].join(", ")}`,
+            `[daemon] shutdown: run(s) did not settle within ${timeoutMs}ms: ` +
+              `${[...active.keys()].join(", ") || "(agent teardown pending)"}`,
           );
         }
       });

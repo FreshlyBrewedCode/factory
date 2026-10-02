@@ -137,9 +137,8 @@ export async function startDaemon(options: DaemonOptions): Promise<DaemonHandle>
   const stop = (): Promise<void> =>
     (stopping ??= (async () => {
       if (schedulerFiber !== undefined) await Effect.runPromise(Fiber.interrupt(schedulerFiber));
-      await serviceOf(runtime, RunRegistry).shutdown(
-        options.shutdownTimeoutMs ?? DEFAULT_SHUTDOWN_TIMEOUT_MS,
-      );
+      const registry = serviceOf(runtime, RunRegistry);
+      await registry.shutdown(options.shutdownTimeoutMs ?? DEFAULT_SHUTDOWN_TIMEOUT_MS);
       await server.stop(true);
       await runtime.dispose();
     })());

@@ -111,6 +111,13 @@ export type RunOutcome<O> =
 
 export interface RunHandle<O> {
   readonly result: Promise<RunOutcome<O>>;
+  /**
+   * Resolves after `result`, once every agent step the run abandoned has
+   * finished tearing its adapter down (e.g. the opencode process is gone).
+   * A cancelled run records `RunCancelled` without waiting for that; daemon
+   * shutdown waits for this so it does not exit under a live agent process.
+   */
+  readonly settled: Promise<void>;
   cancel(): Promise<void>;
 }
 
@@ -173,6 +180,7 @@ export function startRun<I, O>(
   const runController = new AbortController();
   let cancelled = false;
   let activeAgentFiber: Fiber.Fiber<unknown, unknown> | null = null;
+  const agentTeardowns: Array<Promise<void>> = [];
 
   runController.signal.addEventListener("abort", () => {
     cancelled = true;
@@ -257,6 +265,7 @@ export function startRun<I, O>(
     activeAgentFiber = fiber;
     const exit = await Effect.runPromise(Fiber.await(fiber));
     activeAgentFiber = null;
+    agentTeardowns.push(handle.teardown());
     const durationMs = Date.now() - stepStartedAt;
 
     if (Exit.isFailure(exit)) {
@@ -538,6 +547,7 @@ export function startRun<I, O>(
 
   return {
     result: resultPromise,
+    settled: resultPromise.then(() => Promise.all(agentTeardowns)).then(() => undefined),
     cancel: async () => {
       runController.abort();
       await resultPromise;
