@@ -358,7 +358,7 @@ describe("adapter.prepareWorkspace through startTrackedRun (#37)", () => {
     await Bun.$`git init -b main -q ${seed}`.quiet();
     const adapter = trackingAdapter();
 
-    const runId = await startTrackedRun(db, echoWorkflow, {
+    const runId = await startTrackedRun(makeAgentRuntime(adapter), db, echoWorkflow, {
       runId: "run-prep-clone",
       workspace: {
         workspaceRoot: join(root, "workspaces"),
@@ -367,7 +367,6 @@ describe("adapter.prepareWorkspace through startTrackedRun (#37)", () => {
         retainedWorkspaces: 10,
       },
       input: {},
-      adapter,
     });
     await waitFor(() => !isActive(runId));
 
@@ -380,7 +379,7 @@ describe("adapter.prepareWorkspace through startTrackedRun (#37)", () => {
     const db = openStore(join(root, "factory.db"));
     const adapter = trackingAdapter();
 
-    const runId = await startTrackedRun(db, scratchWorkflow, {
+    const runId = await startTrackedRun(makeAgentRuntime(adapter), db, scratchWorkflow, {
       runId: "run-prep-scratch",
       workspace: {
         workspaceRoot: join(root, "workspaces"),
@@ -389,7 +388,6 @@ describe("adapter.prepareWorkspace through startTrackedRun (#37)", () => {
         retainedWorkspaces: 10,
       },
       input: {},
-      adapter,
     });
     await waitFor(() => !isActive(runId));
 

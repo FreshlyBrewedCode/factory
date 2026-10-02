@@ -1345,7 +1345,7 @@ describe("adapter.prepareWorkspace through the legacy POST /api/runs (#37)", () 
     const seed = join(root, "seed");
     await Bun.$`git init -b main -q ${seed}`.quiet();
     const adapter = trackingAdapter();
-    const server = serve({ db, adapter, port: 0 });
+    const server = serve({ db, runtime: makeAgentRuntime(adapter), port: 0 });
     const base = `http://localhost:${server.port}`;
 
     try {
