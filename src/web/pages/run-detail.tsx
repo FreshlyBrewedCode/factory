@@ -366,7 +366,7 @@ function StepRow({
           title={stepMeta(step)}
           data-testid="step-meta"
           className={cn(
-            "max-w-[32ch] min-w-0 overflow-hidden text-right font-mono text-[11px] whitespace-nowrap text-ellipsis text-muted-foreground",
+            "max-w-[44ch] min-w-0 overflow-hidden text-right font-mono text-[11px] whitespace-nowrap text-ellipsis text-muted-foreground",
             STEP_AREA_META,
           )}
         >
@@ -417,7 +417,7 @@ function TerminalRow({
         <span
           title={meta}
           className={cn(
-            "max-w-[32ch] min-w-0 overflow-hidden text-right font-mono text-[11px] whitespace-nowrap text-ellipsis text-muted-foreground",
+            "max-w-[44ch] min-w-0 overflow-hidden text-right font-mono text-[11px] whitespace-nowrap text-ellipsis text-muted-foreground",
             STEP_AREA_META,
           )}
         >
