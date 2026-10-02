@@ -345,8 +345,9 @@ describe("adapter.prepareWorkspace through startTrackedRun (#37)", () => {
     const seed = join(root, "seed");
     await Bun.$`git init -b main -q ${seed}`.quiet();
     const adapter = trackingAdapter();
+    const services = createTestServices();
 
-    const runId = await startTrackedRun(makeAgentRuntime(adapter), db, echoWorkflow, {
+    const runId = await startTrackedRun(makeAgentRuntime(adapter), db, services, echoWorkflow, {
       runId: "run-prep-clone",
       workspace: {
         workspaceRoot: join(root, "workspaces"),
@@ -356,7 +357,7 @@ describe("adapter.prepareWorkspace through startTrackedRun (#37)", () => {
       },
       input: {},
     });
-    await waitFor(() => !isActive(runId));
+    await waitFor(() => !services.registry.isActive(runId));
 
     expect(adapter.prepared).toEqual([join(root, "workspaces", "run-prep-clone")]);
     finish();
@@ -366,8 +367,9 @@ describe("adapter.prepareWorkspace through startTrackedRun (#37)", () => {
     const { root, finish } = tmpRoot();
     const db = openStore(join(root, "factory.db"));
     const adapter = trackingAdapter();
+    const services = createTestServices();
 
-    const runId = await startTrackedRun(makeAgentRuntime(adapter), db, scratchWorkflow, {
+    const runId = await startTrackedRun(makeAgentRuntime(adapter), db, services, scratchWorkflow, {
       runId: "run-prep-scratch",
       workspace: {
         workspaceRoot: join(root, "workspaces"),
@@ -377,7 +379,7 @@ describe("adapter.prepareWorkspace through startTrackedRun (#37)", () => {
       },
       input: {},
     });
-    await waitFor(() => !isActive(runId));
+    await waitFor(() => !services.registry.isActive(runId));
 
     expect(adapter.prepared).toEqual([]);
     finish();
