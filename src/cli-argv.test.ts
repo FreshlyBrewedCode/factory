@@ -1,8 +1,19 @@
-import { describe, expect, test } from "bun:test";
-import { Effect, FileSystem, Layer, Option, Path, Stdio, Terminal } from "effect";
-import { Argument, Command, Flag } from "effect/unstable/cli";
-import { ChildProcessSpawner } from "effect/unstable/process";
-import { factoryCommand } from "./cli-commands";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { Effect, Option } from "effect";
+import { Command } from "effect/unstable/cli";
+import { CliEnvLayer, normalizeArgv } from "./cli";
+import {
+  factoryCommand,
+  initConfig,
+  logConfig,
+  runConfig,
+  runsConfig,
+  serveConfig,
+  startConfig,
+} from "./cli-commands";
 
 const CLI = `${import.meta.dir}/cli.ts`;
 
@@ -10,111 +21,31 @@ async function readAll(stream: ReadableStream<Uint8Array>): Promise<string> {
   return new Response(stream).text();
 }
 
-const CliTestLayer = Layer.mergeAll(
-  FileSystem.layerNoop({}),
-  Path.layer,
-  Stdio.layerTest({}),
-  Layer.succeed(
-    Terminal.Terminal,
-    Terminal.make({
-      columns: Effect.succeed(80),
-      rows: Effect.succeed(24),
-      readInput: Effect.die("unused"),
-      readLine: Effect.die("unused"),
-      display: () => Effect.void,
-    }),
-  ),
-  Layer.succeed(
-    ChildProcessSpawner.ChildProcessSpawner,
-    ChildProcessSpawner.make(() => Effect.die("unused")),
-  ),
-);
-
+// Each subcommand is rebuilt from the real flag/argument spec exported by
+// cli-commands.ts, with a handler that only captures the parsed config — so
+// these tests parse exactly what the binary parses without running opencode,
+// the daemon, or sqlite.
 function runFactory(argv: ReadonlyArray<string>) {
   let captured: unknown;
+  const capture = (config: unknown) =>
+    Effect.sync(() => {
+      captured = config;
+    });
   const testCmd = Command.make("factory").pipe(
     Command.withSubcommands([
-      Command.make(
-        "init",
-        {
-          dir: Flag.String("dir").pipe(Flag.withDefault(".")),
-          force: Flag.Boolean("force").pipe(Flag.withDefault(false)),
-        },
-        (config) =>
-          Effect.sync(() => {
-            captured = config;
-          }),
-      ),
-      Command.make(
-        "serve",
-        {
-          port: Flag.Int("port").pipe(Flag.optional),
-          db: Flag.String("db").pipe(Flag.withDefault(".factory/factory.db")),
-          config: Flag.String("config").pipe(Flag.optional),
-        },
-        (config) =>
-          Effect.sync(() => {
-            captured = config;
-          }),
-      ),
-      Command.make(
-        "start",
-        {
-          workflowId: Argument.String("workflowId"),
-          input: Flag.String("input"),
-          url: Flag.String("url").pipe(Flag.optional),
-          watch: Flag.Boolean("watch").pipe(Flag.withDefault(false)),
-        },
-        (config) =>
-          Effect.sync(() => {
-            captured = config;
-          }),
-      ),
-      Command.make(
-        "runs",
-        {
-          db: Flag.String("db").pipe(Flag.withDefault(".factory/factory.db")),
-        },
-        (config) =>
-          Effect.sync(() => {
-            captured = config;
-          }),
-      ),
-      Command.make(
-        "log",
-        {
-          runId: Argument.String("runId"),
-          db: Flag.String("db").pipe(Flag.withDefault(".factory/factory.db")),
-        },
-        (config) =>
-          Effect.sync(() => {
-            captured = config;
-          }),
-      ),
-      Command.make(
-        "run",
-        {
-          workflowPath: Argument.String("workflowPath"),
-          input: Flag.String("input"),
-          dir: Flag.String("dir"),
-          clone: Flag.String("clone").pipe(Flag.optional),
-          "git-name": Flag.String("git-name").pipe(Flag.optional),
-          "git-email": Flag.String("git-email").pipe(Flag.optional),
-          out: Flag.String("out").pipe(Flag.optional),
-          db: Flag.String("db").pipe(Flag.withDefault(".factory/factory.db")),
-        },
-        (config) =>
-          Effect.sync(() => {
-            captured = config;
-          }),
-      ),
+      Command.make("init", initConfig, capture),
+      Command.make("serve", serveConfig, capture),
+      Command.make("start", startConfig, capture),
+      Command.make("runs", runsConfig, capture),
+      Command.make("log", logConfig, capture),
+      Command.make("run", runConfig, capture),
     ]),
   );
 
   return Effect.gen(function* () {
     yield* Command.runWith(testCmd, { version: "0.0.0", renderErrors: false })(argv);
     return captured;
-  }).pipe(Effect.provide(CliTestLayer));
+  }).pipe(Effect.provide(CliEnvLayer));
 }
 
 describe("CLI argv parsing with effect/unstable/cli", () => {
@@ -363,14 +294,21 @@ describe("CLI argv parsing with effect/unstable/cli", () => {
 });
 
 describe("factoryCommand exports", () => {
-  test("the root command has the expected subcommands", () => {
+  test("the root command has exactly the subcommands exercised above", () => {
     const names = factoryCommand.subcommands.flatMap((g) => g.commands.map((c) => c.name));
-    expect(names).toContain("init");
-    expect(names).toContain("serve");
-    expect(names).toContain("start");
-    expect(names).toContain("runs");
-    expect(names).toContain("log");
-    expect(names).toContain("run");
+    expect(names.toSorted()).toEqual(["init", "log", "run", "runs", "serve", "start"]);
+  });
+});
+
+describe("normalizeArgv", () => {
+  test("`help` is an alias for --help, on the root and on a subcommand", () => {
+    expect(normalizeArgv(["help"])).toEqual(["--help"]);
+    expect(normalizeArgv(["help", "serve"])).toEqual(["serve", "--help"]);
+  });
+
+  test("anything else passes through untouched", () => {
+    expect(normalizeArgv(["serve", "--port", "1"])).toEqual(["serve", "--port", "1"]);
+    expect(normalizeArgv([])).toEqual([]);
   });
 });
 
@@ -407,6 +345,24 @@ describe("factory binary: process exit codes", () => {
     expect(exitCode).toBe(0);
   });
 
+  test("`factory help` prints help and exits 0", async () => {
+    const proc = Bun.spawn(["bun", CLI, "help"], { stdout: "pipe", stderr: "pipe" });
+    const exitCode = await proc.exited;
+    const stdout = await readAll(proc.stdout);
+
+    expect(exitCode).toBe(0);
+    expect(stdout).toContain("USAGE");
+  });
+
+  test("`factory help serve` prints the subcommand's help and exits 0", async () => {
+    const proc = Bun.spawn(["bun", CLI, "help", "serve"], { stdout: "pipe", stderr: "pipe" });
+    const exitCode = await proc.exited;
+    const stdout = await readAll(proc.stdout);
+
+    expect(exitCode).toBe(0);
+    expect(stdout).toContain("factory serve");
+  });
+
   test("a genuine parse error (--port abc) still exits non-zero", async () => {
     const proc = Bun.spawn(["bun", CLI, "serve", "--port", "abc"], {
       stdout: "pipe",
@@ -422,5 +378,44 @@ describe("factory binary: process exit codes", () => {
     const exitCode = await proc.exited;
 
     expect(exitCode).not.toBe(0);
+  });
+
+  // A handler's runtime failure (a rejected promise or a throw inside
+  // `Effect.promise`/`Effect.sync`) is a defect, not a `CliError`, so
+  // `Command.run` renders nothing for it — the binary must print it itself.
+  describe("runtime errors are printed, not swallowed", () => {
+    let dir: string;
+    beforeEach(() => {
+      dir = mkdtempSync(join(tmpdir(), "factory-cli-argv-"));
+    });
+    afterEach(() => {
+      rmSync(dir, { recursive: true, force: true });
+    });
+
+    test("an unopenable --db prints the sqlite error and exits 1", async () => {
+      const proc = Bun.spawn(["bun", CLI, "runs", "--db", join(dir, "missing", "x.db")], {
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      const exitCode = await proc.exited;
+      const stderr = await readAll(proc.stderr);
+
+      expect(exitCode).toBe(1);
+      expect(stderr).toContain("unable to open database file");
+    });
+
+    test("a --config that fails to load prints the error and exits 1", async () => {
+      const configPath = join(dir, "factory.config.ts");
+      writeFileSync(configPath, 'throw new Error("boom from config");\n');
+      const proc = Bun.spawn(
+        ["bun", CLI, "serve", "--config", configPath, "--db", join(dir, "f.db"), "--port", "0"],
+        { stdout: "pipe", stderr: "pipe" },
+      );
+      const exitCode = await proc.exited;
+      const stderr = await readAll(proc.stderr);
+
+      expect(exitCode).toBe(1);
+      expect(stderr).toContain("boom from config");
+    });
   });
 });
