@@ -30,8 +30,10 @@
  * is abandoned: `next()` races the abort signal, and `return()` aborts first
  * (an early `return()` *is* the consumer giving up), fires the adapter's own
  * `return()` without awaiting it, and resolves at once. The adapter's
- * teardown — killing the opencode process — still runs, in the background,
- * and `AgentStepHandle.teardown` lets the caller wait for it.
+ * teardown still runs, in the background, and `AgentStepHandle.teardown`
+ * lets the caller wait for it. (For opencode the process itself dies on the
+ * abort: the local-process sandbox kills its process group on the spawn's
+ * abort signal, independently of the generator's `finally`.)
  */
 
 import { Effect, Schema, Stream } from "effect";
