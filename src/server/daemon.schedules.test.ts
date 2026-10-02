@@ -5,7 +5,6 @@
  */
 
 import { afterAll, describe, expect, test } from "bun:test";
-import { Effect, Fiber } from "effect";
 import { rmSync } from "node:fs";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -77,10 +76,7 @@ describe("daemon schedules (issue #16)", () => {
       expect(scheduled[0]?.scheduleId).toBe("hourly-echo");
       expect(scheduled[0]?.status).toBe("RunFinished");
     } finally {
-      if (handle.schedulerFiber !== undefined) {
-        Effect.runFork(Fiber.interrupt(handle.schedulerFiber));
-      }
-      handle.server.stop(true);
+      await handle.stop();
     }
   });
 });

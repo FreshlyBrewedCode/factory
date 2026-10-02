@@ -3,14 +3,14 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import { Effect, Layer, ManagedRuntime } from "effect";
+import { Effect, ManagedRuntime } from "effect";
 import { createSlowFakeAdapter } from "../replay/adapter";
 import { opencodeAdapter } from "./opencode-adapter";
 import { AgentRuntime, AgentRuntimeLayer } from "./agent-runtime";
 
 describe("AgentRuntime service", () => {
-  test("the default layer provides the live opencode adapter", async () => {
-    const runtime = ManagedRuntime.make(Layer.succeed(AgentRuntime, { adapter: opencodeAdapter }));
+  test("without an adapter, the layer provides the live opencode adapter", async () => {
+    const runtime = ManagedRuntime.make(AgentRuntimeLayer());
     const { adapter } = await runtime.runPromise(AgentRuntime);
     expect(adapter).toBe(opencodeAdapter);
     await runtime.dispose();

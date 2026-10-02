@@ -83,6 +83,15 @@ export const serveCommand = Command.make("serve", serveConfig, (config) =>
           : "scheduler: none (no schedules in config)",
       ),
     );
+    // The daemon's shutdown path: stop the scheduler and server and dispose
+    // the agent runtime before exiting, instead of dying with them live.
+    yield* Effect.sync(() => {
+      const shutdown = (signal: NodeJS.Signals) => {
+        void handle.stop().finally(() => process.exit(signal === "SIGINT" ? 130 : 143));
+      };
+      process.once("SIGINT", shutdown);
+      process.once("SIGTERM", shutdown);
+    });
   }),
 ).pipe(Command.withDescription("Run the daemon: HTTP API, live event stream, and the web UI"));
 

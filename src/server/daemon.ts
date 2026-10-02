@@ -2,19 +2,19 @@
  * `factory serve` — wires the HTTP API/SSE (`server/http.ts`) and the config
  * scheduler (`server/scheduler.ts`) into one running process (AGENTS.md's
  * third column). Automatic dispatch is not daemon logic since epic #19: it
- * is project policy living in scheduled wrapper workflows.
+ * is project policy living in scheduled wrapper workflows — e.g. the sample
+ * project's Ready sweep — fired by the scheduler loop on their cron.
  *
- * Issue #36: the daemon now has an Effect composition root. `server/daemon.ts`
- * builds a `Layer` for the agent runtime, creates a `ManagedRuntime`, and
- * passes that runtime to `serve()` and the scheduler. The adapter is no longer
- * threaded by hand through `ServerOptions`, `StartTrackedRunOptions`,
- * `DispatchEnv` and the run/step options; it is resolved from context inside
- * `runtime/agent-step.ts`.
+ * Issue #36: this is the daemon's Effect composition root. It builds the
+ * agent runtime's `ManagedRuntime` once and hands it to `serve()` and the
+ * scheduler; the adapter is resolved from that runtime's context inside
+ * `runtime/agent-step.ts` instead of being threaded through every options
+ * type. `DaemonHandle.stop` disposes it.
  */
 
 import { mkdir } from "node:fs/promises";
 import { dirname } from "node:path";
-import { Effect, type Fiber, ManagedRuntime } from "effect";
+import { Effect, Fiber } from "effect";
 type AnyFiber = Fiber.Fiber<unknown, unknown>;
 import type { FactoryConfig } from "../config";
 import { openStore } from "../persistence/store";
@@ -27,8 +27,7 @@ import {
   toRuntimeSchedules,
   type SchedulerDeps,
 } from "./scheduler";
-import { AgentRuntimeLayer } from "../runtime/agent-runtime";
-import { opencodeAdapter } from "../runtime/opencode-adapter";
+import { makeAgentRuntime } from "../runtime/agent-runtime";
 
 export interface DaemonOptions {
   readonly dbPath: string;
@@ -48,6 +47,11 @@ export interface DaemonHandle {
   readonly server: ReturnType<typeof serve>;
   /** Issue #16: the loop that fires the config's schedules, when it has any. */
   readonly schedulerFiber: AnyFiber | undefined;
+  /**
+   * Shut the daemon down: interrupt the scheduler, stop the HTTP server, and
+   * dispose the agent runtime (issue #36).
+   */
+  readonly stop: () => Promise<void>;
 }
 
 /** Issue #16: how often the scheduler's due window check runs. */
@@ -57,9 +61,7 @@ export async function startDaemon(options: DaemonOptions): Promise<DaemonHandle>
   await mkdir(dirname(options.dbPath), { recursive: true });
   const db = openStore(options.dbPath);
 
-  const adapter = options.config?.agent.adapter ?? opencodeAdapter;
-  const layer = AgentRuntimeLayer(adapter);
-  const runtime = ManagedRuntime.make(layer);
+  const runtime = makeAgentRuntime(options.config?.agent.adapter);
 
   const server = serve({
     db,
@@ -109,5 +111,11 @@ export async function startDaemon(options: DaemonOptions): Promise<DaemonHandle>
         })()
       : undefined;
 
-  return { server, schedulerFiber };
+  const stop = async (): Promise<void> => {
+    if (schedulerFiber !== undefined) await Effect.runPromise(Fiber.interrupt(schedulerFiber));
+    await server.stop(true);
+    await runtime.dispose();
+  };
+
+  return { server, schedulerFiber, stop };
 }

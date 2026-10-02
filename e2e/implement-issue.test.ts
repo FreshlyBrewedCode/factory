@@ -119,16 +119,19 @@ describe("implement-issue workflow, replayed against the recorded round-trip cor
       process.env.PATH = `${binDir}:${originalPath}`;
 
       const events: Array<unknown> = [];
-      const runtime = makeAgentRuntime(createCorpusReplayAdapter(FULL_ROUND_TRIP_CORPUS));
-      const handle = await startRun(implementIssue, runtime, {
-        runId: "test-run-corpus-replay",
-        dir: workDir,
-        input: {
-          issueNumber: 1,
+      const handle = startRun(
+        implementIssue,
+        makeAgentRuntime(createCorpusReplayAdapter(FULL_ROUND_TRIP_CORPUS)),
+        {
+          runId: "test-run-corpus-replay",
+          dir: workDir,
+          input: {
+            issueNumber: 1,
+          },
+          repo: { slug: "local/fixture", baseBranch: "main" },
+          onEvent: (event) => events.push(event),
         },
-        repo: { slug: "local/fixture", baseBranch: "main" },
-        onEvent: (event) => events.push(event),
-      });
+      );
 
       const outcome = await handle.result;
 

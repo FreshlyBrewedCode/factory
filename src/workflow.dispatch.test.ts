@@ -57,8 +57,7 @@ describe("ctx.dispatch (issue #14)", () => {
       },
     });
 
-    const runtime = makeAgentRuntime(SLOW_ADAPTER);
-    const handle = await startRun(parent, runtime, {
+    const handle = startRun(parent, makeAgentRuntime(SLOW_ADAPTER), {
       runId: "run-parent-1",
       dir: root,
       input: {},
@@ -93,16 +92,15 @@ describe("ctx.dispatch (issue #14)", () => {
     });
 
     let childResult: Promise<{ outcome: string }> | undefined;
-    const runtime = makeAgentRuntime(SLOW_ADAPTER);
 
-    const handle = await startRun(parent, runtime, {
+    const handle = startRun(parent, makeAgentRuntime(SLOW_ADAPTER), {
       runId: "run-parent-x",
       dir: root,
       input: {},
-      dispatch: async (childWorkflow, input) => {
+      dispatch: (childWorkflow, input) => {
         void childWorkflow.id;
         childEvents = [];
-        const childRun = await startRun(childWorkflow as never, runtime, {
+        const childRun = startRun(childWorkflow as never, makeAgentRuntime(SLOW_ADAPTER), {
           runId: "run-child-x",
           dir: root,
           input,
@@ -112,7 +110,7 @@ describe("ctx.dispatch (issue #14)", () => {
           },
         });
         childResult = childRun.result;
-        return "run-child-x";
+        return Promise.resolve("run-child-x");
       },
       onEvent: (event) => {
         parentEvents.push(event);
@@ -147,8 +145,7 @@ describe("ctx.dispatch (issue #14)", () => {
       run: async (ctx) => ctx.dispatch(numberedChild, { n: 1 }),
     });
 
-    const runtime = makeAgentRuntime(SLOW_ADAPTER);
-    const handle = await startRun(parent, runtime, {
+    const handle = startRun(parent, makeAgentRuntime(SLOW_ADAPTER), {
       runId: "run-no-daemon",
       dir: root,
       input: {},

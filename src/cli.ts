@@ -16,30 +16,19 @@
 
 import { mkdir } from "node:fs/promises";
 import { dirname } from "node:path";
-import {
-  Cause,
-  Effect,
-  Exit,
-  FileSystem,
-  Layer,
-  ManagedRuntime,
-  Option,
-  Path,
-  Stdio,
-  Terminal,
-} from "effect";
+import { Cause, Effect, Exit, FileSystem, Layer, Option, Path, Stdio, Terminal } from "effect";
 import { ChildProcessSpawner } from "effect/unstable/process";
 import { CliError, Command } from "effect/unstable/cli";
 import type { RunEvent } from "./events";
 import { loadFactoryConfig } from "./config";
 import type { RunRepo } from "./runtime/run";
-import { resetClone, type GitIdentity } from "./lib/clone";
+import type { GitIdentity } from "./lib/clone";
+import { resetClone } from "./lib/clone";
 import { loadWorkflow } from "./lib/load-workflow";
 import { streamSse } from "./lib/sse-client";
 import { appendEvent, getRunEvents, listRuns, openStore } from "./persistence/store";
 import type { AgentAdapter } from "./runtime/agent-adapter";
-import { opencodeAdapter } from "./runtime/opencode-adapter";
-import { AgentRuntimeLayer } from "./runtime/agent-runtime";
+import { makeAgentRuntime } from "./runtime/agent-runtime";
 import { startRun } from "./runtime/run";
 import { factoryCommand } from "./cli-commands";
 
@@ -77,16 +66,18 @@ export async function runCli(options: CliOptions): Promise<number> {
 
   const runId = `run-${Date.now()}`;
   let repo: RunRepo | undefined;
-  let adapter = options.adapter ?? opencodeAdapter;
+  let adapter = options.adapter;
   try {
     const config = await loadFactoryConfig();
     repo = { slug: config.repo.slug, baseBranch: config.repo.baseBranch };
-    adapter = options.adapter ?? config.agent.adapter;
+    adapter ??= config.agent.adapter;
   } catch {
     repo = undefined;
   }
-  const runtime = ManagedRuntime.make(AgentRuntimeLayer(adapter));
-  const handle = await startRun(workflow, runtime, {
+  // The direct-run path's composition root (issue #36): one runtime for this
+  // one run, disposed once the run settles.
+  const runtime = makeAgentRuntime(adapter);
+  const handle = startRun(workflow, runtime, {
     runId,
     dir: options.dir,
     input: options.input,
@@ -107,6 +98,7 @@ export async function runCli(options: CliOptions): Promise<number> {
 
   const outcome = await handle.result;
   process.off("SIGINT", onSigint);
+  await runtime.dispose();
   await sink.end();
   db.close();
 

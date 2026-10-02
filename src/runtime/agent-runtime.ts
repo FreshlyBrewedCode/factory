@@ -8,10 +8,9 @@
  *
  * The service shape is deliberately small: it currently exposes only the
  * adapter, which is the part issue #36 needs to make selectable from config.
- * Issue #37 will add workspace preparation behind the same service.
  */
 
-import { Context, Effect, Layer, ManagedRuntime } from "effect";
+import { Context, Layer, ManagedRuntime } from "effect";
 import type { AgentAdapter } from "./agent-adapter";
 import { opencodeAdapter } from "./opencode-adapter";
 
@@ -21,28 +20,28 @@ export interface AgentRuntimeShape {
 }
 
 /**
- * The agent-runtime service. Yield it inside an Effect to read the adapter.
- * The default implementation uses the live opencode adapter; tests and the
- * daemon override it with `AgentRuntimeLayer`.
+ * The agent-runtime service. Yield it inside an Effect to read the adapter;
+ * provide it with `AgentRuntimeLayer`.
  */
 export class AgentRuntime extends Context.Service<AgentRuntime, AgentRuntimeShape>()(
   "AgentRuntime",
-  { make: Effect.succeed({ adapter: opencodeAdapter }) },
 ) {}
 
 /**
- * A layer that provides a fixed adapter. Tests use this to swap in the
- * corpus-replay runtime without threading an option through the call chain.
+ * A layer that provides `adapter`, or the live opencode adapter when none is
+ * given. This is the single place the opencode default lives: config leaves
+ * `agent.adapter` unset unless a project chooses one.
  */
-export const AgentRuntimeLayer = (adapter: AgentAdapter): Layer.Layer<AgentRuntime> =>
-  Layer.succeed(AgentRuntime, { adapter });
+export const AgentRuntimeLayer = (
+  adapter: AgentAdapter = opencodeAdapter,
+): Layer.Layer<AgentRuntime> => Layer.succeed(AgentRuntime, { adapter });
 
 /**
- * Build a `ManagedRuntime` from an adapter. Convenient for tests and for the
- * CLI's direct-run path, which both need to run effects that require
- * `AgentRuntime`.
+ * Build a `ManagedRuntime` providing the agent runtime — the composition root
+ * of the daemon and the CLI's direct-run path, and a convenience for tests.
+ * The caller owns it and must `dispose()` it once its runs are done.
  */
 export const makeAgentRuntime = (
-  adapter: AgentAdapter,
+  adapter?: AgentAdapter,
 ): ManagedRuntime.ManagedRuntime<AgentRuntime, never> =>
   ManagedRuntime.make(AgentRuntimeLayer(adapter));

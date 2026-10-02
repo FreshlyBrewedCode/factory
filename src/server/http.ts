@@ -28,14 +28,13 @@
  */
 
 import type { Database } from "bun:sqlite";
-import { ManagedRuntime } from "effect";
 import { isTerminal, type RunEvent } from "../events";
 import type { FactoryConfig } from "../config";
-import { Schema, SchemaParser } from "effect";
+import { Schema, SchemaParser, type ManagedRuntime } from "effect";
 import { resetClone, type GitIdentity } from "../lib/clone";
 import { loadWorkflow } from "../lib/load-workflow";
 import { getRunEvents, listRuns, type RunSummary } from "../persistence/store";
-import { AgentRuntime } from "../runtime/agent-runtime";
+import type { AgentRuntime } from "../runtime/agent-runtime";
 import index from "../web/index.html";
 import { admitRun } from "./admission";
 import { subscribe } from "./pubsub";
@@ -77,7 +76,7 @@ export interface ServerOptions {
   readonly db: Database;
   /**
    * Issue #36: the Effect managed runtime that provides the agent runtime
-   * service. The adapter is resolved from context inside `startTrackedRun`
+   * service. The adapter is resolved from its context inside the agent step
    * rather than threaded through `ServerOptions`.
    */
   readonly runtime: ManagedRuntime.ManagedRuntime<AgentRuntime, never>;

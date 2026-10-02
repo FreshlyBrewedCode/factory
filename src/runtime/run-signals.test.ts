@@ -40,7 +40,7 @@ async function runWith(
 ) {
   const events: Array<RunEvent> = [];
   const runtime = makeAgentRuntime(createSlowFakeAdapter(chunks, 1, signals));
-  const handle = await startRun(agentWorkflow(), runtime, {
+  const handle = startRun(agentWorkflow(), runtime, {
     runId: "run-signals",
     dir: "/tmp",
     input: {},
@@ -73,7 +73,7 @@ describe("signals populate AgentStepFinished as before (issue #35)", () => {
         { index: 3, signal: { _tag: "structuredOutput", value: { where: "from-signal" } } },
       ]),
     );
-    const handle = await startRun(agentWorkflow(SIGNAL_SCHEMA), runtime, {
+    const handle = startRun(agentWorkflow(SIGNAL_SCHEMA), runtime, {
       runId: "run-signals-output",
       dir: "/tmp",
       input: {},
@@ -88,7 +88,7 @@ describe("signals populate AgentStepFinished as before (issue #35)", () => {
   test("without a signal, tier 2 re-parses the final text — the fallback is unchanged", async () => {
     const events: Array<RunEvent> = [];
     const runtime = makeAgentRuntime(createSlowFakeAdapter(TEXT_CHUNKS, 1));
-    const handle = await startRun(agentWorkflow(SIGNAL_SCHEMA), runtime, {
+    const handle = startRun(agentWorkflow(SIGNAL_SCHEMA), runtime, {
       runId: "run-signals-tier2",
       dir: "/tmp",
       input: {},
@@ -110,5 +110,55 @@ describe("signals populate AgentStepFinished as before (issue #35)", () => {
     const finished = stepFinished(events);
     expect(finished.outcome).toBe("failed");
     expect(finished.error).toBe("sandbox vanished");
+  });
+});
+
+describe("token usage on AgentStepFinished", () => {
+  const USAGE_CHUNK = {
+    type: "RUN_FINISHED",
+    usage: {
+      promptTokens: 120,
+      completionTokens: 30,
+      promptTokensDetails: { cachedTokens: 900 },
+      completionTokensDetails: { reasoningTokens: 7 },
+    },
+  };
+  const EXPECTED_USAGE = {
+    inputTokens: 120,
+    outputTokens: 30,
+    cachedInputTokens: 900,
+    reasoningTokens: 7,
+  };
+
+  test("a completed step carries the usage its RUN_FINISHED chunk reported", async () => {
+    const { outcome, events } = await runWith([...TEXT_CHUNKS, USAGE_CHUNK], []);
+    expect(outcome.outcome).toBe("completed");
+
+    const finished = stepFinished(events);
+    expect(finished.outcome).toBe("completed");
+    expect(finished.usage).toEqual(EXPECTED_USAGE);
+  });
+
+  test("a cancelled step still carries the usage seen before cancellation", async () => {
+    const events: Array<RunEvent> = [];
+    let handle: ReturnType<typeof startRun> | undefined;
+    // The step is cancelled right after its usage chunk lands, while the next
+    // (slow) chunk is still pending.
+    const runtime = makeAgentRuntime(createSlowFakeAdapter([USAGE_CHUNK, ...TEXT_CHUNKS], 50));
+    handle = startRun(agentWorkflow(), runtime, {
+      runId: "run-usage-cancelled",
+      dir: "/tmp",
+      input: {},
+      onEvent: (event) => {
+        events.push(event);
+        if (event.payload._tag === "AgentChunk") void handle?.cancel();
+      },
+    });
+    const outcome = await handle.result;
+    expect(outcome.outcome).toBe("cancelled");
+
+    const finished = stepFinished(events);
+    expect(finished.outcome).toBe("cancelled");
+    expect(finished.usage).toEqual(EXPECTED_USAGE);
   });
 });

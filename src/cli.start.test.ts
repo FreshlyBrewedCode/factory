@@ -51,9 +51,7 @@ async function startTestDaemon(delayMs: number, root: string): Promise<TestDaemo
   return {
     base: `http://localhost:${daemon.server.port}`,
     dbPath,
-    stop: async () => {
-      await daemon.server.stop(true);
-    },
+    stop: daemon.stop,
   };
 }
 

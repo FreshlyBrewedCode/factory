@@ -24,7 +24,7 @@
  * like any other dedupe collision; `"stack"` fires regardless.
  */
 
-import { Cron, Effect, Schedule, Schema, ManagedRuntime } from "effect";
+import { Cron, Effect, Schedule, Schema, type ManagedRuntime } from "effect";
 import type { Database } from "bun:sqlite";
 import type { FactoryConfig } from "../config";
 import { DedupeKeyError, dedupeRegistry, type DedupeRegistry } from "../lib/dedupe";
@@ -37,7 +37,7 @@ import {
   type WorkspaceSpec,
 } from "./runs";
 import { RunCancelledSignal, type RunRepo } from "../runtime/run";
-import { AgentRuntime } from "../runtime/agent-runtime";
+import type { AgentRuntime } from "../runtime/agent-runtime";
 
 export class SchedulerError extends Schema.TaggedError<SchedulerError>()("SchedulerError", {
   cause: Schema.Defect(),
@@ -263,7 +263,7 @@ export function makeScheduleFire(options: {
     return startTrackedRun(env.runtime, env.db, schedule.workflow, {
       input: schedule.input,
       repo: env.repo,
-      maxConcurrentRuns: env.maxConcurrentRuns,
+      maxConcurrentRuns: options.maxConcurrentRuns,
       workspace: env.workspace,
       dispatchEnv: env.dispatchEnv,
       scheduleId: schedule.id,
