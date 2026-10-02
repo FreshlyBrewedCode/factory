@@ -60,4 +60,3 @@ playwright-report/
 
 # tanstack sandbox projected state
 .tanstack-projected-*
-data/
