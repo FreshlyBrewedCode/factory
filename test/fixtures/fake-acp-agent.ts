@@ -5,6 +5,8 @@
  *
  * - `hello`: usage, a text reply naming the session's model, usage with cost.
  * - `permission`: asks to edit a file and replies with the option it got.
+ * - `tools`: a tool call the way Claude sends one: a generic title and no
+ *   input first, then the descriptive title and the input, then the result.
  * - `json`: replies with a JSON object (structured output).
  * - `env`: replies with the names of its `CLAUDE*` environment variables.
  * - `hang`: works until cancelled, then ends the turn as `cancelled`.
@@ -130,6 +132,39 @@ const connection = new AgentSideConnection(
               update: { sessionUpdate: "tool_call_update", toolCallId: "t1", status: "completed" },
             });
             await say(sessionId, `permission: ${chosen}`);
+            return { stopReason: "end_turn" };
+          }
+          case "tools": {
+            await conn.sessionUpdate({
+              sessionId,
+              update: {
+                sessionUpdate: "tool_call",
+                toolCallId: "t1",
+                title: "Edit",
+                kind: "edit",
+                status: "pending",
+                rawInput: {},
+              },
+            });
+            await conn.sessionUpdate({
+              sessionId,
+              update: {
+                sessionUpdate: "tool_call_update",
+                toolCallId: "t1",
+                title: "Edit math.ts",
+                rawInput: { file_path: "math.ts" },
+              },
+            });
+            await conn.sessionUpdate({
+              sessionId,
+              update: {
+                sessionUpdate: "tool_call_update",
+                toolCallId: "t1",
+                status: "completed",
+                rawOutput: "edited",
+              },
+            });
+            await say(sessionId, "tools done");
             return { stopReason: "end_turn" };
           }
           case "json":

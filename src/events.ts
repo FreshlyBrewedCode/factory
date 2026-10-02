@@ -213,27 +213,27 @@ export const RunEventPayload = Schema.TaggedUnion({
     /** From the `opencode.session-id` CUSTOM chunk. Fresh per step (D10). */
     sessionId: Schema.optional(Schema.String),
     /**
-     * Token counts from the step's `RUN_FINISHED.usage` chunk.
+     * Token counts from the step's `RUN_FINISHED.usage` chunk, **as the agent
+     * reports them** (ADR 0013 §5). What they cover depends on the step's
+     * `agent` (`AgentStepStarted.agent`):
+     *
+     * - **opencode**: the *last* assistant message only. One step runs
+     *   opencode's whole agent loop, often dozens of model calls, and only the
+     *   final one is reported. Logs from before ACP (no `agent`) mean the same.
+     * - **claude**: the *whole turn*, summed over its model calls, so the
+     *   cached-read figure can be a multiple of the context size.
+     *
+     * Do not bill off these; `cost` exists for that. For the context in use,
+     * read `context`; `agentStepContextTokens` derives it from these
+     * components only for logs written before `context` existed.
      *
      * Absent when the step produced no `RUN_FINISHED` (cancelled mid-stream, or
      * a failure that surfaced as `RUN_ERROR` — the adapter emits one or the
      * other, never both).
      *
-     * ONLY THE FINAL ASSISTANT MESSAGE IS REPRESENTED HERE. One `ctx.agent()`
-     * step is one opencode `session.prompt()`, which internally runs opencode's
-     * whole agent loop — commonly 50-150 assistant messages. Each has its own
-     * token counts, but `@tanstack/ai-opencode` builds `RUN_FINISHED.usage`
-     * from the terminal `done` message alone and drops the rest (its translator
-     * ignores `message.updated`, which is where the per-message counts arrive).
-     * So these are the *last turn's* numbers, not the step's cumulative spend —
-     * do not bill off them. Recovering the true cumulative figure needs
-     * opencode's own message store, keyed by `sessionId`.
-     *
      * Stored as the four raw components, deliberately without a total: the
-     * adapter's own `usage.totalTokens` is `input + output` and silently omits
-     * cache reads, which for a coding session are ~99% of the context. Consumers
-     * derive their own sum (see `agentStepContextTokens`); the components are
-     * individually correct, so that derivation survives an upstream fix.
+     * adapters' own `usage.totalTokens` is `input + output` and silently omits
+     * cache reads, which for a coding session are ~99% of the context.
      */
     usage: Schema.optional(
       Schema.Struct({
@@ -244,6 +244,24 @@ export const RunEventPayload = Schema.TaggedUnion({
         reasoningTokens: Integer,
       }),
     ),
+    /**
+     * The context in use and the window size, as the agent measured them
+     * (ADR 0013 §5), from the step's last `usage` signal (ACP
+     * `usage_update`). Present for cancelled and failed steps too, as far as
+     * the agent got. Absent in logs written before it existed and for steps
+     * whose agent never reported usage; there, `agentStepContextTokens(usage)`
+     * is the fallback.
+     */
+    context: Schema.optional(Schema.Struct({ used: Integer, size: Integer })),
+    /**
+     * What the agent says the step cost (ADR 0013 §5): the latest cost its
+     * `usage` signals carried. A step is one ACP session, and the agents
+     * report the session's cost so far, so the latest figure is the step's.
+     * Recorded as reported: opencode says `0 USD` for a free model. Claude
+     * reports cost only at the end of a turn, so a step cancelled mid-turn
+     * usually has none.
+     */
+    cost: Schema.optional(Schema.Struct({ amount: Schema.Finite, currency: Schema.String })),
     /** From a `RUN_ERROR` chunk, or the abort reason. */
     error: Schema.optional(Schema.String),
   },
@@ -366,6 +384,16 @@ export type AgentStepUsage = NonNullable<
   Extract<RunEventPayload, { _tag: "AgentStepFinished" }>["usage"]
 >;
 
+/** `AgentStepFinished.context`: tokens in context and the window size. */
+export type AgentStepContext = NonNullable<
+  Extract<RunEventPayload, { _tag: "AgentStepFinished" }>["context"]
+>;
+
+/** `AgentStepFinished.cost`: an amount in a currency, as the agent reported it. */
+export type AgentStepCost = NonNullable<
+  Extract<RunEventPayload, { _tag: "AgentStepFinished" }>["cost"]
+>;
+
 /**
  * Size of the context the step's final assistant turn ran against: prompt plus
  * completion plus the cached prefix. This is the number opencode itself
@@ -376,6 +404,10 @@ export type AgentStepUsage = NonNullable<
  * Cache reads are added rather than assumed subsumed because opencode reports
  * `input` exclusive of them (the Anthropic convention). It is emphatically not
  * the step's cumulative token spend — see `AgentStepFinished.usage`.
+ *
+ * Superseded by `AgentStepFinished.context.used` where present (ADR 0013 §5);
+ * kept as the fallback for logs written before that field, which all ran on
+ * opencode, where this derivation is exact.
  */
 export function agentStepContextTokens(usage: AgentStepUsage): number {
   return usage.inputTokens + usage.outputTokens + usage.cachedInputTokens;

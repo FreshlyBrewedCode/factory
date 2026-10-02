@@ -37,7 +37,7 @@
  */
 
 import { Effect, Schema, Stream } from "effect";
-import type { AgentStepUsage } from "../events";
+import type { AgentStepContext, AgentStepCost, AgentStepUsage } from "../events";
 import type { AcpAgentKind } from "./acp-agents";
 import type { AgentAdapterYield } from "./agent-adapter";
 import { AgentRuntime } from "./agent-runtime";
@@ -93,6 +93,8 @@ export interface AgentStepOutcome {
   readonly structuredOutput: unknown;
   readonly sessionId: string | undefined;
   readonly usage: AgentStepUsage | undefined;
+  readonly context: AgentStepContext | undefined;
+  readonly cost: AgentStepCost | undefined;
   readonly runError: string | undefined;
   readonly durationMs: number;
 }
@@ -107,6 +109,10 @@ export interface AgentStepPartial {
   finalText: string;
   sessionId: string | undefined;
   usage: AgentStepUsage | undefined;
+  /** From the last `usage` signal (ADR 0013 §5), so a cancelled step keeps it. */
+  context: AgentStepContext | undefined;
+  /** The latest cost a `usage` signal carried; see `AgentStepFinished.cost`. */
+  cost: AgentStepCost | undefined;
 }
 
 export interface AgentStepHandle {
@@ -220,6 +226,8 @@ export function buildAgentStepEffect(options: AgentStepEffectOptions): AgentStep
     finalText: "",
     sessionId: undefined,
     usage: undefined,
+    context: undefined,
+    cost: undefined,
   };
   let currentMessageBuffer: string | undefined;
   let structuredOutput: unknown;
@@ -245,9 +253,15 @@ export function buildAgentStepEffect(options: AgentStepEffectOptions): AgentStep
           case "runError":
             runError = yieldItem.signal.value;
             break;
-          case "usage":
-            // No field yet: `AgentStepFinished.context` / `.cost` arrive with #65.
+          case "usage": {
+            // Last one wins. Cost is cumulative per session (one per step),
+            // and Claude sends it only at a turn's end, so an update without
+            // one keeps the last figure rather than erasing it.
+            const { context, cost } = yieldItem.signal.value;
+            partial.context = { used: context.used, size: context.size };
+            if (cost !== undefined) partial.cost = { amount: cost.amount, currency: cost.currency };
             break;
+          }
         }
       }
 
@@ -295,6 +309,8 @@ export function buildAgentStepEffect(options: AgentStepEffectOptions): AgentStep
     structuredOutput,
     sessionId: partial.sessionId,
     usage: partial.usage,
+    context: partial.context,
+    cost: partial.cost,
     runError,
     durationMs: Date.now() - startedAt,
   }));
