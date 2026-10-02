@@ -22,6 +22,7 @@ import { defineConfig } from "../src/config";
 import { hostExec } from "../src/lib/exec";
 import { appendEvent, openStore } from "../src/persistence/store";
 import { createCorpusReplayAdapter, createSlowFakeAdapter } from "../src/replay/adapter";
+import { makeAgentRuntime } from "../src/runtime/agent-runtime";
 import { startRun } from "../src/runtime/run";
 import { startDaemon } from "../src/server/daemon";
 import { defineWorkflow, Schema } from "../src/workflow";
@@ -137,12 +138,11 @@ async function seedCorpusRuns(root: string, db: ReturnType<typeof openStore>): P
   process.env.PATH = `${binDir}:${originalPath}`;
 
   await awaitRun(
-    startRun(implementIssue, {
+    startRun(implementIssue, makeAgentRuntime(createCorpusReplayAdapter(CORPUS_ROUND_TRIP)), {
       runId: "run-static-corpus",
       dir: workDir,
       repo: { slug: "local/fixture", baseBranch: "main" },
       input: { issueNumber: 1 },
-      adapter: createCorpusReplayAdapter(CORPUS_ROUND_TRIP),
       onEvent: (event) => appendEvent(db, event),
     }),
   );
@@ -151,11 +151,10 @@ async function seedCorpusRuns(root: string, db: ReturnType<typeof openStore>): P
 
   // A second, cheap run so list ordering has more than one data point.
   await awaitRun(
-    startRun(echoWorkflow, {
+    startRun(echoWorkflow, makeAgentRuntime(createCorpusReplayAdapter(CORPUS_ONE_STEP)), {
       runId: "run-static-echo",
       dir: workDir,
       input: {},
-      adapter: createCorpusReplayAdapter(CORPUS_ONE_STEP),
       onEvent: (event) => appendEvent(db, event),
     }),
   );
@@ -253,7 +252,6 @@ async function main(): Promise<void> {
     db.close();
   }
 
-  const adapter = createSlowFakeAdapter(SLOW_CHUNKS, 1_000);
   const config = defineConfig({
     repo: {
       sshUrl: remoteDir,
@@ -278,8 +276,9 @@ async function main(): Promise<void> {
         timezone: "UTC",
       },
     ],
+    agent: { adapter: createSlowFakeAdapter(SLOW_CHUNKS, 1_000) },
   });
-  const { server } = await startDaemon({ dbPath, port, adapter, config });
+  const { server } = await startDaemon({ dbPath, port, config });
   console.log(`factory e2e: listening on http://localhost:${server.port}`);
 }
 

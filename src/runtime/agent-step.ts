@@ -23,7 +23,8 @@
 
 import { Effect, Schema, Stream } from "effect";
 import type { AgentStepUsage } from "../events";
-import type { AgentAdapter, AgentAdapterYield } from "./agent-adapter";
+import type { AgentAdapterYield } from "./agent-adapter";
+import { AgentRuntime } from "./agent-runtime";
 
 /**
  * Pull the four token counts out of a `RUN_FINISHED.usage` object.
@@ -60,7 +61,6 @@ export interface AgentStepEffectOptions {
   readonly model: string;
   readonly prompt: string;
   readonly outputSchema?: unknown;
-  readonly adapter: AgentAdapter;
   /** Fired synchronously per chunk, before any bookkeeping — the runtime's `AgentChunk` emission point. */
   readonly onChunk: (chunk: unknown) => void;
 }
@@ -88,8 +88,12 @@ export interface AgentStepPartial {
 }
 
 export interface AgentStepHandle {
-  /** Run this with `Effect.runFork` to get an interruptible `Fiber`. */
-  readonly effect: Effect.Effect<AgentStepOutcome, AgentStepChunkError>;
+  /**
+   * Run this with `runtime.runFork` to get an interruptible `Fiber`. The
+   * adapter is resolved from the `AgentRuntime` service when the effect runs
+   * (issue #36), not threaded through the options.
+   */
+  readonly effect: Effect.Effect<AgentStepOutcome, AgentStepChunkError, AgentRuntime>;
   readonly abortController: AbortController;
   readonly partial: AgentStepPartial;
 }
@@ -97,18 +101,20 @@ export interface AgentStepHandle {
 export function buildAgentStepEffect(options: AgentStepEffectOptions): AgentStepHandle {
   const abortController = new AbortController();
 
-  const iterable = options.adapter.stream({
-    threadId: options.threadId,
-    dir: options.dir,
-    model: options.model,
-    prompt: options.prompt,
-    outputSchema: options.outputSchema,
-    abortController,
-  });
-
-  const rawStream = Stream.fromAsyncIterable(
-    iterable,
-    (cause) => new AgentStepChunkError({ cause }),
+  const rawStream = Stream.unwrap(
+    Effect.map(Effect.service(AgentRuntime), ({ adapter }) =>
+      Stream.fromAsyncIterable(
+        adapter.stream({
+          threadId: options.threadId,
+          dir: options.dir,
+          model: options.model,
+          prompt: options.prompt,
+          outputSchema: options.outputSchema,
+          abortController,
+        }),
+        (cause) => new AgentStepChunkError({ cause }),
+      ),
+    ),
   );
 
   const partial: AgentStepPartial = {

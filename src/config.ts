@@ -10,6 +10,7 @@
 import { Cron, Result, SchemaParser } from "effect";
 import type { GitIdentity } from "./lib/clone";
 import type { WorkflowDefinition } from "./workflow";
+import type { AgentAdapter } from "./runtime/agent-adapter";
 
 export const DEFAULT_WORKSPACE_ROOT = ".factory/workspaces";
 export const DEFAULT_MAX_CONCURRENT_RUNS = 3;
@@ -69,6 +70,12 @@ export interface FactoryConfig {
    */
   readonly maxDispatchDepth: number;
   readonly maxChildrenPerRun: number;
+  /**
+   * Issue #36: the agent runtime. `adapter` unset means the runtime's default
+   * (the live opencode adapter, `runtime/agent-runtime.ts`), so existing
+   * configs keep working unchanged.
+   */
+  readonly agent: { readonly adapter?: AgentAdapter };
 }
 
 /**
@@ -169,6 +176,11 @@ export interface FactoryConfigInput {
   readonly maxDispatchDepth?: number;
   readonly maxChildrenPerRun?: number;
   readonly schedules?: ReadonlyArray<ScheduleConfigInput | ScheduleDefinition<any>>;
+  /**
+   * Issue #36: the agent runtime. Optional — when omitted the runtime uses
+   * the live opencode adapter.
+   */
+  readonly agent?: { readonly adapter?: AgentAdapter };
 }
 
 export function defineConfig(config: FactoryConfigInput): FactoryConfig {
@@ -216,6 +228,7 @@ export function defineConfig(config: FactoryConfigInput): FactoryConfig {
     retainedWorkspaces,
     maxDispatchDepth,
     maxChildrenPerRun,
+    agent: config.agent?.adapter !== undefined ? { adapter: config.agent.adapter } : {},
   };
 }
 

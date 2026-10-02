@@ -10,6 +10,7 @@ import { describe, expect, test } from "bun:test";
 import type { RunEvent } from "../events";
 import { defineWorkflow, Schema } from "../workflow";
 import { createSlowFakeAdapter } from "../replay/adapter";
+import { makeAgentRuntime } from "./agent-runtime";
 import { startRun, RunCancelledSignal } from "./run";
 import type { AgentAdapter } from "./agent-adapter";
 
@@ -40,11 +41,10 @@ describe("startRun cancellation", () => {
       },
     });
 
-    const handle = startRun(workflow, {
+    const handle = startRun(workflow, makeAgentRuntime(createSlowFakeAdapter(SLOW_CHUNKS, 20)), {
       runId: "run-cancel-test",
       dir: "/tmp",
       input: {},
-      adapter: createSlowFakeAdapter(SLOW_CHUNKS, 20),
       onEvent: (event) => events.push(event),
     });
 
@@ -75,11 +75,10 @@ describe("startRun cancellation", () => {
       },
     });
 
-    const handle = startRun(workflow, {
+    const handle = startRun(workflow, makeAgentRuntime(createSlowFakeAdapter(SLOW_CHUNKS, 1)), {
       runId: "run-no-cancel-test",
       dir: "/tmp",
       input: {},
-      adapter: createSlowFakeAdapter(SLOW_CHUNKS, 1),
       onEvent: () => {},
     });
 
@@ -106,11 +105,10 @@ describe("startRun workspace kind (issue #13)", () => {
       },
     });
 
-    const handle = startRun(workflow, {
+    const handle = startRun(workflow, makeAgentRuntime(createSlowFakeAdapter([])), {
       runId: "run-scratch-wb",
       dir: "/tmp/nothing",
       input: {},
-      adapter: createSlowFakeAdapter([]),
       workspaceKind: "scratch",
       repo: { slug: "owner/repo", baseBranch: "main" },
       onEvent: (event) => events.push(event),
@@ -141,11 +139,10 @@ describe("startRun workspace kind (issue #13)", () => {
         }),
     });
 
-    const handle = startRun(workflow, {
+    const handle = startRun(workflow, makeAgentRuntime(createSlowFakeAdapter([])), {
       runId: "run-clone-wb",
       dir: "/tmp/nothing",
       input: {},
-      adapter: createSlowFakeAdapter([]),
       repo: { slug: "owner/repo", baseBranch: "main" },
       onEvent: (event) => events.push(event),
     });
@@ -167,20 +164,18 @@ describe("startRun workspace kind (issue #13)", () => {
     });
 
     const scratchEvents: Array<RunEvent> = [];
-    await startRun(workflow, {
+    await startRun(workflow, makeAgentRuntime(createSlowFakeAdapter([])), {
       runId: "run-kind-scratch",
       dir: "/tmp/s",
       input: {},
-      adapter: createSlowFakeAdapter([]),
       workspaceKind: "scratch",
       onEvent: (event) => scratchEvents.push(event),
     }).result;
     const cloneEvents: Array<RunEvent> = [];
-    await startRun(workflow, {
+    await startRun(workflow, makeAgentRuntime(createSlowFakeAdapter([])), {
       runId: "run-kind-clone",
       dir: "/tmp/c",
       input: {},
-      adapter: createSlowFakeAdapter([]),
       onEvent: (event) => cloneEvents.push(event),
     }).result;
 
@@ -203,11 +198,10 @@ describe("startRun schedule trigger (issue #16)", () => {
         return { finalText: result.finalText };
       },
     });
-    const handle = startRun(workflow, {
+    const handle = startRun(workflow, makeAgentRuntime(createSlowFakeAdapter(SLOW_CHUNKS, 5)), {
       runId: "run-by-schedule",
       dir: "/tmp",
       input: { issueNumber: 7 },
-      adapter: createSlowFakeAdapter(SLOW_CHUNKS, 5),
       scheduleId: "nightly",
       onEvent: (event) => events.push(event),
     });
@@ -222,11 +216,10 @@ describe("startRun schedule trigger (issue #16)", () => {
       input: Schema.Struct({}),
       run: async () => ({}),
     });
-    const handle = startRun(workflow, {
+    const handle = startRun(workflow, makeAgentRuntime(createSlowFakeAdapter([])), {
       runId: "run-manual",
       dir: "/tmp",
       input: {},
-      adapter: createSlowFakeAdapter([]),
       onEvent: (event) => events.push(event),
     });
     await handle.result;
@@ -249,11 +242,10 @@ describe("startRun model precedence (issue #16)", () => {
         return {};
       },
     });
-    const handle = startRun(workflow, {
+    const handle = startRun(workflow, makeAgentRuntime(createSlowFakeAdapter(SLOW_CHUNKS, 5)), {
       runId: "run-models",
       dir: "/tmp",
       input: {},
-      adapter: createSlowFakeAdapter(SLOW_CHUNKS, 5),
       agentOverrides: { model: "schedule-override" },
       onEvent: (event) => events.push(event),
     });
@@ -277,11 +269,10 @@ describe("startRun model precedence (issue #16)", () => {
         return {};
       },
     });
-    const handle = startRun(workflow, {
+    const handle = startRun(workflow, makeAgentRuntime(createSlowFakeAdapter(SLOW_CHUNKS, 5)), {
       runId: "run-models-fallback",
       dir: "/tmp",
       input: {},
-      adapter: createSlowFakeAdapter(SLOW_CHUNKS, 5),
       onEvent: (event) => events.push(event),
     });
     const outcome = await handle.result;
@@ -314,11 +305,10 @@ describe("startRun prepareWorkspace (ADR 0012 §3, #37)", () => {
       run: async () => ({}),
     });
 
-    await startRun(workflow, {
+    await startRun(workflow, makeAgentRuntime(adapter), {
       runId: "run-prep-clone",
       dir: "/tmp/clone-dir",
       input: {},
-      adapter,
       prepareWorkspace: true,
       onEvent: (event) => events.push(event),
     }).result;
@@ -333,11 +323,10 @@ describe("startRun prepareWorkspace (ADR 0012 §3, #37)", () => {
       run: async () => ({}),
     });
 
-    await startRun(workflow, {
+    await startRun(workflow, makeAgentRuntime(adapter), {
       runId: "run-prep-scratch",
       dir: "/tmp/scratch-dir",
       input: {},
-      adapter,
       onEvent: () => {},
     }).result;
 

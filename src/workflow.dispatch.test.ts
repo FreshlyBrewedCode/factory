@@ -19,6 +19,7 @@ import { describe, expect, test } from "bun:test";
 import { Schema } from "effect";
 import type { RunEvent } from "./events";
 import { createSlowFakeAdapter } from "./replay/adapter";
+import { makeAgentRuntime } from "./runtime/agent-runtime";
 import { startRun } from "./runtime/run";
 import { defineWorkflow } from "./workflow";
 
@@ -56,11 +57,10 @@ describe("ctx.dispatch (issue #14)", () => {
       },
     });
 
-    const handle = startRun(parent, {
+    const handle = startRun(parent, makeAgentRuntime(SLOW_ADAPTER), {
       runId: "run-parent-1",
       dir: root,
       input: {},
-      adapter: SLOW_ADAPTER,
       dispatch: (_child, _input): Promise<string> => {
         void _child;
         void _input;
@@ -93,19 +93,17 @@ describe("ctx.dispatch (issue #14)", () => {
 
     let childResult: Promise<{ outcome: string }> | undefined;
 
-    const handle = startRun(parent, {
+    const handle = startRun(parent, makeAgentRuntime(SLOW_ADAPTER), {
       runId: "run-parent-x",
       dir: root,
       input: {},
-      adapter: SLOW_ADAPTER,
       dispatch: (childWorkflow, input) => {
         void childWorkflow.id;
         childEvents = [];
-        const childRun = startRun(childWorkflow as never, {
+        const childRun = startRun(childWorkflow as never, makeAgentRuntime(SLOW_ADAPTER), {
           runId: "run-child-x",
           dir: root,
           input,
-          adapter: SLOW_ADAPTER,
           parentRunId: "run-parent-x",
           onEvent: (event) => {
             childEvents.push(event);
@@ -147,11 +145,10 @@ describe("ctx.dispatch (issue #14)", () => {
       run: async (ctx) => ctx.dispatch(numberedChild, { n: 1 }),
     });
 
-    const handle = startRun(parent, {
+    const handle = startRun(parent, makeAgentRuntime(SLOW_ADAPTER), {
       runId: "run-no-daemon",
       dir: root,
       input: {},
-      adapter: SLOW_ADAPTER,
       onEvent: () => undefined,
     });
 

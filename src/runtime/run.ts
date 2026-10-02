@@ -13,7 +13,7 @@
  * else, and turns into `RunCancelled` rather than `RunFailed`.
  */
 
-import { Cause, Effect, Exit, Fiber, Schema, SchemaParser } from "effect";
+import { Cause, Effect, Exit, Fiber, Schema, SchemaParser, type ManagedRuntime } from "effect";
 import type { RunEvent, RunEventPayload } from "../events";
 import { hostExec, type ExecResult } from "../lib/exec";
 import { writeBack as writeBackLib, type WriteBackResult } from "../lib/writeback";
@@ -29,7 +29,7 @@ import type {
   WriteBackCallOptions,
 } from "../workflow";
 import { DedupeKeyError } from "../lib/dedupe";
-import type { AgentAdapter } from "./agent-adapter";
+import { AgentRuntime } from "./agent-runtime";
 import { buildAgentStepEffect } from "./agent-step";
 
 export class RunCancelledSignal extends Schema.TaggedError<RunCancelledSignal>()(
@@ -58,7 +58,6 @@ export interface StartRunOptions {
   readonly runId: string;
   readonly dir: string;
   readonly input: unknown;
-  readonly adapter: AgentAdapter;
   /** Write-back environment (D32). Absent, a workflow's `ctx.writeBack` fails. */
   readonly repo?: RunRepo;
   /**
@@ -143,8 +142,15 @@ function resolveOutput<O>(
   }
 }
 
+/**
+ * `runtime` is the composition root's `ManagedRuntime` (issue #36): agent
+ * steps resolve their adapter from its `AgentRuntime` service and their
+ * fibers are forked on it. `startRun` stays synchronous: nothing is resolved
+ * from the runtime until a step (or workspace preparation) actually runs.
+ */
 export function startRun<I, O>(
   workflow: WorkflowDefinition<I, O>,
+  runtime: ManagedRuntime.ManagedRuntime<AgentRuntime, never>,
   options: StartRunOptions,
 ): RunHandle<O> {
   let seq = 0;
@@ -224,7 +230,6 @@ export function startRun<I, O>(
       model,
       prompt,
       outputSchema,
-      adapter: options.adapter,
       onChunk: (chunk) => {
         const record = chunk as { type?: unknown };
         emit({
@@ -236,7 +241,7 @@ export function startRun<I, O>(
       },
     });
 
-    const fiber = Effect.runFork(handle.effect);
+    const fiber = runtime.runFork(handle.effect);
     activeAgentFiber = fiber;
     const exit = await Effect.runPromise(Fiber.await(fiber));
     activeAgentFiber = null;
@@ -482,7 +487,8 @@ export function startRun<I, O>(
 
     try {
       if (options.prepareWorkspace === true) {
-        await options.adapter.prepareWorkspace(options.dir);
+        const { adapter } = await runtime.runPromise(Effect.service(AgentRuntime));
+        await adapter.prepareWorkspace(options.dir);
       }
 
       const output = await workflow.run(ctx, decodedInput);

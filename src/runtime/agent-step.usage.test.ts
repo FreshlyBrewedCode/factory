@@ -15,29 +15,30 @@
 import { describe, expect, test } from "bun:test";
 import { Effect } from "effect";
 import { agentStepContextTokens } from "../events";
-import type { AgentAdapterYield } from "./agent-adapter";
+import type { AgentAdapter, AgentAdapterYield } from "./agent-adapter";
+import { AgentRuntimeLayer } from "./agent-runtime";
 import { loadCorpusBlocks } from "../replay/adapter";
 import { buildAgentStepEffect } from "./agent-step";
 
 const CORPUS = "test/corpus/run-1789308170212.ndjson";
 
 async function runBlock(chunks: ReadonlyArray<unknown>) {
+  const adapter: AgentAdapter = {
+    async prepareWorkspace(_dir: string): Promise<void> {},
+    async *stream(): AsyncGenerator<AgentAdapterYield> {
+      for (const chunk of chunks) {
+        yield { chunk };
+      }
+    },
+  };
   const handle = buildAgentStepEffect({
     threadId: "thread",
     dir: ".",
     model: "model",
     prompt: "prompt",
-    adapter: {
-      async prepareWorkspace(_dir: string): Promise<void> {},
-      async *stream(): AsyncGenerator<AgentAdapterYield> {
-        for (const chunk of chunks) {
-          yield { chunk };
-        }
-      },
-    },
     onChunk: () => {},
   });
-  return await Effect.runPromise(handle.effect);
+  return await Effect.runPromise(Effect.provide(handle.effect, AgentRuntimeLayer(adapter)));
 }
 
 describe("agent step usage", () => {

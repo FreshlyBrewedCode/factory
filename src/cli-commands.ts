@@ -2,7 +2,6 @@ import { Effect, Option } from "effect";
 import { Argument, Command, Flag } from "effect/unstable/cli";
 import { findFactoryConfig, loadFactoryConfig } from "./config";
 import { initCli } from "./init";
-import { opencodeAdapter } from "./runtime/opencode-adapter";
 import { resolve } from "node:path";
 import {
   runCli,
@@ -84,6 +83,15 @@ export const serveCommand = Command.make("serve", serveConfig, (config) =>
           : "scheduler: none (no schedules in config)",
       ),
     );
+    // The daemon's shutdown path: stop the scheduler and server and dispose
+    // the agent runtime before exiting, instead of dying with them live.
+    yield* Effect.sync(() => {
+      const shutdown = (signal: NodeJS.Signals) => {
+        void handle.stop().finally(() => process.exit(signal === "SIGINT" ? 130 : 143));
+      };
+      process.once("SIGINT", shutdown);
+      process.once("SIGTERM", shutdown);
+    });
   }),
 ).pipe(Command.withDescription("Run the daemon: HTTP API, live event stream, and the web UI"));
 
@@ -216,7 +224,6 @@ export const runCommand = Command.make("run", runConfig, (config) =>
       clone,
       outPath: Option.getOrElse(config.out, () => `.factory/runs/run-${Date.now()}/events.ndjson`),
       dbPath: config.db,
-      adapter: opencodeAdapter,
     };
 
     const exitCode = yield* Effect.promise(() => runCli(options));

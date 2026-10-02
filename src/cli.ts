@@ -28,6 +28,7 @@ import { loadWorkflow } from "./lib/load-workflow";
 import { streamSse } from "./lib/sse-client";
 import { appendEvent, getRunEvents, listRuns, openStore } from "./persistence/store";
 import type { AgentAdapter } from "./runtime/agent-adapter";
+import { makeAgentRuntime } from "./runtime/agent-runtime";
 import { startRun } from "./runtime/run";
 import { factoryCommand } from "./cli-commands";
 
@@ -38,7 +39,11 @@ export interface CliOptions {
   readonly clone?: { readonly sshUrl: string; readonly identity: GitIdentity };
   readonly outPath: string;
   readonly dbPath: string;
-  readonly adapter: AgentAdapter;
+  /**
+   * Injectable agent adapter for tests. When omitted, `runCli` falls back to
+   * `factory.config.ts`'s `agent.adapter` (or the live opencode adapter).
+   */
+  readonly adapter?: AgentAdapter;
 }
 
 function formatEvent(event: RunEvent): string {
@@ -61,17 +66,21 @@ export async function runCli(options: CliOptions): Promise<number> {
 
   const runId = `run-${Date.now()}`;
   let repo: RunRepo | undefined;
+  let adapter = options.adapter;
   try {
     const config = await loadFactoryConfig();
     repo = { slug: config.repo.slug, baseBranch: config.repo.baseBranch };
+    adapter ??= config.agent.adapter;
   } catch {
     repo = undefined;
   }
-  const handle = startRun(workflow, {
+  // The direct-run path's composition root (issue #36): one runtime for this
+  // one run, disposed once the run settles.
+  const runtime = makeAgentRuntime(adapter);
+  const handle = startRun(workflow, runtime, {
     runId,
     dir: options.dir,
     input: options.input,
-    adapter: options.adapter,
     prepareWorkspace: options.clone !== undefined,
     ...(repo !== undefined ? { repo } : {}),
     onEvent: (event) => {
@@ -89,6 +98,7 @@ export async function runCli(options: CliOptions): Promise<number> {
 
   const outcome = await handle.result;
   process.off("SIGINT", onSigint);
+  await runtime.dispose();
   await sink.end();
   db.close();
 

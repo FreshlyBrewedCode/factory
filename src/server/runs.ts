@@ -13,7 +13,7 @@
  * start rather than dropped.
  */
 
-import { Schema } from "effect";
+import { Schema, type ManagedRuntime } from "effect";
 import type { Database } from "bun:sqlite";
 import { rm } from "node:fs/promises";
 import { admitRun } from "./admission";
@@ -23,7 +23,7 @@ import { startRun, type RunHandle } from "../runtime/run";
 import type { GitIdentity } from "../lib/clone";
 import { allocateWorkspace } from "../lib/workspace";
 import { dedupeRegistry, type DedupeRegistry } from "../lib/dedupe";
-import type { AgentAdapter } from "../runtime/agent-adapter";
+import type { AgentRuntime } from "../runtime/agent-runtime";
 import type { DispatchChildFn, WorkflowDefinition, WorkspaceKind } from "../workflow";
 import { publish } from "./pubsub";
 
@@ -120,7 +120,6 @@ export interface StartTrackedRunOptions {
   /** Write-back environment for the run (D32): came from config, not the caller. */
   readonly repo?: RunRepo;
   readonly input: unknown;
-  readonly adapter: AgentAdapter;
   readonly runId?: string;
   /**
    * D29's ceiling, enforced atomically at reservation time — the reservation
@@ -183,7 +182,7 @@ export interface StartTrackedRunOptions {
 
 /**
  * The environment `ctx.dispatch`'s children share with their parent (issue
- * #14): workspace provisioning, write-back environment, adapter and the
+ * #14): workspace provisioning, write-back environment and the
  * concurrency ceiling — the same wiring a config-backed server wraps every
  * run in, simply reused for child runs (children inherit it, so a child can
  * dispatch grandchildren).
@@ -192,7 +191,6 @@ export interface DispatchEnv {
   readonly workspace?: WorkspaceSpec;
   readonly repo?: RunRepo;
   readonly maxConcurrentRuns?: number;
-  readonly adapter: AgentAdapter;
   /** Issue #14: dispatch depth / per-run child caps, over the defaults. */
   readonly maxDispatchDepth?: number;
   readonly maxChildrenPerRun?: number;
@@ -236,6 +234,7 @@ function dispatchDepth(db: Database, runId: string): number {
  * parent's.
  */
 async function dispatchChildRun(
+  runtime: ManagedRuntime.ManagedRuntime<AgentRuntime, never>,
   db: Database,
   env: DispatchEnv,
   parentRunId: string,
@@ -276,13 +275,12 @@ async function dispatchChildRun(
   if (opts?.dedupeKey !== undefined) registry.claim(opts.dedupeKey, childRunId);
 
   void (async () => {
-    await startTrackedRun(db, child, {
+    await startTrackedRun(runtime, db, child, {
       runId: childRunId,
       ...(env.workspace !== undefined ? { workspace: env.workspace } : {}),
       ...(env.repo !== undefined ? { repo: env.repo } : {}),
       ...(env.maxConcurrentRuns !== undefined ? { maxConcurrentRuns: env.maxConcurrentRuns } : {}),
       input,
-      adapter: env.adapter,
       parentRunId,
       dispatchEnv: env,
       ...(opts?.dedupeKey !== undefined ? { dedupeKey: opts.dedupeKey } : {}),
@@ -308,6 +306,7 @@ function countDispatchedChildren(db: Database, runId: string): number {
 
 /** Starts a run, persists+publishes every event, and tracks it until terminal. */
 export async function startTrackedRun(
+  runtime: ManagedRuntime.ManagedRuntime<AgentRuntime, never>,
   db: Database,
   workflow: WorkflowDefinition<any, any>,
   options: StartTrackedRunOptions,
@@ -380,9 +379,9 @@ export async function startTrackedRun(
       options.dispatchEnv === undefined
         ? undefined
         : (child, input, opts) =>
-            dispatchChildRun(db, options.dispatchEnv!, runId, child, input, opts);
+            dispatchChildRun(runtime, db, options.dispatchEnv!, runId, child, input, opts);
 
-    const handle = startRun(workflow, {
+    const handle = startRun(workflow, runtime, {
       runId,
       dir,
       ...(options.repo !== undefined ? { repo: options.repo } : {}),
@@ -395,7 +394,6 @@ export async function startTrackedRun(
       ...(options.scheduleId !== undefined ? { scheduleId: options.scheduleId } : {}),
       ...(options.agentOverrides !== undefined ? { agentOverrides: options.agentOverrides } : {}),
       input: options.input,
-      adapter: options.adapter,
       onEvent: (event) => {
         appendEvent(db, event);
         publish(runId, event);

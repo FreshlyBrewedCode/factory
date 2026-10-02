@@ -19,6 +19,7 @@ import { describe, expect, test } from "bun:test";
 import { defineConfig } from "../config";
 import { getRunEvents, openStore } from "../persistence/store";
 import { createSlowFakeAdapter } from "../replay/adapter";
+import { makeAgentRuntime } from "../runtime/agent-runtime";
 import { admitRun } from "./admission";
 import { serve } from "./http";
 
@@ -72,13 +73,15 @@ describe("phase 5 P1: per-run working trees (D28) over the real server", () => {
     const db = openStore(join(root, "factory.db"));
     const server = serve({
       db,
-      adapter: createSlowFakeAdapter(
-        [
-          { type: "TEXT_MESSAGE_START" },
-          { type: "TEXT_MESSAGE_CONTENT", delta: "hi" },
-          { type: "TEXT_MESSAGE_END" },
-        ],
-        30,
+      runtime: makeAgentRuntime(
+        createSlowFakeAdapter(
+          [
+            { type: "TEXT_MESSAGE_START" },
+            { type: "TEXT_MESSAGE_CONTENT", delta: "hi" },
+            { type: "TEXT_MESSAGE_END" },
+          ],
+          30,
+        ),
       ),
       port: 0,
       config: defineConfig({
@@ -159,13 +162,15 @@ describe("phase 5 P1: per-run working trees (D28) over the real server", () => {
     const db = openStore(join(root, "factory.db"));
     const server = serve({
       db,
-      adapter: createSlowFakeAdapter(
-        [
-          { type: "TEXT_MESSAGE_START" },
-          { type: "TEXT_MESSAGE_CONTENT", delta: "hi" },
-          { type: "TEXT_MESSAGE_END" },
-        ],
-        300,
+      runtime: makeAgentRuntime(
+        createSlowFakeAdapter(
+          [
+            { type: "TEXT_MESSAGE_START" },
+            { type: "TEXT_MESSAGE_CONTENT", delta: "hi" },
+            { type: "TEXT_MESSAGE_END" },
+          ],
+          300,
+        ),
       ),
       port: 0,
       config: defineConfig({
@@ -219,13 +224,15 @@ describe("phase 5 P1: per-run working trees (D28) over the real server", () => {
     const db = openStore(join(root, "factory.db"));
     const server = serve({
       db,
-      adapter: createSlowFakeAdapter(
-        [
-          { type: "TEXT_MESSAGE_START" },
-          { type: "TEXT_MESSAGE_CONTENT", delta: "hi" },
-          { type: "TEXT_MESSAGE_END" },
-        ],
-        1_000,
+      runtime: makeAgentRuntime(
+        createSlowFakeAdapter(
+          [
+            { type: "TEXT_MESSAGE_START" },
+            { type: "TEXT_MESSAGE_CONTENT", delta: "hi" },
+            { type: "TEXT_MESSAGE_END" },
+          ],
+          1_000,
+        ),
       ),
       port: 0,
       config: defineConfig({

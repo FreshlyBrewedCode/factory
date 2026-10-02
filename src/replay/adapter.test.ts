@@ -1,5 +1,6 @@
 import { Effect } from "effect";
 import { describe, expect, test } from "bun:test";
+import { AgentRuntimeLayer } from "../runtime/agent-runtime";
 import { buildAgentStepEffect } from "../runtime/agent-step";
 import type { AgentAdapterYield } from "../runtime/agent-adapter";
 import { createCorpusReplayAdapter, createSlowFakeAdapter, loadCorpusBlocks } from "./adapter";
@@ -54,11 +55,12 @@ describe("createCorpusReplayAdapter", () => {
       dir: "/tmp",
       model: "opencode-go/deepseek-v4.1-flash",
       prompt: "irrelevant, replay ignores it",
-      adapter,
       onChunk: (chunk) => chunks.push(chunk),
     });
 
-    const outcome = await Effect.runPromise(handle.effect);
+    const outcome = await Effect.runPromise(
+      Effect.provide(handle.effect, AgentRuntimeLayer(adapter)),
+    );
 
     expect(outcome.chunkCount).toBe(39);
     expect(chunks.length).toBe(39);
@@ -107,11 +109,12 @@ describe("createSlowFakeAdapter", () => {
       dir: "/tmp",
       model: "m",
       prompt: "p",
-      adapter,
       onChunk: () => {},
     });
 
-    const outcome = await Effect.runPromise(handle.effect);
+    const outcome = await Effect.runPromise(
+      Effect.provide(handle.effect, AgentRuntimeLayer(adapter)),
+    );
     expect(outcome.chunkCount).toBe(3);
     expect(outcome.finalText).toBe("hi");
   });

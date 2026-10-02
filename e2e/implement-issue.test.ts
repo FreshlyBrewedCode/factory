@@ -26,6 +26,7 @@ import { join } from "node:path";
 import { describe, expect, test } from "bun:test";
 import { hostExec } from "../src/lib/exec";
 import { createCorpusReplayAdapter } from "../src/replay/adapter";
+import { makeAgentRuntime } from "../src/runtime/agent-runtime";
 import { startRun } from "../src/runtime/run";
 import implementIssue from "./implement-issue";
 
@@ -118,16 +119,19 @@ describe("implement-issue workflow, replayed against the recorded round-trip cor
       process.env.PATH = `${binDir}:${originalPath}`;
 
       const events: Array<unknown> = [];
-      const handle = startRun(implementIssue, {
-        runId: "test-run-corpus-replay",
-        dir: workDir,
-        input: {
-          issueNumber: 1,
+      const handle = startRun(
+        implementIssue,
+        makeAgentRuntime(createCorpusReplayAdapter(FULL_ROUND_TRIP_CORPUS)),
+        {
+          runId: "test-run-corpus-replay",
+          dir: workDir,
+          input: {
+            issueNumber: 1,
+          },
+          repo: { slug: "local/fixture", baseBranch: "main" },
+          onEvent: (event) => events.push(event),
         },
-        repo: { slug: "local/fixture", baseBranch: "main" },
-        adapter: createCorpusReplayAdapter(FULL_ROUND_TRIP_CORPUS),
-        onEvent: (event) => events.push(event),
-      });
+      );
 
       const outcome = await handle.result;
 
