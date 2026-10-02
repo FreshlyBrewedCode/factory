@@ -32,7 +32,7 @@ test("defineWorkflow round-trips through the package specifier", () => {
 });
 
 test("DedupeKeyError is catchable by type through the barrel (issue #18)", () => {
-  const err = new DedupeKeyError({ key: "issue:1", holderRunId: "run-holder" });
+  const err = DedupeKeyError.of({ key: "issue:1", holderRunId: "run-holder" });
   expect(err instanceof Error).toBe(true);
   expect(err._tag).toBe("DedupeKeyError");
   expect(err.key).toBe("issue:1");

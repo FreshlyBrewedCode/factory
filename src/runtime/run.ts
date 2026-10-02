@@ -32,21 +32,14 @@ import { DedupeKeyError } from "../lib/dedupe";
 import type { AgentAdapter } from "./agent-adapter";
 import { buildAgentStepEffect } from "./agent-step";
 
-/**
- * The domain errors (`DedupeKeyError`, `ConcurrencyLimitError`,
- * `DispatchCapError`) each carry their own `message` (a `Schema.TaggedError`
- * field or getter — issue #34), so this is just the generic `Error` fallback,
- * not a per-tag dispatch.
- */
-function domainErrorMessage(err: unknown): string {
-  if (!(err instanceof Error)) return String(err);
-  return err.message || String(err);
-}
-
 export class RunCancelledSignal extends Schema.TaggedError<RunCancelledSignal>()(
   "RunCancelledSignal",
-  {},
-) {}
+  { message: Schema.String },
+) {
+  static of(): RunCancelledSignal {
+    return new RunCancelledSignal({ message: "run cancelled" });
+  }
+}
 
 /** Matches the spike's model (STATUS.md); overridden per-call or per-workflow. */
 export const DEFAULT_MODEL = "opencode-go/deepseek-v4.1-flash";
@@ -170,7 +163,7 @@ export function startRun<I, O>(
   const workspaceKind = options.workspaceKind ?? "clone";
 
   const execImpl = async (argv: ReadonlyArray<string>): Promise<ExecResult> => {
-    if (cancelled) throw new RunCancelledSignal({});
+    if (cancelled) throw RunCancelledSignal.of();
 
     const execId = nextExecId();
     emit({ _tag: "ExecStarted", execId, command: [...argv], cwd: options.dir });
@@ -189,7 +182,7 @@ export function startRun<I, O>(
       durationMs,
     });
 
-    if (cancelled) throw new RunCancelledSignal({});
+    if (cancelled) throw RunCancelledSignal.of();
     return result;
   };
 
@@ -198,7 +191,7 @@ export function startRun<I, O>(
     prompt: string,
     opts?: AgentCallOptions,
   ): Promise<AgentResult<O2>> => {
-    if (cancelled) throw new RunCancelledSignal({});
+    if (cancelled) throw RunCancelledSignal.of();
 
     const stepId = nextStepId();
     // Precedence (issue #16): per-call option > the starting schedule's
@@ -259,7 +252,7 @@ export function startRun<I, O>(
             : {}),
           ...(handle.partial.usage !== undefined ? { usage: handle.partial.usage } : {}),
         });
-        throw new RunCancelledSignal({});
+        throw RunCancelledSignal.of();
       }
 
       const message = Cause.pretty(cause);
@@ -394,7 +387,7 @@ export function startRun<I, O>(
       return result;
     } catch (err) {
       if (err instanceof RunCancelledSignal) throw err;
-      const message = domainErrorMessage(err);
+      const message = err instanceof Error ? err.message : String(err);
       emit({
         _tag: "WriteBackFinished",
         branch: opts.branch,
@@ -424,6 +417,9 @@ export function startRun<I, O>(
     try {
       childRunId = await options.dispatch(child, input, opts);
     } catch (err) {
+      // Issue #15: a dedupe-key collision is never a silent drop — it throws
+      // into the parent *and* is recorded here, with the holding run named so
+      // run detail can link straight to it.
       if (err instanceof DedupeKeyError) {
         emit({
           _tag: "DispatchCollision",
@@ -461,7 +457,7 @@ export function startRun<I, O>(
     try {
       decodedInput = SchemaParser.decodeUnknownSync(workflow.input)(options.input);
     } catch (err) {
-      const message = domainErrorMessage(err);
+      const message = err instanceof Error ? err.message : String(err);
       emit({ _tag: "RunFailed", message, durationMs: Date.now() - startedAt });
       return { outcome: "failed", error: message };
     }
@@ -499,7 +495,7 @@ export function startRun<I, O>(
         return { outcome: "cancelled" };
       }
 
-      const message = domainErrorMessage(err);
+      const message = err instanceof Error ? err.message : String(err);
       const stack = err instanceof Error ? err.stack : undefined;
       emit({
         _tag: "RunFailed",

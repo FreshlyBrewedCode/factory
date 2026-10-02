@@ -52,11 +52,23 @@ function isReserved(entry: RunHandle<unknown> | ReservedSlot | undefined): boole
 
 export class ConcurrencyLimitError extends Schema.TaggedError<ConcurrencyLimitError>()(
   "ConcurrencyLimitError",
-  { maxConcurrentRuns: Schema.Number },
+  { maxConcurrentRuns: Schema.Number, message: Schema.String },
 ) {
-  /** The single source of truth for the message (HTTP, runtime, scheduler alike). */
-  override get message(): string {
-    return `concurrency limit reached (max ${this.maxConcurrentRuns} concurrent runs)`;
+  // Bun takes the `.stack` header from the *immediate* prototype's `name`;
+  // the schema class sets it one level up, which would leave `Error: …`.
+  static {
+    this.prototype.name = "ConcurrencyLimitError";
+  }
+
+  /**
+   * The single source of truth for the message (HTTP, runtime, scheduler
+   * alike). Built at construction — not a getter — so `.stack` opens with it too.
+   */
+  static of(props: { readonly maxConcurrentRuns: number }): ConcurrencyLimitError {
+    return new ConcurrencyLimitError({
+      ...props,
+      message: `concurrency limit reached (max ${props.maxConcurrentRuns} concurrent runs)`,
+    });
   }
 }
 
@@ -232,7 +244,7 @@ async function dispatchChildRun(
     env.maxConcurrentRuns !== undefined &&
     !admitRun(env.maxConcurrentRuns, activeRunIds().length)
   ) {
-    throw new ConcurrencyLimitError({ maxConcurrentRuns: env.maxConcurrentRuns });
+    throw ConcurrencyLimitError.of({ maxConcurrentRuns: env.maxConcurrentRuns });
   }
 
   const depth = dispatchDepth(db, parentRunId);
@@ -315,7 +327,7 @@ export async function startTrackedRun(
   }
   if (existing === undefined && options.maxConcurrentRuns !== undefined) {
     if (!admitRun(options.maxConcurrentRuns, active.size)) {
-      throw new ConcurrencyLimitError({ maxConcurrentRuns: options.maxConcurrentRuns });
+      throw ConcurrencyLimitError.of({ maxConcurrentRuns: options.maxConcurrentRuns });
     }
     active.set(runId, { cancelled: false });
   }

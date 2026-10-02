@@ -142,7 +142,7 @@ describe("scheduler tick (issue #16)", () => {
     const fx = fixture([schedule()]);
     fx.setTime(DAY01_0259);
     const state = createSchedulerState(fx.deps());
-    fx.fireError.set("nightly", new ConcurrencyLimitError({ maxConcurrentRuns: 1 }));
+    fx.fireError.set("nightly", ConcurrencyLimitError.of({ maxConcurrentRuns: 1 }));
 
     fx.setTime(DAY01_0400);
     const results = await tickOnce(fx.deps(), state);
@@ -208,7 +208,7 @@ describe("scheduler tick (issue #16)", () => {
     const concurrencyFx = fixture([schedule({ id: "conc" })]);
     concurrencyFx.setTime(DAY01_0259);
     const concurrencyState = createSchedulerState(concurrencyFx.deps());
-    concurrencyFx.fireError.set("conc", new ConcurrencyLimitError({ maxConcurrentRuns: 1 }));
+    concurrencyFx.fireError.set("conc", ConcurrencyLimitError.of({ maxConcurrentRuns: 1 }));
     concurrencyFx.setTime(DAY01_0400);
     expect(await tickOnce(concurrencyFx.deps(), concurrencyState)).toEqual([
       { scheduleId: "conc", action: "skipped-concurrency" },
@@ -219,7 +219,7 @@ describe("scheduler tick (issue #16)", () => {
     const dedupeState = createSchedulerState(dedupeFx.deps());
     dedupeFx.fireError.set(
       "dedupe",
-      new DedupeKeyError({ key: "schedule:dedupe", holderRunId: "run-x" }),
+      DedupeKeyError.of({ key: "schedule:dedupe", holderRunId: "run-x" }),
     );
     dedupeFx.setTime(DAY01_0400);
     expect(await tickOnce(dedupeFx.deps(), dedupeState)).toEqual([

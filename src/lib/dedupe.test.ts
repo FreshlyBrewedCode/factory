@@ -16,20 +16,17 @@ import { createDedupeRegistry, DedupeKeyError } from "./dedupe";
 
 describe("DedupeKeyError as TaggedError (#34)", () => {
   test("carries the _tag, key, and holderRunId fields", () => {
-    const err = new DedupeKeyError({ key: "issue:41", holderRunId: "run-a" });
+    const err = DedupeKeyError.of({ key: "issue:41", holderRunId: "run-a" });
     expect(err._tag).toBe("DedupeKeyError");
     expect(err.key).toBe("issue:41");
     expect(err.holderRunId).toBe("run-a");
     expect(err instanceof Error).toBe(true);
   });
 
-  test("is matchable by _tag from an unknown catch", () => {
-    try {
-      throw new DedupeKeyError({ key: "k", holderRunId: "r" });
-    } catch (err: unknown) {
-      const e = err as { _tag?: string };
-      expect(e._tag).toBe("DedupeKeyError");
-    }
+  test("constructs its message, so the stack header names the error and the key", () => {
+    const err = DedupeKeyError.of({ key: "issue:41", holderRunId: "run-a" });
+    expect(err.message).toBe('dedupe key held: "issue:41" is currently held by run run-a');
+    expect(err.stack?.split("\n")[0]).toBe(`DedupeKeyError: ${err.message}`);
   });
 });
 

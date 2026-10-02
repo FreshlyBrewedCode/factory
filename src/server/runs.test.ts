@@ -74,7 +74,7 @@ async function waitFor(predicate: () => boolean, timeoutMs = 5_000): Promise<voi
 
 describe("domain errors as TaggedError (#34)", () => {
   test("ConcurrencyLimitError carries _tag and maxConcurrentRuns", () => {
-    const err = new ConcurrencyLimitError({ maxConcurrentRuns: 5 });
+    const err = ConcurrencyLimitError.of({ maxConcurrentRuns: 5 });
     expect(err._tag).toBe("ConcurrencyLimitError");
     expect(err.maxConcurrentRuns).toBe(5);
     expect(err instanceof Error).toBe(true);
@@ -87,19 +87,10 @@ describe("domain errors as TaggedError (#34)", () => {
     expect(err instanceof Error).toBe(true);
   });
 
-  test("domain errors are matchable by _tag from an unknown catch", () => {
-    const errors = [
-      new ConcurrencyLimitError({ maxConcurrentRuns: 1 }),
-      new DispatchCapError({ message: "cap" }),
-    ];
-    for (const err of errors) {
-      try {
-        throw err;
-      } catch (caught: unknown) {
-        const e = caught as { _tag?: string };
-        expect(typeof e._tag).toBe("string");
-      }
-    }
+  test("ConcurrencyLimitError constructs its message, so the stack header names it", () => {
+    const err = ConcurrencyLimitError.of({ maxConcurrentRuns: 5 });
+    expect(err.message).toBe("concurrency limit reached (max 5 concurrent runs)");
+    expect(err.stack?.split("\n")[0]).toBe(`ConcurrencyLimitError: ${err.message}`);
   });
 });
 

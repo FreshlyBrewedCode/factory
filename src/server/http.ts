@@ -348,7 +348,7 @@ export function createHandler(options: ServerOptions): (req: Request) => Promise
       const maxConcurrentRuns = options.config?.maxConcurrentRuns;
       if (maxConcurrentRuns !== undefined && !admitRun(maxConcurrentRuns, activeRunIds().length)) {
         return json(
-          { error: new ConcurrencyLimitError({ maxConcurrentRuns }).message },
+          { error: ConcurrencyLimitError.of({ maxConcurrentRuns }).message },
           { status: 409 },
         );
       }
@@ -401,6 +401,9 @@ export function createHandler(options: ServerOptions): (req: Request) => Promise
           if (err instanceof ConcurrencyLimitError) {
             return json({ error: err.message }, { status: 409 });
           }
+          // Issue #15: the key collision surfaces as a conflict that names both
+          // the key and the run holding it, so a client can see exactly whom it
+          // raced with.
           if (err instanceof DedupeKeyError) {
             return json(
               { error: err.message, dedupeKey: err.key, holderRunId: err.holderRunId },
@@ -541,7 +544,7 @@ export function createHandler(options: ServerOptions): (req: Request) => Promise
       const maxConcurrentRuns = options.config.maxConcurrentRuns;
       if (!admitRun(maxConcurrentRuns, activeRunIds().length)) {
         return json(
-          { error: new ConcurrencyLimitError({ maxConcurrentRuns }).message },
+          { error: ConcurrencyLimitError.of({ maxConcurrentRuns }).message },
           { status: 409 },
         );
       }

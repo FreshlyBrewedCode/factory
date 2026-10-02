@@ -13,19 +13,11 @@ import { createSlowFakeAdapter } from "../replay/adapter";
 import { startRun, RunCancelledSignal } from "./run";
 
 describe("RunCancelledSignal as TaggedError (#34)", () => {
-  test("carries the _tag", () => {
-    const signal = new RunCancelledSignal({});
+  test("carries the _tag and the cancellation message", () => {
+    const signal = RunCancelledSignal.of();
     expect(signal._tag).toBe("RunCancelledSignal");
+    expect(signal.message).toBe("run cancelled");
     expect(signal instanceof Error).toBe(true);
-  });
-
-  test("is matchable by _tag from an unknown catch", () => {
-    try {
-      throw new RunCancelledSignal({});
-    } catch (err: unknown) {
-      const e = err as { _tag?: string };
-      expect(e._tag).toBe("RunCancelledSignal");
-    }
   });
 });
 

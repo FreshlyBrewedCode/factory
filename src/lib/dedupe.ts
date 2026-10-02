@@ -23,10 +23,24 @@ import { Schema } from "effect";
 export class DedupeKeyError extends Schema.TaggedError<DedupeKeyError>()("DedupeKeyError", {
   key: Schema.String,
   holderRunId: Schema.String,
+  message: Schema.String,
 }) {
-  /** The single source of truth for the collision message (HTTP, runtime, scheduler alike). */
-  override get message(): string {
-    return `dedupe key held: "${this.key}" is currently held by run ${this.holderRunId}`;
+  // Bun takes the `.stack` header from the *immediate* prototype's `name`;
+  // the schema class sets it one level up, which would leave `Error: …`.
+  static {
+    this.prototype.name = "DedupeKeyError";
+  }
+
+  /**
+   * The single source of truth for the collision message (HTTP, runtime,
+   * scheduler alike). Built at construction — not a getter — so `.stack`
+   * opens with it too.
+   */
+  static of(props: { readonly key: string; readonly holderRunId: string }): DedupeKeyError {
+    return new DedupeKeyError({
+      ...props,
+      message: `dedupe key held: "${props.key}" is currently held by run ${props.holderRunId}`,
+    });
   }
 }
 
@@ -50,7 +64,7 @@ export function createDedupeRegistry(): DedupeRegistry {
     claim(key, runId) {
       const holder = held.get(key);
       if (holder !== undefined && holder !== runId)
-        throw new DedupeKeyError({ key, holderRunId: holder });
+        throw DedupeKeyError.of({ key, holderRunId: holder });
       held.set(key, runId);
     },
     release(key, runId) {
