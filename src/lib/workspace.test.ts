@@ -145,32 +145,6 @@ describe("allocateWorkspace (D28)", () => {
     rmSync(root, { recursive: true, force: true });
   });
 
-  test("the allocated tree carries the headless permission policy (#24), excluded from staging", async () => {
-    const root = mkdtempSync(join(tmpdir(), "factory-workspace-sandbox-config-test-"));
-    const workspaceRoot = join(root, "workspaces");
-    const seed = join(root, "seed-repo");
-    await seedRepo(seed, "one");
-
-    const dir = await allocateWorkspace({
-      runId: "run-a",
-      workspaceRoot,
-      sshUrl: seed,
-      identity: IDENTITY,
-      retainedWorkspaces: 10,
-    });
-
-    const config = JSON.parse(await Bun.$`cat ${join(dir, "opencode.json")}`.text()) as {
-      permission: Record<string, string>;
-    };
-    expect(config.permission).toEqual({ "*": "allow" });
-
-    const untracked = (
-      await Bun.$`git -C ${dir} status --porcelain --untracked-files=all`.text()
-    ).trim();
-    expect(untracked).toBe("");
-    rmSync(root, { recursive: true, force: true });
-  });
-
   test("write-back from an allocated tree pushes to the configured remote, against a bare mirror (H1)", async () => {
     const root = mkdtempSync(join(tmpdir(), "factory-workspace-push-test-"));
     const workspaceRoot = join(root, "workspaces");

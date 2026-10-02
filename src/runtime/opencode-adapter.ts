@@ -21,6 +21,7 @@ import type {
   AgentAdapterYield,
   AgentSignal,
 } from "./agent-adapter";
+import { writeHeadlessPermissions } from "../lib/sandbox-config";
 
 /**
  * Inspect one raw AG-UI chunk for opencode-specific signals. Returns the
@@ -86,6 +87,10 @@ async function freePort(): Promise<number> {
 }
 
 export const opencodeAdapter: AgentAdapter = {
+  async prepareWorkspace(dir: string): Promise<void> {
+    await writeHeadlessPermissions(dir);
+  },
+
   async *stream(options: AgentAdapterOptions): AsyncIterable<AgentAdapterYield> {
     const sandboxDefinition = defineSandbox({
       id: "factory-run",

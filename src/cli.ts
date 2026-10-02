@@ -72,6 +72,7 @@ export async function runCli(options: CliOptions): Promise<number> {
     dir: options.dir,
     input: options.input,
     adapter: options.adapter,
+    prepareWorkspace: options.clone !== undefined,
     ...(repo !== undefined ? { repo } : {}),
     onEvent: (event) => {
       console.log(formatEvent(event));

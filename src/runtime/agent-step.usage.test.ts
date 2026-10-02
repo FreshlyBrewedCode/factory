@@ -28,6 +28,7 @@ async function runBlock(chunks: ReadonlyArray<unknown>) {
     model: "model",
     prompt: "prompt",
     adapter: {
+      async prepareWorkspace(_dir: string): Promise<void> {},
       async *stream(): AsyncGenerator<AgentAdapterYield> {
         for (const chunk of chunks) {
           yield { chunk };

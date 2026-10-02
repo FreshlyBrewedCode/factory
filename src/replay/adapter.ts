@@ -65,6 +65,8 @@ export function createCorpusReplayAdapter(path: string): AgentAdapter {
   let cursor = 0;
 
   return {
+    async prepareWorkspace(_dir: string): Promise<void> {},
+
     stream(_options: AgentAdapterOptions): AsyncIterable<AgentAdapterYield> {
       const index = cursor;
       cursor += 1;
@@ -95,6 +97,8 @@ export function createCorpusReplayAdapter(path: string): AgentAdapter {
  */
 export function createSlowFakeAdapter(chunks: ReadonlyArray<unknown>, delayMs = 20): AgentAdapter {
   return {
+    async prepareWorkspace(_dir: string): Promise<void> {},
+
     stream(_options: AgentAdapterOptions): AsyncIterable<AgentAdapterYield> {
       return {
         async *[Symbol.asyncIterator]() {
