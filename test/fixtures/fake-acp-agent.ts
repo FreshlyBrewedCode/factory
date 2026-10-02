@@ -19,8 +19,10 @@ import {
   AgentSideConnection,
   ndJsonStream,
   PROTOCOL_VERSION,
+  RequestError,
   type SessionConfigOption,
 } from "@agentclientprotocol/sdk";
+import { isAbsolute } from "node:path";
 import { Writable } from "node:stream";
 
 const MODELS = ["fake/default", "fake/fast", "fake/smart"];
@@ -63,7 +65,10 @@ const connection = new AgentSideConnection(
         agentCapabilities: { loadSession: false },
         agentInfo: { name: "fake-acp-agent", version: "0.0.0" },
       }),
-      newSession: async () => {
+      newSession: async ({ cwd }) => {
+        // As claude-agent-acp does: ACP's `cwd` is an absolute path.
+        if (!isAbsolute(cwd))
+          throw RequestError.invalidParams({ cwd }, `\`cwd\` must be an absolute path, but received: ${cwd}`);
         const sessionId = crypto.randomUUID();
         sessions.set(sessionId, { model: MODELS[0]!, cancelled: () => {}, wasCancelled: false });
         return {

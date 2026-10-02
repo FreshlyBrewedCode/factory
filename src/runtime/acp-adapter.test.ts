@@ -5,7 +5,7 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import { join } from "node:path";
+import { join, relative } from "node:path";
 import { acpAdapter, AcpAgentError, type AcpDiagnostic } from "./acp-adapter";
 import type { AcpAgentDefinition } from "./acp-agents";
 import type { AgentAdapterYield, AgentSignal } from "./agent-adapter";
@@ -30,6 +30,7 @@ async function collect(
   prompt: string,
   options: {
     model?: string;
+    dir?: string;
     definition?: AcpAgentDefinition;
     outputSchema?: unknown;
     abortAfter?: (y: AgentAdapterYield) => boolean;
@@ -47,7 +48,7 @@ async function collect(
   try {
     for await (const y of adapter.stream({
       threadId: "thread",
-      dir: import.meta.dir,
+      dir: options.dir ?? import.meta.dir,
       model: options.model ?? "fake/fast",
       prompt,
       outputSchema: options.outputSchema,
@@ -92,6 +93,14 @@ describe("acpAdapter", () => {
     expect(types(c)[0]).toBe("RUN_STARTED");
     expect(types(c).at(-1)).toBe("RUN_FINISHED");
     expect(signals(c, "sessionId")).toHaveLength(1);
+  });
+
+  test("runs in a relative dir: ACP gets it as an absolute cwd", async () => {
+    // The default workspace root, `.factory/workspaces`, is relative.
+    const dir = relative(process.cwd(), import.meta.dir) || ".";
+    const c = await collect("hello", { dir });
+    expect(c.error).toBeUndefined();
+    expect(text(c)).toBe("hello from fake/fast");
   });
 
   test("does not set the model when the agent already runs it", async () => {

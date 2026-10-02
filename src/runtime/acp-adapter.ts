@@ -47,6 +47,7 @@ import {
   type AcpSessionUpdate,
   type AcpStreamEvent,
 } from "@tanstack/ai-acp";
+import { resolve } from "node:path";
 import { agentEnv, type AcpAgentDefinition } from "./acp-agents";
 import type {
   AgentAdapter,
@@ -243,11 +244,14 @@ export function acpAdapter(
         throw new AcpAgentError(`${name}: no model given; factory always sends one`);
       const signal = options.abortController.signal;
       if (signal.aborted) return;
+      // ACP requires an absolute `cwd`; a workspace root may be relative
+      // (`.factory/workspaces`, the default), resolved against the daemon's.
+      const cwd = resolve(options.dir);
 
       let child: Bun.Subprocess<"pipe", "pipe", "pipe">;
       try {
         child = Bun.spawn([...definition.command], {
-          cwd: options.dir,
+          cwd,
           env: agentEnv(definition),
           stdin: "pipe",
           stdout: "pipe",
@@ -354,7 +358,7 @@ export function acpAdapter(
 
         const created = await race(
           acp.newSession({
-            cwd: options.dir,
+            cwd,
             mcpServers: [],
             ...(definition.sessionMeta && { _meta: { ...definition.sessionMeta } }),
           }),
