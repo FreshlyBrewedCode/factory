@@ -2,6 +2,11 @@
 
 ## Status
 
+**Superseded 2026-10-02 by [ADR 0013](./0013-agents-over-acp.md).** Agents now speak ACP over
+stdio, one process per step, so there is no `opencode serve` and no port to race for. The
+free-port probe was deleted with the opencode adapter (#66). Kept as the record of why the race
+existed.
+
 Accepted (2026-09-15). Live-leg-proven, not pre-implementation: the failure it fixes recurred
 deterministically in phase 5's P6 concurrency leg before it, and the retried leg after the fix
 passed clean (`docs/findings/11-phase5-live-leg.md`, finding L1).
