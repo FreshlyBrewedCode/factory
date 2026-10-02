@@ -21,7 +21,9 @@ factory
     the SPA), `bun:sqlite` for persistence
   - Effect v4 (`4.0.0-rc.*`) for the run lifecycle and scheduling; Effect Schema is the schema
     language throughout — workflow inputs, agent structured output, config. 
-  - `@tanstack/ai` with `-opencode` and `-sandbox-local-process` for the agent runtime. 
+  - agent runtime: one ACP adapter (`@agentclientprotocol/sdk`) driving `opencode acp` and Claude Code
+    (`@agentclientprotocol/claude-agent-acp`); `@tanstack/ai-acp` turns ACP updates into AG-UI chunks
+    (ADR 0013)
   - React 19 SPA: tanstack router and query, tailwind v4, shadcn primitives 
   - oxfmt, oxlint (type-aware, with the `@effect/tsgo` and react rules)
   - playwright for the browser legs
@@ -48,4 +50,7 @@ factory
   - a prod instance of factory may be running on this machine (`bun src/cli serve --port 3005`,
     log at `/tmp/factory-serve.log`)
   - we use factory to build factory
-  - when doing real agent tests via opencode the preferred model is `opencode-go/big-pickle`
+  - real agent tests: opencode on `opencode/big-pickle` (free), Claude on `haiku` (cheap) or `sonnet`.
+    Model ids are the agent's own (`opencode/big-pickle`, not `opencode-go/big-pickle`). Live legs run a
+    scratch daemon on a spare port (3005 is prod) over a local bare origin and a fake `gh`, so
+    write-back stays local (`docs/findings/14-acp-live-leg.md` has the setup)

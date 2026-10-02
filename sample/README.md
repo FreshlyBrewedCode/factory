@@ -27,7 +27,7 @@ authoring surface (D1: plain async control flow over `ctx`):
 
 1. `ctx.agent("implement", ...)` — the agent reads the issue with
    `gh issue view` and implements it with tests (all steps run on
-   `opencode-go/glm-5.3-flash`, set as the workflow's `agent.model`).
+   opencode with `opencode-go/glm-5.3-flash`, set as the workflow's `agent`).
 2. `ctx.exec(["bun", "test"])` — non-zero exit is a branch, not a throw.
 3. one conditional fix step if the tests failed; the tests run again.
 4. `ctx.agent("pr-metadata", ...)` — structured output supplies

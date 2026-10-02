@@ -8,6 +8,7 @@ order: 6
 factory init [--dir <path>] [--force]     # scaffold .factory/ (never overwrites without --force)
 factory serve [--port <n>] [--db <path>]  # the daemon: HTTP API, SSE, and the web UI
 factory start <workflowId> --input <json> [--watch] [--url <base-url>]
+              [--agent claude|opencode] [--model <id>]
 factory runs                              # every run this project has recorded
 factory log <runId>                       # replay one run's full history
 ```
@@ -15,6 +16,10 @@ factory log <runId>                       # replay one run's full history
 `serve` finds `.factory/factory.config.ts` on its own; pass `--config <path>` to point somewhere
 else. `start` talks to a running daemon over HTTP: set `--url` or `FACTORY_URL` if it's not on
 `http://localhost:3000`.
+
+`--agent` and `--model` choose the agent and model for this run's steps, unless a step names its
+own. A model given without `--agent` applies to the run's agent: the config default, or whatever
+the workflow names.
 
 `factory start --watch` exits `0` when the run completes, `1` when it fails, and `130` when it's
 cancelled.
