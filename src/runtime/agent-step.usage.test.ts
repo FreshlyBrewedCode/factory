@@ -15,6 +15,7 @@
 import { describe, expect, test } from "bun:test";
 import { Effect } from "effect";
 import { agentStepContextTokens } from "../events";
+import type { AgentAdapterYield } from "./agent-adapter";
 import { loadCorpusBlocks } from "../replay/adapter";
 import { buildAgentStepEffect } from "./agent-step";
 
@@ -27,8 +28,10 @@ async function runBlock(chunks: ReadonlyArray<unknown>) {
     model: "model",
     prompt: "prompt",
     adapter: {
-      async *stream() {
-        yield* chunks;
+      async *stream(): AsyncGenerator<AgentAdapterYield> {
+        for (const chunk of chunks) {
+          yield { chunk };
+        }
       },
     },
     onChunk: () => {},
