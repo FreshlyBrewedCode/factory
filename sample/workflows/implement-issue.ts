@@ -42,7 +42,7 @@ const PrMetadataOutput = Schema.Struct({
 export default defineWorkflow("implement-issue", {
   input: Input,
   output: Output,
-  agent: { model: "opencode-go/glm-5.3-flash" },
+  agent: { agent: "opencode", model: "opencode-go/glm-5.3-flash" },
   run: async (ctx, input) => {
     // Step 1: implement the issue in the prepared tree (cloned by the runtime).
     await ctx.agent(

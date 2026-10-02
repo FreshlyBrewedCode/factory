@@ -85,5 +85,6 @@ Conclusions → D43 ([`decisions.md`](../decisions.md)); ADR 0004 carries a supe
 | Document | Subtask | Headline finding |
 |---|---|---|
 | [`13-acp-agents.md`](./13-acp-agents.md) | Spike: one ACP adapter for opencode and Claude Code, through the real runtime | Both agents ran the hello-shaped workflow end to end with a workflow-chosen model, tier-1 structured output, permission answered client-side and a 2–3 ms clean cancel; model ids are per agent (opencode's big-pickle is `opencode/big-pickle`), and usage means "last message" on opencode but "whole turn" on Claude. |
+| [`14-acp-live-leg.md`](./14-acp-live-leg.md) | Issue #67: the ACP runtime live through `factory serve` and the UI | Both agents ran the full implement-issue round trip concurrently, and the `external_directory` ask, UI cancel and daemon shutdown all came out clean. A `SIGKILL`ed agent fails its step properly but orphans its in-flight tool processes (#74). Agents report provider errors as JSON-RPC errors, not `RUN_ERROR`. |
 
-Conclusions → [`adr/0013-agents-over-acp.md`](../adr/0013-agents-over-acp.md) (proposed).
+Conclusions → [`adr/0013-agents-over-acp.md`](../adr/0013-agents-over-acp.md) (accepted; amended from finding 13's later corrections and finding 14).

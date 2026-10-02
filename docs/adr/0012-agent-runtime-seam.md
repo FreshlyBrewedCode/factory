@@ -2,6 +2,16 @@
 
 ## Status
 
+**Amended 2026-10-02 by [ADR 0013](./0013-agents-over-acp.md):**
+
+- **§3** has no job left. Permission asks are answered by the ACP adapter's callback, so
+  `AgentAdapter.prepareWorkspace` and `StartRunOptions.prepareWorkspace` are deleted (#66).
+- **§6** is overtaken. There is no sandbox provider: the agent runs on the host in the run's tree
+  over stdio.
+
+§1, §2, §4 and §5 stand. §2's rule held as written: the `AgentSignal` union grew `usage` because
+factory gained fields for context and cost.
+
 Accepted, 2026-09-18. Decided **ahead of the implementation**, deliberately: this seam decides what
 several tickets in the Effect epic are allowed to move, so it has to exist before the code does.
 Unlike ADR 0001, nothing here is distilled from a spike — it is a boundary statement, and the

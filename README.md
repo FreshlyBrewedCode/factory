@@ -52,9 +52,12 @@ bun add -d @frebreco/factory
 ```
 
 **Bun ≥ 1.4.1 is required** — factory ships TypeScript and runs on Bun. You
-also need the [`opencode`](https://opencode.ai) CLI, logged in (that is the
-agent doing the work), and [`gh`](https://cli.github.com), authenticated (that
-is what opens the pull requests).
+also need a coding agent, logged in on this machine (that is what does the
+work): **Claude Code** (a Claude login via the `claude` CLI, or
+`ANTHROPIC_API_KEY`; factory bundles the agent itself) or
+[**opencode**](https://opencode.ai) (the CLI on `PATH`, with a provider logged
+in). And [`gh`](https://cli.github.com), authenticated (that is what opens the
+pull requests). `factory serve` names whatever is missing when it starts.
 
 ### 2. Initialise
 
@@ -116,7 +119,7 @@ import { defineWorkflow, Schema } from "@frebreco/factory";
 export default defineWorkflow("my-workflow", {
   input: Schema.Struct({ topic: Schema.String }),
   output: Schema.Struct({ prUrl: Schema.NullOr(Schema.String) }),
-  agent: { model: "opencode-go/glm-5.3-flash" },
+  agent: { agent: "opencode", model: "opencode/big-pickle" },
 
   run: async (ctx, input) => {
     /* ... */
@@ -129,7 +132,7 @@ export default defineWorkflow("my-workflow", {
 | `id`     | The name you start it by — in the UI's picker and in `factory start <id>`                                  |
 | `input`  | A schema. It generates the UI's form and validates `--input` **before** the run starts                     |
 | `output` | Optional. What `run` resolves to, recorded in the run's history                                            |
-| `agent`  | Optional defaults for every agent step — mainly `model`                                                    |
+| `agent`  | Optional defaults for every agent step: `agent` (`claude` / `opencode`) and `model`                        |
 | `run`    | Your workflow: `async (ctx, input) => output`                                                              |
 
 ### The `ctx` you get
@@ -157,6 +160,18 @@ const meta = await ctx.agent("pr-metadata", "Summarise the change as JSON.", {
 meta.output; // { title, body } | undefined
 meta.finalText; // the raw text, always
 ```
+
+### Choosing the agent and model
+
+`agent` and `model` can be named on the `ctx.agent` call, the run
+(`factory start --agent/--model`, a schedule's `agent`), the workflow, and the
+config (`agent.default`, `agent.models`). The most specific level that names an
+agent wins. The model comes from the most specific level that names one, at or
+above the level that chose the agent, and otherwise from `agent.models[agent]`.
+A model never carries across to another agent. Ids are the agent's own (`haiku`,
+`sonnet`, `opus`; `opencode/big-pickle`), passed verbatim. Factory always sends
+one, and a step with no model, or with one the agent doesn't offer, fails
+before the prompt is sent.
 
 ### Registering it
 
@@ -191,6 +206,10 @@ export default defineConfig({
     identity: { name: "Factory", email: "factory@acme.example" },
   },
   workflows: [hello],
+  agent: {
+    default: "claude",
+    models: { claude: "sonnet", opencode: "opencode/big-pickle" },
+  },
   maxConcurrentRuns: 2,
   retainedWorkspaces: 10,
 });
@@ -200,6 +219,9 @@ export default defineConfig({
 | -------------------- | -------------------- | ------------------------------------------------------------------------------------ |
 | `repo`               | —                    | The repository runs clone from, and where write-back opens PRs                       |
 | `workflows`          | —                    | The registry. Imported = available                                                   |
+| `agent.default`      | `"opencode"`         | The agent a step runs on unless something more specific names one                     |
+| `agent.models`       | `{}`                 | Each agent's model unless something more specific names one. No built-in model       |
+| `agent.hostSettings` | `"ignore"` per agent | `"include"` lets runs see your own `~/.claude` / `~/.config/opencode` settings        |
 | `maxConcurrentRuns`  | `3`                  | Runs allowed in flight at once. Over the limit is **refused, not queued**            |
 | `retainedWorkspaces` | `10`                 | Finished working trees kept for inspection, oldest evicted first. Must be ≥ the limit |
 | `workspaceRoot`      | `.factory/workspaces`| Where per-run working trees live                                                      |
@@ -216,6 +238,7 @@ your workflows are not: commit those.
 factory init [--dir <path>] [--force]     # scaffold .factory/ (never overwrites without --force)
 factory serve [--port <n>] [--db <path>]  # the daemon: HTTP API, SSE, and the web UI
 factory start <workflowId> --input <json> [--watch] [--url <base-url>]
+              [--agent claude|opencode] [--model <id>]
 factory runs                              # every run this project has recorded
 factory log <runId>                       # replay one run's full history
 ```
@@ -283,13 +306,14 @@ simply serves the API and the UI — nothing runs unless you ask for it.
 Factory is a proof of concept, and it is honest about what it is not:
 
 - **There is no sandbox isolation.** Agents run as your user, on your machine,
-  with your `gh` and `opencode` credentials, in a clone of your repository.
-  Point it at repositories and issues you trust.
+  with your `gh`, Claude and opencode credentials, in a clone of your
+  repository, and every permission they ask for is granted. Point it at
+  repositories and issues you trust.
 - **Workflow inputs reach the agent's prompt.** Anyone who can reach the daemon
   can start a run, so do not expose the port beyond your machine, and never
   interpolate an input straight into `ctx.exec`.
 - **It needs your machine's logins.** There is no credential injection yet:
-  `opencode` and `gh` must be authenticated on the host.
+  `gh` and the agents you use must be authenticated on the host.
 
 ---
 

@@ -2,7 +2,10 @@
 
 ## Status
 
-Proposed, 2026-10-02. Based on the spike in finding 13 (`docs/findings/13-acp-agents.md`),
+Accepted, 2026-10-02. Implemented by #63–#66 (PRs #69, #71, #72, #73) and validated live in #67
+(finding 14, `docs/findings/14-acp-live-leg.md`). The implementation amended §2, §3, §5 and §6.
+The changes are marked inline and listed under **Amendments** at the end. Proposed the same day,
+based on the spike in finding 13 (`docs/findings/13-acp-agents.md`),
 which ran a two-step workflow through the real runtime on both agents. The approach comes from
 the sibling project canvas, where it runs in production use (canvas findings 01, 04, 06, 12).
 
@@ -96,7 +99,8 @@ invalid `sonnet`.
 that default comes from the host's settings (finding 13 §1). For the same reason it is not
 enough to switch the host's settings off (§3): claude-agent-acp reads the user's model setting
 regardless. `DEFAULT_MODEL` is deleted. `factory init` writes `agent.default` and
-`agent.models`. An unresolvable model fails the run at start.
+`agent.models`. An unresolvable model fails the step at its start, before `AgentStepStarted` and
+before any agent process (amended: not the run at start, see Amendments).
 
 **A model the agent does not offer fails the step before the prompt is sent.** The error names
 the agent and lists some of the models it does offer (finding 13 §1). Model ids are passed
@@ -135,11 +139,13 @@ does not copy them into its config.
   `XDG_CONFIG_HOME` pointed at an empty directory works: the global plugins and the custom
   `omniroute` provider disappear, while the auth-based `opencode` and `opencode-go` providers
   remain. But the variable is inherited by every tool the agent runs, which would hide
-  `~/.config/gh` (gh's auth) and git's XDG config too. **The exact mechanism is left to the
-  implementation ticket**: an opencode-specific variable if one exists, otherwise a directory
-  that leaves those tools' configs in place.
+  `~/.config/gh` (gh's auth) and git's XDG config too. The implementation ticket chose the
+  mechanism (amended, see Amendments): `XDG_CONFIG_HOME` and `OPENCODE_TEST_HOME` point at empty,
+  factory-owned directories, and a factory plugin hands the host's `XDG_CONFIG_HOME` back to
+  every shell command.
 - **Both:** the agent's environment is scrubbed of the parent's `CLAUDE_*` / `CLAUDECODE`
-  variables. A daemon started from inside a Claude Code session otherwise passes its
+  variables, except the credential ones (`CLAUDE_CONFIG_DIR`, `CLAUDE_CODE_OAUTH_TOKEN`,
+  `CLAUDE_CODE_USE_BEDROCK`, `CLAUDE_CODE_USE_VERTEX`). A daemon started from inside a Claude Code session otherwise passes its
   effort, subagent model and session ids down to the agents it runs.
 
 ### 4. Headless permission is the client's answer
@@ -168,7 +174,8 @@ validated like the model. It is not added now.
 step):
 
 - `context: { used, size }` — the context in use and the window size, as the agent measured them;
-- `cost: { amount, currency }` — what the agent says the step cost.
+- `cost: { amount, currency }` — what the agent says the step cost: the latest cost any
+  `usage_update` of the step carried (amended, see Amendments).
 
 opencode reports `cost` as `0 USD` for a free model; it is recorded as reported.
 
@@ -192,7 +199,9 @@ one prompt. The process ends with the step.
 - **No session pool:** canvas keeps sessions open because people return to them; a step never
   does.
 - **Cancel:** sends ACP `session/cancel`, then kills the process after a 2 s grace and in
-  `finally`. Both agents settle the turn as `cancelled` in milliseconds.
+  `finally`. Both agents settle the turn as `cancelled` in milliseconds. Finding 14 confirms
+  this from the UI and on daemon shutdown. An agent killed from outside (`SIGKILL`) fails the
+  step with its exit code, but its in-flight tool processes keep running (#74).
 - **Port race:** gone (ADR 0007), since stdio needs no port.
 - **Sandbox:** the agent runs on the host in the tree, exactly as under `localProcessSandbox`.
   A future container sandbox wraps the command (`docker exec -i …`), which stdio makes simpler
@@ -215,18 +224,90 @@ An MCP `submit_output` tool would give schema-validated output from both agents 
   Old run logs stay readable, because chunks are opaque.
 - **Transcripts show coarser tool names**: ACP tool kinds (`read`, `edit`, `execute`) instead of
   opencode's own. The tool's title (`Edit math.ts`) is in the ACP update but does not reach
-  `TOOL_CALL_START`; the SPA may want to read it from the chunk's raw event.
-- **`agent-step.ts` gets simpler.** The abort-chain commentary and the teardown grace were about
-  `@tanstack/ai`'s chat engine sitting on an aborted opencode stream. `abortableIterable` stays
-  until the replay and fake adapters are checked against the simpler contract.
+  `TOOL_CALL_START`. The adapter forwards it in an `acp.tool-call` chunk (see Amendments).
+- **`agent-step.ts` gets simpler.** The abort-chain commentary went. `abortableIterable` and
+  the 1 s `AGENT_TEARDOWN_GRACE_MS` stay (#66). A generator's `return()` queues behind a pending
+  `next()`, which is generic to any adapter that waits on its agent.
 - **New dependencies:** `@agentclientprotocol/sdk`, `@agentclientprotocol/claude-agent-acp`
   (bundles the Claude Agent SDK) and `@tanstack/ai-acp`. `@tanstack/ai` moves to 0.64.
+  `@tanstack/ai-sandbox` stays, because `@tanstack/ai-acp` imports it at runtime.
 - **Claude runs need a Claude login (or API key) on the daemon's host**, and opencode runs need
   `opencode` on `PATH`. The daemon checks the configured agents at start and names what is
   missing, rather than failing the first step.
 - **AGENTS.md's model advice changes**: the preferred test model is `opencode/big-pickle`.
-- **Untested until the implementation:**
-  - an opencode ask outside the project (`external_directory`), now answered by the callback;
-  - an agent crashing mid-turn (the exit race is wired, never triggered);
-  - `RUN_ERROR` from an agent;
-  - whether Claude's `settingSources` also keeps the user's skills and `CLAUDE.md` out.
+- **Untested until the implementation**, now settled:
+  - an opencode ask outside the project (`external_directory`) is answered by the callback
+    (`allow_always`), and the step completes (finding 14);
+  - an agent crashing mid-turn fails the step with its exit code and stderr tail (finding 14).
+    Its tool processes outlive it (#74);
+  - an error from an agent: ACP agents report provider errors as a JSON-RPC error on
+    `session/prompt`, not as a stop reason. The step fails with the agent's message.
+    `translateAcpStream` emits `RUN_ERROR` only for `stopReason: "refusal"`, which no live
+    attempt provoked; the adapter's unit test covers it (finding 14);
+  - Claude's `settingSources` keeps the user's skills, plugins and `CLAUDE.md` out (finding 13,
+    addendum 2).
+
+## Amendments
+
+What the implementation (#63–#66) and the live leg (#67) changed or settled. The decisions above
+are edited only to point here.
+
+- **§2: the model is always set, even when it already looks current.** With host settings
+  ignored, claude-agent-acp reports the user's `model` setting (`haiku` on the spike's host) as
+  the session's current model. The Agent SDK actually runs its own default, a 1M-context model.
+  An adapter that skipped `set_config_option` on a match ran `haiku` steps on that default
+  (0.080 USD for 330 output tokens, and the model said it was Opus). The adapter now always
+  sends the model (#69, `61856f2`). Finding 13 §1's reading of Claude's `currentValue` is
+  corrected there.
+- **§2: an unresolvable model fails the step, not the run.** A per-call option can still supply
+  the model, so the run can't know at `RunStarted`. The failure comes before `AgentStepStarted`
+  and before any process is spawned. The error names the levels that could supply a model. There
+  is no built-in fallback for config-less paths (#40's acceptance asked for one): factory keeps no
+  model of its own. Without a config, the agent is the built-in `DEFAULT_AGENT` (`"opencode"`)
+  and every step must name its model.
+- **§2: the run level.** `factory start --agent/--model` and `POST /api/runs`'s
+  `agent: { agent?, model? }` are the run level, beside a schedule's `agent`. This repository's
+  own config defaults to `opencode`, so its runs stay on a free model. `factory init` writes
+  `claude`.
+- **§3: the opencode mechanism.** `OPENCODE_CONFIG_DIR` only adds a directory, so it hides
+  nothing. Three things together keep opencode off the host's settings:
+  - `XDG_CONFIG_HOME` points at an empty factory directory. This hides `~/.config/opencode`.
+  - A factory plugin (`acp-opencode-plugin.ts`, loaded through `OPENCODE_CONFIG_CONTENT`) uses
+    opencode's `shell.env` hook to restore the host's `XDG_CONFIG_HOME` for every shell command,
+    so `gh` and `git` keep their config.
+  - `OPENCODE_TEST_HOME` points at an empty directory. This hides opencode's home-level reads:
+    `~/.claude/skills`, `~/.agents/skills`, `~/.claude/CLAUDE.md` and `~/.opencode`.
+
+  `OPENCODE_TEST_HOME` is undocumented, a test hook by its name. If opencode drops it, the host's
+  skills come back into runs and nothing breaks. The host's `OPENCODE_CONFIG*` variables are
+  dropped. Evidence: finding 13, addendum 2.
+- **§3: residue that `settingSources` does not cover.** Claude Code snapshots the operator's
+  login shell into `$CLAUDE_CONFIG_DIR/shell-snapshots/` once per session, and sources the
+  snapshot before every shell command (`zsh -c source …/snapshot-zsh-*.sh …`). The snapshot holds
+  shell functions, aliases and options. The agent's shell therefore carries the operator's shell
+  setup, much as it carries their `PATH`. This is accepted. Hiding it would mean replacing
+  `CLAUDE_CONFIG_DIR`, which is where the login lives (finding 14).
+- **§4.** `prepareWorkspace` and `writeHeadlessPermissions` are gone (#66), as decided. Write-back's
+  stray-artifact cleanup (D16: `.tanstack-projected-*` and a top-level `data/`) went with them.
+  It deleted real changes under `data/`, and nothing writes those artifacts any more.
+  `WriteBackFinished.cleanedArtifacts` is optional.
+- **§5: cost is "latest reported".** Claude sends cost only on a turn's final `usage_update`. The
+  figure is cumulative per session, and a step is one session, so an update without a cost
+  keeps the earlier figure. A Claude step cancelled mid-turn usually records no cost. Claude's
+  mid-turn updates report a 1M window for `haiku`, and only the final one reports 200k. So a
+  step cancelled mid-turn records the 1M figure (finding 14). Factory records what the agent
+  says.
+- **§5 / Consequences: tool titles.** `translateAcpStream` keeps only a tool call's first title,
+  which on Claude is generic (`Edit`, `Terminal`). The adapter follows each titled
+  `tool_call` / `tool_call_update` with a `CUSTOM` `acp.tool-call` chunk
+  (`{ toolCallId, title, input? }`, no signal). The SPA labels transcript tool calls with it (#72).
+- **§6: ACP needs an absolute `cwd`.** The default workspace root (`.factory/workspaces`) is
+  relative, so the adapter resolves it (#69, `7f9e998`).
+- **§6: process cleanup.** Cancel, daemon shutdown and a `SIGTERM`ed `claude` binary leave no
+  process behind (finding 14). An agent `SIGKILL`ed from outside leaves its in-flight tool
+  processes running, because the adapter kills only the agent's own pid (#74). The daemon's 1 s
+  teardown wait is shorter than the adapter's 2 s kill timer. That matters only for an agent that
+  ignores `session/cancel` and stdin's close, and none did live.
+- **Replay corpus.** Re-recorded through the ACP adapter for both agents
+  (`scripts/record-corpus.ts`). The line format grows to `{step, chunk, signal?}`, so replay
+  knows no agent's event names (#66).

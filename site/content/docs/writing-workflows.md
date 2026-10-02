@@ -13,7 +13,7 @@ import { defineWorkflow, Schema } from "@frebreco/factory";
 export default defineWorkflow("my-workflow", {
   input: Schema.Struct({ topic: Schema.String }),
   output: Schema.Struct({ prUrl: Schema.NullOr(Schema.String) }),
-  agent: { model: "opencode-go/glm-5.3-flash" },
+  agent: { agent: "opencode", model: "opencode/big-pickle" },
 
   run: async (ctx, input) => {
     /* ... */
@@ -26,7 +26,7 @@ export default defineWorkflow("my-workflow", {
 | `id`     | The name you start it by — in the UI's picker and in `factory start <id>`            |
 | `input`  | A schema. It generates the UI's form and validates `--input` before the run starts   |
 | `output` | Optional. What `run` resolves to, recorded in the run's history                      |
-| `agent`  | Optional defaults for every agent step — mainly `model`                              |
+| `agent`  | Optional defaults for every agent step: `agent` and `model`                          |
 | `run`    | Your workflow: `async (ctx, input) => output`                                        |
 
 ## The `ctx` you get
@@ -54,6 +54,32 @@ const meta = await ctx.agent("pr-metadata", "Summarise the change as JSON.", {
 meta.output; // { title, body } | undefined
 meta.finalText; // the raw text, always
 ```
+
+## Choosing the agent and model
+
+A step runs on one of two coding agents, `claude` (Claude Code) or `opencode`, on a model that
+agent offers. You can name either at four levels, from most to least specific:
+
+1. the call: `ctx.agent("review", prompt, { agent: "claude", model: "opus" })`;
+2. the run: `factory start --agent/--model`, `agent` in `POST /api/runs`, or a schedule's `agent`;
+3. the workflow: `defineWorkflow`'s `agent` field;
+4. the config: `agent.default` and `agent.models` (see [Configuration](/docs/configuration)).
+
+The agent comes from the most specific level that names one. The model comes from the most specific
+level that names one, but only among the level that chose the agent and the levels above it in
+that list. If none of them names a model, the agent's entry in `agent.models` applies. So a
+model never carries over to a different agent. A workflow pinned to
+`{ agent: "claude", model: "sonnet" }` that calls `ctx.agent(name, prompt, { agent: "opencode" })`
+runs that step on opencode's configured model, not on `sonnet`.
+
+Model ids belong to the agent and are passed through verbatim: `sonnet`, `haiku`, `opus` or a full
+`claude-…` id for Claude, and `provider/model` for opencode (`opencode/big-pickle`). Factory always
+sends a model and keeps no default of its own. A step fails before the agent starts if no level
+names a model. It also fails before the prompt is sent if the agent doesn't offer the model, and
+the error lists some of the ids the agent does offer.
+
+Every permission the agent asks for is granted, including access to files outside the working
+tree. A run never waits on a question nobody is there to answer.
 
 ## Registering it
 

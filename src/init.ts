@@ -146,13 +146,21 @@ export default defineConfig({
   // The coding agent a step runs on ("claude" or "opencode") unless the
   // workflow, the run or the ctx.agent call names one, and the model each
   // agent runs on unless one of those names a model. Factory always sends a
-  // model; ids are the agent's own and passed verbatim.
+  // model; ids are the agent's own and passed verbatim ("haiku", "opus",
+  // "opencode/big-pickle", …). Claude needs a Claude login on this machine
+  // (log in with the \`claude\` CLI, or set ANTHROPIC_API_KEY); opencode needs
+  // \`opencode\` on PATH, logged in. \`factory serve\` names what is missing at start.
   agent: {
     default: "claude",
     models: {
       claude: "sonnet",
       opencode: "opencode/big-pickle",
     },
+    // Runs read this project's agent settings (CLAUDE.md, AGENTS.md,
+    // .claude/, opencode.json) but not yours from ~/.claude or
+    // ~/.config/opencode. Set an agent to "include" to give runs your own
+    // skills, plugins and providers. Logins are available either way.
+    // hostSettings: { claude: "ignore", opencode: "ignore" },
   },
 
   // How many runs may be in flight at once. A run over the limit is refused,
@@ -195,7 +203,9 @@ export default defineWorkflow("hello", {
 
   run: async (ctx, input) => {
     // 1. One agent step. \`ctx.dir\` is a working tree the runtime cloned for
-    //    this run alone — the agent is already in it.
+    //    this run alone — the agent is already in it. It runs on the config's
+    //    default agent and model; a third argument such as
+    //    \`{ agent: "opencode", model: "opencode/big-pickle" }\` picks others.
     await ctx.agent(
       "implement",
       \`You are working in a git checkout of this project.
