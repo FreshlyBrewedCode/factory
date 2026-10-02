@@ -30,7 +30,6 @@ describe("allocateWorkspace (D28)", () => {
 
     const dir = await allocateWorkspace({
       refreshGates: createRefreshGates(),
-
       runId: "run-a",
       workspaceRoot,
       sshUrl: seed,
@@ -56,7 +55,6 @@ describe("allocateWorkspace (D28)", () => {
 
     await allocateWorkspace({
       refreshGates: createRefreshGates(),
-
       runId: "run-one",
       workspaceRoot,
       sshUrl: seed,
@@ -70,7 +68,6 @@ describe("allocateWorkspace (D28)", () => {
 
     const dir = await allocateWorkspace({
       refreshGates: createRefreshGates(),
-
       runId: "run-two",
       workspaceRoot,
       sshUrl: seed,
@@ -90,7 +87,6 @@ describe("allocateWorkspace (D28)", () => {
     for (const runId of ["run-1", "run-2", "run-3"]) {
       await allocateWorkspace({
         refreshGates: createRefreshGates(),
-
         runId,
         workspaceRoot,
         sshUrl: seed,
@@ -144,7 +140,6 @@ describe("allocateWorkspace (D28)", () => {
 
     const dir = await allocateWorkspace({
       refreshGates: createRefreshGates(),
-
       runId: "run-a",
       workspaceRoot,
       sshUrl: seed,
@@ -173,7 +168,6 @@ describe("allocateWorkspace (D28)", () => {
 
     const dir = await allocateWorkspace({
       refreshGates: createRefreshGates(),
-
       runId: "run-a",
       workspaceRoot,
       sshUrl: remote,
@@ -219,7 +213,6 @@ describe("allocateWorkspace (D28)", () => {
 
     await allocateWorkspace({
       refreshGates: createRefreshGates(),
-
       runId: "run-1",
       workspaceRoot,
       sshUrl: seed,
@@ -229,7 +222,6 @@ describe("allocateWorkspace (D28)", () => {
     await Bun.sleep(5);
     await allocateWorkspace({
       refreshGates: createRefreshGates(),
-
       runId: "run-2",
       workspaceRoot,
       sshUrl: seed,
@@ -240,7 +232,6 @@ describe("allocateWorkspace (D28)", () => {
 
     await allocateWorkspace({
       refreshGates: createRefreshGates(),
-
       runId: "run-3",
       workspaceRoot,
       sshUrl: seed,
@@ -263,7 +254,6 @@ describe("allocateWorkspace (D28)", () => {
 
     await allocateWorkspace({
       refreshGates: createRefreshGates(),
-
       runId: "run-1",
       workspaceRoot,
       sshUrl: seed,
@@ -273,7 +263,6 @@ describe("allocateWorkspace (D28)", () => {
     await Bun.sleep(5);
     await allocateWorkspace({
       refreshGates: createRefreshGates(),
-
       runId: "run-2",
       workspaceRoot,
       sshUrl: seed,
@@ -284,7 +273,6 @@ describe("allocateWorkspace (D28)", () => {
 
     await allocateWorkspace({
       refreshGates: createRefreshGates(),
-
       runId: "run-3",
       workspaceRoot,
       sshUrl: seed,
@@ -308,7 +296,6 @@ describe("scratch workspaces (issue #13)", () => {
 
     const dir = await allocateWorkspace({
       refreshGates: createRefreshGates(),
-
       runId: "run-scratch",
       workspaceRoot,
       sshUrl: seed,
@@ -334,7 +321,6 @@ describe("scratch workspaces (issue #13)", () => {
     for (const runId of ["scratch-1", "scratch-2"]) {
       await allocateWorkspace({
         refreshGates: createRefreshGates(),
-
         runId,
         workspaceRoot,
         sshUrl: seed,
@@ -345,7 +331,6 @@ describe("scratch workspaces (issue #13)", () => {
     }
     await allocateWorkspace({
       refreshGates: createRefreshGates(),
-
       runId: "clone-1",
       workspaceRoot,
       sshUrl: seed,
@@ -401,7 +386,6 @@ describe("host exec injection (issue #13)", () => {
     const exit0: ExecResult = { command: "fake", exitCode: 0, stdout: "", stderr: "" };
     const dir = await allocateWorkspace({
       refreshGates: createRefreshGates(),
-
       runId: "run-fake",
       workspaceRoot: workspaceRoot2,
       sshUrl: seed,

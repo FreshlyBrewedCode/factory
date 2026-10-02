@@ -2,7 +2,8 @@
  * #38 acceptance criterion: two daemons can run in one process without
  * sharing run state. This test starts two daemons on different ports, starts
  * a run on each, and verifies that each daemon's registry, pubsub, and dedupe
- * state is independent.
+ * state is independent. Runs are held open on a gate so the cross-daemon
+ * checks happen while both are still live.
  */
 
 import { mkdtempSync, rmSync } from "node:fs";
@@ -14,12 +15,23 @@ import { defineWorkflow } from "../workflow";
 import { defineConfig } from "../config";
 import { createSlowFakeAdapter } from "../replay/adapter";
 import { startDaemon } from "./daemon";
-import { Effect, Fiber } from "effect";
+import { isTerminal, type RunEvent } from "../events";
+import type { DaemonHandle } from "./daemon";
+
+let releaseRuns: () => void = () => undefined;
+let runsGate = Promise.resolve();
+
+function closeGate(): void {
+  runsGate = new Promise<void>((resolve) => {
+    releaseRuns = resolve;
+  });
+}
 
 const scratchWorkflow = defineWorkflow("two-daemon-test", {
   input: Schema.Struct({ marker: Schema.String }),
   workspace: { kind: "scratch" },
   run: async (ctx, input) => {
+    await runsGate;
     await ctx.exec(["sh", "-c", "sleep 0.1"]);
     return { marker: input.marker };
   },
@@ -34,6 +46,29 @@ async function waitForTerminal(port: number, runId: string, timeoutMs = 10_000):
     await Bun.sleep(25);
   }
   throw new Error(`run ${runId} did not reach terminal state within ${timeoutMs}ms`);
+}
+
+/**
+ * Subscribes `runId` on both daemons' pubsubs: the owner's events land in
+ * `own`, anything the other daemon publishes for it lands in `foreign`.
+ */
+function watch(
+  owner: DaemonHandle,
+  other: DaemonHandle,
+  runId: string,
+): { readonly own: Array<RunEvent>; readonly foreign: Array<RunEvent>; readonly stop: () => void } {
+  const own: Array<RunEvent> = [];
+  const foreign: Array<RunEvent> = [];
+  const unsubOwn = owner.services.pubsub.subscribe(runId, (event) => own.push(event));
+  const unsubOther = other.services.pubsub.subscribe(runId, (event) => foreign.push(event));
+  return {
+    own,
+    foreign,
+    stop: () => {
+      unsubOwn();
+      unsubOther();
+    },
+  };
 }
 
 describe("two daemons in one process (#38)", () => {
@@ -84,6 +119,7 @@ describe("two daemons in one process (#38)", () => {
     });
 
     try {
+      closeGate();
       const port1 = daemon1.server.port;
       const port2 = daemon2.server.port;
       if (port1 === undefined || port2 === undefined) {
@@ -106,6 +142,12 @@ describe("two daemons in one process (#38)", () => {
 
       expect(runId1).not.toBe(runId2);
 
+      const watch1 = watch(daemon1, daemon2, runId1);
+      const watch2 = watch(daemon2, daemon1, runId2);
+
+      expect(daemon1.services.registry.activeRunIds()).toEqual([runId1]);
+      expect(daemon2.services.registry.activeRunIds()).toEqual([runId2]);
+
       const list1 = (await fetch(`http://localhost:${port1}/api/runs`).then((r) =>
         r.json(),
       )) as Array<{ runId: string }>;
@@ -122,19 +164,36 @@ describe("two daemons in one process (#38)", () => {
       const detail2FromDaemon1 = await fetch(`http://localhost:${port1}/api/runs/${runId2}`);
       expect(detail2FromDaemon1.status).toBe(404);
 
+      releaseRuns();
       await waitForTerminal(port1, runId1);
       await waitForTerminal(port2, runId2);
+
+      // Each run's live events reached its own daemon's pubsub, never the other's.
+      expect(watch1.own.some((event) => isTerminal(event.payload))).toBe(true);
+      expect(watch2.own.some((event) => isTerminal(event.payload))).toBe(true);
+      expect(watch1.own.every((event) => event.runId === runId1)).toBe(true);
+      expect(watch2.own.every((event) => event.runId === runId2)).toBe(true);
+      expect(watch1.foreign).toEqual([]);
+      expect(watch2.foreign).toEqual([]);
+      watch1.stop();
+      watch2.stop();
 
       expect(daemon1.services.registry.activeRunIds()).toEqual([]);
       expect(daemon2.services.registry.activeRunIds()).toEqual([]);
 
       const dedupeKey = "shared-key";
+      closeGate();
       const res3 = await fetch(`http://localhost:${port1}/api/runs`, {
         method: "POST",
         body: JSON.stringify({ workflowId: "two-daemon-test", input: { marker: "d1" }, dedupeKey }),
       });
       expect(res3.status).toBe(201);
       const { runId: runId3 } = (await res3.json()) as { runId: string };
+
+      // Daemon 1 still holds the key (run 3 is gated) when daemon 2 is asked
+      // for the same key — and daemon 2 knows nothing of it.
+      expect(daemon1.services.dedupeRegistry.holderOf(dedupeKey)).toBe(runId3);
+      expect(daemon2.services.dedupeRegistry.holderOf(dedupeKey)).toBeUndefined();
 
       const res4 = await fetch(`http://localhost:${port2}/api/runs`, {
         method: "POST",
@@ -144,18 +203,16 @@ describe("two daemons in one process (#38)", () => {
       const { runId: runId4 } = (await res4.json()) as { runId: string };
 
       expect(runId3).not.toBe(runId4);
+      expect(daemon1.services.dedupeRegistry.holderOf(dedupeKey)).toBe(runId3);
+      expect(daemon2.services.dedupeRegistry.holderOf(dedupeKey)).toBe(runId4);
 
+      releaseRuns();
       await waitForTerminal(port1, runId3);
       await waitForTerminal(port2, runId4);
     } finally {
-      if (daemon1.schedulerFiber !== undefined) {
-        Effect.runFork(Fiber.interrupt(daemon1.schedulerFiber));
-      }
-      if (daemon2.schedulerFiber !== undefined) {
-        Effect.runFork(Fiber.interrupt(daemon2.schedulerFiber));
-      }
-      daemon1.server.stop(true);
-      daemon2.server.stop(true);
+      releaseRuns();
+      await daemon1.stop();
+      await daemon2.stop();
       rmSync(root, { recursive: true, force: true });
     }
   });

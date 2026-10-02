@@ -76,13 +76,16 @@ interface Fixture {
   deps: () => SchedulerDeps;
   readonly fired: Array<string>;
   readonly registry: ReturnType<typeof createDedupeRegistry>;
+  /** Per-schedule injected fire failures. */
   readonly fireError: Map<string, unknown>;
+  /** The fixture's injectable clock. */
   readonly setTime: (t: number) => Promise<void>;
 }
 
 async function fixture(schedules: ReadonlyArray<RuntimeSchedule>): Promise<Fixture> {
   const registry = createDedupeRegistry();
   const fired: Array<string> = [];
+  // Per-schedule injected fire failures.
   const fireError: Map<string, unknown> = new Map();
 
   const { clock, setTime } = await createTestClock(0);
@@ -114,6 +117,7 @@ const DAY01_0400 = Date.parse("2026-01-01T04:00:00Z");
 describe("scheduler tick (issue #16)", () => {
   test("fires when its cron window fell between lastTick and now", async () => {
     const fx = await fixture([schedule()]);
+    // state created before the window (03:05), tick after it (04:00)
     await fx.setTime(DAY01_0259);
     const state = createSchedulerState(fx.deps());
 
@@ -140,6 +144,7 @@ describe("scheduler tick (issue #16)", () => {
     const fx = await fixture([schedule()]);
     await fx.setTime(DAY01_0259);
     const state = createSchedulerState(fx.deps());
+    // A previous run of this schedule is still going.
     fx.registry.claim("schedule:nightly", "run-previous");
 
     await fx.setTime(DAY01_0400);
@@ -171,12 +176,16 @@ describe("scheduler tick (issue #16)", () => {
     const results = await tickOnce(fx.deps(), state);
     expect(results).toEqual([{ scheduleId: "nightly", action: "skipped-concurrency" }]);
 
+    // lastTick advanced regardless: the missed window is not refired later.
     fx.fireError.delete("nightly");
     const again = await tickOnce(fx.deps(), state);
     expect(again).toEqual([{ scheduleId: "nightly", action: "skipped-not-due" }]);
   });
 
   test("windows missed while the daemon was down are not replayed", async () => {
+    // Every-minute cron, three windows pass between two ticks after the
+    // daemon "came up": one fire, not three — and the pre-start windows
+    // (12:00:00–12:00:30 before the state existed) never fire at all.
     const fx = await fixture([schedule({ cron: Cron.parseUnsafe("* * * * *", "UTC") })]);
     const start = Date.parse("2026-01-01T12:00:00Z");
     await fx.setTime(start);
@@ -200,6 +209,7 @@ describe("scheduler tick (issue #16)", () => {
 
     expect(fx.fired).toEqual(["nightly"]);
     expect(state.runOnStartPending).toEqual(new Set());
+    // Pending is consumed whether or not the fire succeeded.
     const after = await tickOnce(fx.deps(), state);
     expect(after.every((r) => r.action === "skipped-not-due")).toBe(true);
     expect(fx.fired).toEqual(["nightly"]);
