@@ -68,7 +68,12 @@ function readUsage(value: unknown): AgentStepUsage | undefined {
 export class AgentStepChunkError extends Schema.TaggedError<AgentStepChunkError>()(
   "AgentStepChunkError",
   { cause: Schema.Defect() },
-) {}
+) {
+  /** The adapter's own message, so a failed step's `error` leads with it. */
+  override get message(): string {
+    return this.cause instanceof Error ? this.cause.message : String(this.cause);
+  }
+}
 
 export interface AgentStepEffectOptions {
   readonly threadId: string;
@@ -236,6 +241,9 @@ export function buildAgentStepEffect(options: AgentStepEffectOptions): AgentStep
             break;
           case "runError":
             runError = yieldItem.signal.value;
+            break;
+          case "usage":
+            // No field yet: `AgentStepFinished.context` / `.cost` arrive with #65.
             break;
         }
       }
