@@ -54,6 +54,12 @@ step.
 - **The default comes from the host.** Claude started on `haiku` (the host's
   `~/.claude/settings.json`), opencode on `opencode/big-pickle`. So a workflow that sets no
   model runs on whatever the operator's machine says.
+
+  > **Correction (#71, see "Later corrections" below):** "started on `haiku`" is what
+  > claude-agent-acp *reports* as `currentValue`. With the user's settings switched off, the
+  > report still says `haiku`, but the Agent SDK runs its own default, a 1M-context model. A
+  > reported current model is not evidence of the running model. Only an explicit
+  > `set_config_option` pins it.
 - **opencode's ids are not the ones factory uses.** The first run asked for
   `opencode-go/big-pickle`, the id AGENTS.md recommends, and failed: under ACP the model is
   `opencode/big-pickle`. The adapter refuses an unoffered id, so this surfaced as
@@ -106,6 +112,8 @@ So #24's policy ("never ask, allow") moves into the `requestPermission` callback
 applies to every agent. `opencode.json` and `prepareWorkspace`'s only job go away. One
 untested case: an opencode ask for a path outside the project (`external_directory`) should
 now be answered by the callback, where it used to deadlock. The spike never triggered one.
+(Settled in finding 14: opencode asked, with title `/tmp/…/outside` and options
+`once / always / reject`. The callback chose `always`, and the write landed.)
 
 ### 5. Cancel is immediate and leaves no process behind
 
@@ -175,7 +183,8 @@ Both agents produced only AG-UI types the SPA already folds (`RUN_*`, `TEXT_MESS
 | opencode | default | `opencode/big-pickle` | 715 (providers `opencode-go`, `opencode`, `omniroute`) |
 | opencode | `XDG_CONFIG_HOME` → empty dir | `opencode/big-pickle` | 39 (`opencode-go`, `opencode`) |
 
-- **Claude's starting model ignores `settingSources`.** claude-agent-acp builds its own
+- **Claude's starting model ignores `settingSources`.** (Corrected below: this is the
+  *reported* model, which is not the one that runs.) claude-agent-acp builds its own
   `SettingsManager` (`dist/acp-agent.js`, `new SettingsManager(params.cwd, …)`) and takes the
   user's `model`, `permissions.defaultMode` and `availableModels` from it, whatever the SDK is
   told. `settingSources` still reaches the SDK (the adapter spreads the client's options over its
@@ -277,3 +286,31 @@ Claude not logged in. The second comes from the bundled CLI's `auth status --jso
 (`bun …/claude-agent-acp/dist/index.js --cli auth status --json`, ~0.25 s): logged out means no
 claude.ai login, no API key source and the first-party backend. On this host both pass. With
 `HOME` pointed at an empty dir and opencode off PATH, both are reported.
+
+## Later corrections (#69, #71, #72, #67; same day)
+
+Later layers proved parts of this finding wrong. The text above is left as measured. Where it
+was wrong:
+
+- **§1 and the first addendum: Claude's reported model is not its running model.** With
+  `hostSettings: "ignore"`, claude-agent-acp still reports the user's `model` setting (`haiku`)
+  as the model option's `currentValue`. The Agent SDK under it runs its own default. The first
+  production adapter trusted the report and skipped `set_config_option` when the requested model
+  matched it, so a `haiku` step ran on a 1M-context model. It cost 0.080 USD for 330 output tokens,
+  and the model called itself "Claude Opus 5.5". After the fix (always set the model, #69
+  `61856f2`), the same step reported a 200k window, cost 0.050 USD, and said "I'm Claude Haiku
+  4.5". §1's evidence that *setting* the model works (the `set_config_option` reply and
+  `usage_update._meta["_claude/model"]`) stands.
+- **§1: ACP's `cwd` must be absolute.** The spike always passed an absolute scratch path. The
+  daemon's default workspace root is relative, and claude-agent-acp rejects that (#69,
+  `7f9e998`).
+- **§2: Claude's window size changes mid-turn.** Claude's mid-turn `usage_update`s report
+  `size: 1000000` for `haiku`. Only the final one, which also carries the cost, reports `200000`
+  (#72). Cost arrives only on the final update, so a step cancelled mid-turn usually has none.
+- **§4: `external_directory`** was triggered and answered in finding 14.
+- **§7: tool titles.** On Claude, the title `translateAcpStream` keeps is the generic first one
+  (`Edit`, `Read File`, `Terminal`). The descriptive title and the real input arrive in later
+  `tool_call_update`s, and the adapter now forwards them as `acp.tool-call` chunks (#72).
+- **"What this does not settle"**: an agent crashing mid-turn and an error from an agent were run
+  live in finding 14. The crash is detected; its tool processes outlive it (#74). Provider
+  errors arrive as JSON-RPC errors rather than `RUN_ERROR`.
