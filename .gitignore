@@ -60,3 +60,4 @@ playwright-report/
 
 # tanstack sandbox projected state
 .tanstack-projected-*
+spikes/out/

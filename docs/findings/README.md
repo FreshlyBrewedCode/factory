@@ -79,3 +79,11 @@ Conclusions → [`adr/0006-raw-typescript-distribution.md`](../adr/0006-raw-type
 | [`12-ready-sweep-live-leg.md`](./12-ready-sweep-live-leg.md) | Issue #18: the Ready sweep as a scheduled wrapper workflow, proven against the real project board before the legacy dispatcher was deleted | Real board query + real at dispatch, per-issue `issue:1` dedupe key, `DispatchCollision` + a visible failed run on a second consecutive tick; the agent child's round trip itself was blocked by a provider-gateway opt-in wall out of session's control, and the leg surfaced a genuinely unresolvable cancel on a wedged stream (phase 6 candidate). |
 
 Conclusions → D43 ([`decisions.md`](../decisions.md)); ADR 0004 carries a supersession note.
+
+## Agent runtime — ACP
+
+| Document | Subtask | Headline finding |
+|---|---|---|
+| [`13-acp-agents.md`](./13-acp-agents.md) | Spike: one ACP adapter for opencode and Claude Code, through the real runtime | Both agents ran the hello-shaped workflow end to end with a workflow-chosen model, tier-1 structured output, permission answered client-side and a 2–3 ms clean cancel; model ids are per agent (opencode's big-pickle is `opencode/big-pickle`), and usage means "last message" on opencode but "whole turn" on Claude. |
+
+Conclusions → [`adr/0013-agents-over-acp.md`](../adr/0013-agents-over-acp.md) (proposed).
