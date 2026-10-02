@@ -351,6 +351,13 @@ export async function startTrackedRun(
     throw new Error(`run ${runId} is already active`);
   }
 
+  // D29 admission is decided before the dedupe claim, so a refused start
+  // throws having claimed nothing — otherwise its key would stay held by a
+  // run that never started (and a `"skip"` schedule would skip forever).
+  const limit = existing === undefined ? options.maxConcurrentRuns : undefined;
+  if (limit !== undefined && !admitRun(limit, registry.size)) {
+    throw ConcurrencyLimitError.of({ maxConcurrentRuns: limit });
+  }
   // Issue #15: claim the dedupe key synchronously — check-then-claim with no
   // `await` in between, the same atomicity the registry slot reservation has —
   // so two near-simultaneous starts on the same key cannot both slip past. A
@@ -358,12 +365,7 @@ export async function startTrackedRun(
   if (options.dedupeKey !== undefined && options.dedupeKeyClaimed !== true) {
     services.dedupeRegistry.claim(options.dedupeKey, runId);
   }
-  if (existing === undefined && options.maxConcurrentRuns !== undefined) {
-    if (!admitRun(options.maxConcurrentRuns, registry.size)) {
-      throw ConcurrencyLimitError.of({ maxConcurrentRuns: options.maxConcurrentRuns });
-    }
-    registry.reserve(runId);
-  }
+  if (limit !== undefined) registry.reserve(runId);
 
   try {
     // Issue #13: a scratch workspace takes its kind from the workflow and

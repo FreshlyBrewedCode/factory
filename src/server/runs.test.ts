@@ -211,6 +211,38 @@ describe("startTrackedRun admission (M1: the slot is reserved before any await)"
     finish();
   });
 
+  test("a start refused at the limit does not keep its dedupe key", async () => {
+    const { root, finish } = tmpRoot();
+    const db = openStore(join(root, "factory.db"));
+    const services = createTestServices();
+    const gate = makeGate();
+
+    const first = startTrackedRun(runtime, db, services, echoWorkflow, {
+      runId: "run-holding-slot",
+      workspace: await gatedWorkspace(root, services, gate),
+      input: {},
+      maxConcurrentRuns: 1,
+    });
+
+    // e.g. a scheduled fire with `overlap: "skip"` while the daemon is full.
+    const refused = startTrackedRun(runtime, db, services, echoWorkflow, {
+      runId: "run-refused",
+      dir: join(root, "refused-dir"),
+      input: {},
+      maxConcurrentRuns: 1,
+      dedupeKey: "schedule:nightly",
+    });
+    expect(await refused.catch((err: unknown) => err)).toBeInstanceOf(ConcurrencyLimitError);
+    expect(services.dedupeRegistry.holderOf("schedule:nightly")).toBeUndefined();
+
+    gate.release();
+    const firstRunId = await first;
+    await waitFor(() => !services.registry.isActive(firstRunId));
+
+    db.close();
+    finish();
+  });
+
   test("a failed allocation releases the reserved slot", async () => {
     const { root, finish } = tmpRoot();
     const db = openStore(join(root, "factory.db"));
