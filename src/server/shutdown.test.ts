@@ -321,4 +321,39 @@ describe("daemon shutdown cancels active runs (#38)", () => {
       rmSync(root, { recursive: true, force: true });
     }
   });
+
+  test("stop() is bounded even when an adapter never tears down", async () => {
+    const root = mkdtempSync(join(tmpdir(), "factory-shutdown-stuck-"));
+    const handle = await startDaemon({
+      dbPath: join(root, "factory.db"),
+      port: 0,
+      shutdownTimeoutMs: 200,
+      config: defineConfig({
+        agent: { adapter: waitingAdapter({ cooperative: false }) },
+        repo: {
+          sshUrl: join(root, "no-remote"),
+          identity: { name: "Factory", email: "factory@factory.test" },
+          baseBranch: "main",
+          slug: "acme/widgets",
+        },
+        workflows: [agentStep],
+        workspaceRoot: join(root, "workspaces"),
+        retainedWorkspaces: 10,
+      }),
+    });
+    try {
+      const res = await post(handle, { workflowId: "shutdown-agent-step", input: {} });
+      const { runId } = (await res.json()) as { runId: string };
+      await waitFor(() => tagsOf(join(root, "factory.db"), runId).includes("AgentChunk"));
+
+      const started = Date.now();
+      await handle.stop();
+      // 200ms shutdown budget + the bounded post-dispose settle wait.
+      expect(Date.now() - started).toBeLessThan(3_000);
+      expect(tagsOf(join(root, "factory.db"), runId).at(-1)).toBe("RunCancelled");
+    } finally {
+      await handle.stop();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
 });

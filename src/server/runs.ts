@@ -140,6 +140,13 @@ export interface RunRegistryShape {
    * are logged). Idempotent: every call returns the first call's promise.
    */
   shutdown(timeoutMs: number): Promise<void>;
+  /**
+   * After a timed-out `shutdown`: wait up to `timeoutMs` more for the runs it
+   * cancelled to settle — e.g. once disposing the runtime has interrupted
+   * what was still holding them — so their final `RunCancelled` lands before
+   * the process exits. Resolves at once when nothing is pending.
+   */
+  awaitCancelled(timeoutMs: number): Promise<void>;
   setHandle(runId: string, handle: RunHandle<unknown>): void;
   delete(runId: string): void;
   get(runId: string): RunHandle<unknown> | ReservedSlot | undefined;
@@ -225,6 +232,9 @@ export function createRunRegistry(): RunRegistryShape {
         }
       });
       return shutdownPromise;
+    },
+    async awaitCancelled(timeoutMs) {
+      await within(allSettled(), timeoutMs);
     },
     get(runId) {
       return active.get(runId);

@@ -23,7 +23,9 @@
  * registry down — refuse new starts, cancel every active run and reserved
  * slot, and wait (bounded) for them to persist `RunCancelled` and kill their
  * `ctx.exec` children; only then stop the HTTP server (so live SSE tails see
- * the cancellations) and dispose the runtime.
+ * the cancellations) and dispose the runtime; if the shutdown wait timed
+ * out, wait a further bounded moment for the cancelled runs to record their
+ * end, so the caller's `process.exit` does not cut off a `RunCancelled`.
  */
 
 import { mkdir } from "node:fs/promises";
@@ -79,6 +81,9 @@ export interface DaemonHandle {
    */
   readonly stop: () => Promise<void>;
 }
+
+/** After disposal, how long `stop()` still waits for cancelled runs to record their end. */
+const SETTLE_AFTER_DISPOSE_MS = 2_000;
 
 /** Issue #16: how often the scheduler's due window check runs. */
 export const DEFAULT_SCHEDULER_INTERVAL_MS = 30_000;
@@ -141,6 +146,10 @@ export async function startDaemon(options: DaemonOptions): Promise<DaemonHandle>
       await registry.shutdown(options.shutdownTimeoutMs ?? DEFAULT_SHUTDOWN_TIMEOUT_MS);
       await server.stop(true);
       await runtime.dispose();
+      // If shutdown timed out, disposing interrupted whatever still held the
+      // runs; give them a short, bounded moment to persist `RunCancelled`
+      // before the caller (`factory serve`) exits the process.
+      await registry.awaitCancelled(SETTLE_AFTER_DISPOSE_MS);
     })());
 
   return { server, schedulerFiber, runtime, stop };
