@@ -16,7 +16,7 @@
 
 import { mkdir } from "node:fs/promises";
 import { dirname } from "node:path";
-import { Effect, FileSystem, Layer, Path, Stdio, Terminal } from "effect";
+import { Cause, Effect, Exit, FileSystem, Layer, Option, Path, Stdio, Terminal } from "effect";
 import { ChildProcessSpawner } from "effect/unstable/process";
 import { CliError, Command } from "effect/unstable/cli";
 import type { RunEvent } from "./events";
@@ -246,10 +246,10 @@ export async function startCli(options: StartCliOptions): Promise<number> {
 // `Terminal.display`, and opencode is spawned elsewhere via `@tanstack/ai`,
 // not through `ChildProcessSpawner`. Revisit once a real platform adapter is
 // available, or before `--wizard` ships.
-const CliEnvLayer = Layer.mergeAll(
+export const CliEnvLayer = Layer.mergeAll(
   FileSystem.layerNoop({}),
   Path.layer,
-  Stdio.layerTest({ args: Effect.succeed(process.argv.slice(2)) }),
+  Stdio.layerTest({ args: Effect.succeed(normalizeArgv(process.argv.slice(2))) }),
   Layer.succeed(
     Terminal.Terminal,
     Terminal.make({
@@ -266,8 +266,47 @@ const CliEnvLayer = Layer.mergeAll(
   ),
 );
 
+/**
+ * `factory help [subcommand...]` is kept as an alias for `--help` (it was one
+ * before the move to `effect/unstable/cli`, which has no `help` subcommand):
+ * `help serve` becomes `serve --help`.
+ */
+export function normalizeArgv(argv: ReadonlyArray<string>): ReadonlyArray<string> {
+  return argv[0] === "help" ? [...argv.slice(1), "--help"] : argv;
+}
+
+/** `package.json` carries no version until semantic-release stamps one at publish. */
+async function readVersion(): Promise<string> {
+  try {
+    const pkg = (await Bun.file(new URL("../package.json", import.meta.url)).json()) as {
+      version?: unknown;
+    };
+    return typeof pkg.version === "string" ? pkg.version : "0.0.0-dev";
+  } catch {
+    return "0.0.0-dev";
+  }
+}
+
+/**
+ * Map a failed CLI exit to stderr output. `Command.run` already renders its
+ * own `CliError`s (help, parse errors, `UserError`), so those print nothing
+ * more here; anything else — a handler's rejected promise surfaced as a
+ * defect, a bad `--config`, an unopenable `--db` — would otherwise vanish
+ * behind a bare exit 1, so print the underlying error (with its stack).
+ * Returns the exit code, or `undefined` when only help was shown.
+ */
+export function reportCliFailure(cause: Cause.Cause<unknown>): number | undefined {
+  const error = Cause.findErrorOption(cause);
+  if (Option.isSome(error) && CliError.isCliError(error.value)) {
+    const helpOnly = error.value._tag === "ShowHelp" && error.value.errors.length === 0;
+    return helpOnly ? undefined : 1;
+  }
+  console.error(Cause.squash(cause));
+  return 1;
+}
+
 if (import.meta.main) {
-  const program = Command.run(factoryCommand, { version: "0.0.0" }).pipe(
+  const program = Command.run(factoryCommand, { version: await readVersion() }).pipe(
     Effect.provide(CliEnvLayer),
   );
   // `Command.run` fails with `CliError.ShowHelp` both for genuine parse errors
@@ -275,7 +314,8 @@ if (import.meta.main) {
   // command definition either way). `ShowHelp.errors` distinguishes them: a
   // non-empty array is a real parse/validation failure (exit 1), an empty
   // array means help was all that happened (exit 0) — matching this error's
-  // own documented exit-code mapping.
+  // own documented exit-code mapping. `reportCliFailure` makes that call and
+  // prints every non-`CliError` failure, which `Command.run` does not render.
   //
   // We check that by hand instead of delegating to `Runtime.defaultTeardown`
   // (the library's usual `makeRunMain`-style teardown): that helper calls
@@ -286,9 +326,9 @@ if (import.meta.main) {
   // successful run falls through to whatever keeps (or doesn't keep) the
   // process alive on its own, same as before this file started handling
   // `ShowHelp` specially.
-  Effect.runPromise(program).catch((error: unknown) => {
-    const isHelpOnly =
-      CliError.isCliError(error) && error._tag === "ShowHelp" && error.errors.length === 0;
-    if (!isHelpOnly) process.exit(1);
+  void Effect.runPromiseExit(program).then((exit) => {
+    if (Exit.isSuccess(exit)) return;
+    const exitCode = reportCliFailure(exit.cause);
+    if (exitCode !== undefined) process.exit(exitCode);
   });
 }
