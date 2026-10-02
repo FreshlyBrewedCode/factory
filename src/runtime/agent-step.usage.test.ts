@@ -1,15 +1,10 @@
 /**
- * Token accounting for an agent step, against the committed corpus.
+ * Token accounting for an agent step, against the committed corpora.
  *
- * These pin the one thing we can fix locally about `@tanstack/ai-opencode`'s
- * usage reporting: its `RUN_FINISHED.usage.totalTokens` is `input + output` and
- * omits the cached prefix, which in a coding session is ~99% of the context.
- * We ignore that field and re-derive the total from the components, which are
- * individually correct — so these tests keep passing if upstream fixes the sum.
- *
- * What they do NOT cover is the other half of the upstream bug: only the final
- * assistant message of the step is represented at all. See
- * `AgentStepFinished.usage`.
+ * `usage` is `RUN_FINISHED.usage` split into its four components; AG-UI's own
+ * `totalTokens` is ignored (see `readUsage`). The ACP corpus is how steps
+ * record today. The legacy opencode corpus stays for `agentStepContextTokens`,
+ * the context fallback for logs written before ADR 0013 §5's `context`.
  */
 
 import { describe, expect, test } from "bun:test";
@@ -20,7 +15,11 @@ import { AgentRuntimeLayer } from "./agent-runtime";
 import { fakeAgents, loadCorpusBlocks } from "../replay/adapter";
 import { buildAgentStepEffect } from "./agent-step";
 
-const CORPUS = "test/corpus/run-1789308170212.ndjson";
+const ACP_CORPUS = "test/corpus/acp-claude-implement-issue.ndjson";
+/** Recorded by the opencode adapter before ADR 0013. */
+const LEGACY_CORPUS = "test/corpus/run-1789308170212.ndjson";
+
+const block = (path: string, step: string) => loadCorpusBlocks(path).find((b) => b.step === step)!;
 
 async function runBlock(chunks: ReadonlyArray<unknown>) {
   return await runYields(chunks.map((chunk) => ({ chunk })));
@@ -28,7 +27,6 @@ async function runBlock(chunks: ReadonlyArray<unknown>) {
 
 async function runYields(yields: ReadonlyArray<AgentAdapterYield>) {
   const adapter: AgentAdapter = {
-    async prepareWorkspace(_dir: string): Promise<void> {},
     async *stream(): AsyncGenerator<AgentAdapterYield> {
       yield* yields;
     },
@@ -48,13 +46,22 @@ async function runYields(yields: ReadonlyArray<AgentAdapterYield>) {
 
 describe("agent step usage", () => {
   test("splits RUN_FINISHED.usage into its four components", async () => {
-    const blocks = loadCorpusBlocks(CORPUS);
-    const fix = blocks.find((b) => b.step === "fix");
-    expect(fix).toBeDefined();
-
-    const outcome = await runBlock(fix!.chunks);
+    const outcome = await runYields(block(ACP_CORPUS, "fix").yields);
 
     // The recorded chunk is
+    // {promptTokens:18, completionTokens:1580, totalTokens:43492,
+    //  promptTokensDetails:{cachedTokens:36982}}
+    expect(outcome.usage).toEqual({
+      inputTokens: 18,
+      outputTokens: 1580,
+      cachedInputTokens: 36982,
+      reasoningTokens: 0,
+    });
+  });
+
+  test("a legacy opencode step's reasoning tokens are read too", async () => {
+    const outcome = await runBlock(block(LEGACY_CORPUS, "fix").chunks);
+
     // {promptTokens:260, completionTokens:288, totalTokens:548,
     //  promptTokensDetails:{cachedTokens:14208},
     //  completionTokensDetails:{reasoningTokens:927}}
@@ -66,11 +73,10 @@ describe("agent step usage", () => {
     });
   });
 
-  test("context total counts the cached prefix the adapter's own total drops", async () => {
-    const blocks = loadCorpusBlocks(CORPUS);
-    const outcome = await runBlock(blocks.find((b) => b.step === "fix")!.chunks);
+  test("the legacy context total counts the cached prefix opencode's own total dropped", async () => {
+    const outcome = await runBlock(block(LEGACY_CORPUS, "fix").chunks);
 
-    // Upstream would say 548. The cached prefix is 26x that on its own.
+    // opencode said 548. The cached prefix is 26x that on its own.
     expect(agentStepContextTokens(outcome.usage!)).toBe(260 + 288 + 14208);
     expect(agentStepContextTokens(outcome.usage!)).toBe(14756);
   });
@@ -78,25 +84,10 @@ describe("agent step usage", () => {
   test("reasoning tokens are not folded into the context total", async () => {
     // 0a-2/finding #1: reasoning is not a subset of completion tokens, so it is
     // carried alongside for cost work and deliberately left out of the sum.
-    const blocks = loadCorpusBlocks(CORPUS);
-    const outcome = await runBlock(blocks.find((b) => b.step === "fix")!.chunks);
+    const outcome = await runBlock(block(LEGACY_CORPUS, "fix").chunks);
 
     expect(outcome.usage!.reasoningTokens).toBe(927);
     expect(agentStepContextTokens(outcome.usage!)).toBe(14756);
-  });
-
-  test("absent detail blocks read as zero, not NaN", async () => {
-    const blocks = loadCorpusBlocks(CORPUS);
-    // `implement` has cachedTokens but no completionTokensDetails.
-    const outcome = await runBlock(blocks.find((b) => b.step === "implement")!.chunks);
-
-    expect(outcome.usage).toEqual({
-      inputTokens: 259,
-      outputTokens: 33,
-      cachedInputTokens: 11904,
-      reasoningTokens: 0,
-    });
-    expect(agentStepContextTokens(outcome.usage!)).toBe(12196);
   });
 
   test("a step with no RUN_FINISHED reports no usage at all", async () => {
@@ -149,9 +140,14 @@ describe("agent step context and cost (ADR 0013 §5)", () => {
     expect(outcome.cost).toEqual({ amount: 0, currency: "USD" });
   });
 
-  test("a step whose agent never reports usage has neither", async () => {
-    const blocks = loadCorpusBlocks(CORPUS);
-    const outcome = await runBlock(blocks.find((b) => b.step === "fix")!.chunks);
+  test("a recorded ACP step keeps its last context and cost", async () => {
+    const outcome = await runYields(block(ACP_CORPUS, "implement").yields);
+    expect(outcome.context).toEqual({ used: 23_879, size: 200_000 });
+    expect(outcome.cost).toEqual({ amount: 0.05517899999999999, currency: "USD" });
+  });
+
+  test("a legacy step, whose agent never reported usage, has neither", async () => {
+    const outcome = await runBlock(block(LEGACY_CORPUS, "fix").chunks);
     expect(outcome.context).toBeUndefined();
     expect(outcome.cost).toBeUndefined();
   });

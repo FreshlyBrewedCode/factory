@@ -65,13 +65,6 @@ export interface StartRunOptions {
    */
   readonly workspaceKind?: WorkspaceKind;
   /**
-   * ADR 0012 §3 (#37): when true, the runtime calls `adapter.prepareWorkspace`
-   * before the workflow runs. The caller sets this when it allocated a clone
-   * workspace (daemon's `allocateWorkspace` or legacy `resetClone`). Absent,
-   * no preparation happens (explicit caller-managed dirs, scratch).
-   */
-  readonly prepareWorkspace?: boolean;
-  /**
    * The context service behind `ctx.dispatch` (issue #14). Absent, the ctx
    * member is still present but throws — in-process execution is legacy and
    * cannot start nested runs.
@@ -122,12 +115,11 @@ export interface RunHandle<O> {
 
 /**
  * How long a run's `settled` waits for one abandoned agent step's adapter
- * teardown. Bounded because that teardown is third-party code that need not
- * finish: measured live, `@tanstack/ai`'s chat engine can sit on an aborted
- * opencode stream indefinitely, even though the abort itself already killed
- * the opencode process (the local-process sandbox kills the process group on
- * the spawn's abort signal). The grace covers a cooperative adapter's
- * cleanup without letting an uncooperative one hold shutdown to its budget.
+ * teardown. Bounded because an adapter need not finish: the shutdown tests
+ * use one that never does. The ACP adapter's teardown is the agent's
+ * `session/cancel` settling and the process kill, measured at 13–70 ms
+ * (finding 13 §5); an agent that ignores the cancel is killed by the adapter
+ * after its own 2 s grace, which `settled` does not wait out.
  */
 export const AGENT_TEARDOWN_GRACE_MS = 1_000;
 
@@ -411,7 +403,6 @@ export function startRun<I, O>(
         _tag: "WriteBackFinished",
         branch: opts.branch,
         outcome: "failed",
-        cleanedArtifacts: [],
         stagedPaths: [],
         error: message,
       });
@@ -425,7 +416,6 @@ export function startRun<I, O>(
         _tag: "WriteBackFinished",
         branch: opts.branch,
         outcome: "failed",
-        cleanedArtifacts: [],
         stagedPaths: [],
         error: message,
       });
@@ -456,7 +446,6 @@ export function startRun<I, O>(
         branch: opts.branch,
         ...(result.collided ? { usedBranch: result.branch } : {}),
         outcome,
-        cleanedArtifacts: [...result.cleanedArtifacts],
         stagedPaths: [...result.stagedPaths],
         ...(result.prUrl !== null ? { prUrl: result.prUrl } : {}),
         ...(outcome === "failed" ? { error: failureDetail } : {}),
@@ -470,7 +459,6 @@ export function startRun<I, O>(
         _tag: "WriteBackFinished",
         branch: opts.branch,
         outcome: "failed",
-        cleanedArtifacts: [],
         stagedPaths: [],
         error: message,
       });
@@ -552,10 +540,11 @@ export function startRun<I, O>(
     });
 
     try {
-      if (options.prepareWorkspace === true) {
-        const { adapter } = await runtime.runPromise(Effect.service(AgentRuntime));
-        await adapter.prepareWorkspace(options.dir);
-      }
+      // Yield once, so a cancel issued as the run starts — the daemon's
+      // deferred cancel of a run that was still a reserved slot, sent right
+      // after `startRun` returns — ends it before the workflow's first step.
+      await Promise.resolve();
+      if (cancelled) throw RunCancelledSignal.of();
 
       const output = await workflow.run(ctx, decodedInput);
 

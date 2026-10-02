@@ -1,39 +1,31 @@
 /**
  * Runs one fresh-session agent turn as an interruptible Effect, streaming
- * through an `AgentAdapter` (live opencode or corpus replay — same code path
- * either way). Adapted from `src/spike/lib/effect-agent-step.ts` (ADR 0001
- * §5, D17): the boundary wiring is unchanged, only the chunk source and the
- * bookkeeping surface (now `ctx.agent`'s granular result, ADR 0002 §2) moved.
+ * through an `AgentAdapter` (the ACP runtime, or corpus replay and fakes in
+ * tests — same code path either way). Adapted from the spike's
+ * `effect-agent-step.ts` (ADR 0001 §5, D17); the bookkeeping surface is
+ * `ctx.agent`'s granular result (ADR 0002 §2).
  *
  * ADR 0012 §2: the runtime consumes `AgentSignal`s from the adapter and never
- * string-matches vendor event names. AG-UI standard types (`TEXT_MESSAGE_*`)
- * are still interpreted here for `finalText` accumulation — these are part
- * of the open AG-UI protocol, not vendor-specific.
+ * string-matches vendor event names. AG-UI standard types (`TEXT_MESSAGE_*`,
+ * `RUN_FINISHED`) are still read here for `finalText` and `usage` — they are
+ * the open protocol, not an agent's.
  *
- * WHY THE EXPLICIT `abortController.abort()` IS NEEDED (0a-1/0a-2 findings):
- * closing the IO stream does not terminate the opencode process; only an
- * explicit abort does, and even that is indirect — `abort()` fires the
- * adapter's `onAbort` listener, which calls the HTTP `session.abort()`, which
- * settles the in-flight `session.prompt()`, which ends the adapter's internal
- * loop, whose `finally` block finally kills the process. D17 keeps this
- * wiring even though `Stream.fromAsyncIterable`'s implicit `.return()` on
- * scope closure was sufficient in the tested case — cheap, never harmful,
- * covers the untested non-cooperative-abort case.
+ * CANCEL: the step's `AbortController` is the adapter's only cancel signal.
+ * The ACP adapter answers it with ACP `session/cancel`, and kills the agent
+ * after a grace and in its `finally` (ADR 0013 §6); both agents settle the
+ * turn as `cancelled` in milliseconds (finding 13 §5).
  *
- * WHY THE ADAPTER STREAM IS WRAPPED (`abortableIterable`, #38 shutdown): the
- * implicit `.return()` above is a scope finalizer, and an async generator's
- * `return()` queues behind its pending `next()`. Interrupting a step that was
- * waiting on the model therefore blocked until opencode's *next* chunk — and
- * the `onInterrupt` abort, which runs after that finalizer, never got the
- * chance to hurry it along. A cancel took tens of seconds, and a shutdown
- * outlived its budget. The wrapper makes the stream end the moment the step
- * is abandoned: `next()` races the abort signal, and `return()` aborts first
- * (an early `return()` *is* the consumer giving up), fires the adapter's own
- * `return()` without awaiting it, and resolves at once. The adapter's
- * teardown still runs, in the background, and `AgentStepHandle.teardown`
- * lets the caller wait for it. (For opencode the process itself dies on the
- * abort: the local-process sandbox kills its process group on the spawn's
- * abort signal, independently of the generator's `finally`.)
+ * WHY THE ADAPTER STREAM IS WRAPPED (`abortableIterable`, #38): interrupting
+ * the step closes the stream with the async generator's `return()`, and
+ * `return()` queues behind a pending `next()`. An adapter waiting on its
+ * agent — the ACP adapter waiting for the next session update — would hold
+ * the interrupt until the agent's next update, and the abort that would end
+ * that wait fires only after the stream is closed. The wrapper ends the
+ * stream the moment the step is abandoned: `next()` races the abort signal,
+ * and `return()` aborts first, starts the adapter's own `return()` without
+ * awaiting it, and resolves at once. The adapter's teardown (for ACP, the
+ * process kill) runs in the background; `AgentStepHandle.teardown` lets the
+ * caller wait for it.
  */
 
 import { Effect, Schema, Stream } from "effect";
@@ -45,9 +37,9 @@ import { AgentRuntime } from "./agent-runtime";
 /**
  * Pull the four token counts out of a `RUN_FINISHED.usage` object.
  *
- * `usage.totalTokens` is deliberately ignored: the opencode adapter computes it
- * as `input + output`, omitting the cached prefix that dominates a coding
- * session. See `AgentStepFinished.usage` for the full account.
+ * `usage.totalTokens` is deliberately ignored: AG-UI's total is `input +
+ * output` and omits the cached prefix, which dominates a coding session. See
+ * `AgentStepFinished.usage` for the full account.
  */
 function readUsage(value: unknown): AgentStepUsage | undefined {
   if (typeof value !== "object" || value === null) return undefined;
@@ -126,7 +118,7 @@ export interface AgentStepHandle {
   readonly partial: AgentStepPartial;
   /**
    * Settles once the adapter has torn its stream down after the step was
-   * abandoned (e.g. the opencode process is gone) — at once when it never
+   * abandoned (for ACP, the agent process is gone) — at once when it never
    * was. The step itself does not wait for this; shutdown does.
    */
   readonly teardown: () => Promise<void>;

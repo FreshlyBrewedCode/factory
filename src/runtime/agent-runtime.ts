@@ -68,8 +68,6 @@ export function acpAgentsAdapter(
     return adapter;
   };
   return {
-    // Permission is answered by the client; there is nothing to prepare.
-    async prepareWorkspace(): Promise<void> {},
     stream: (options: AgentAdapterOptions) => adapterFor(options.agent).stream(options),
   };
 }

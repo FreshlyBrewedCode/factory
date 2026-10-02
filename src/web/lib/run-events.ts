@@ -109,6 +109,7 @@ export interface AssertStepView extends StepBase {
 export interface WriteBackStepView extends StepBase {
   readonly kind: "writeback";
   readonly branch: string;
+  /** Only in logs written before ADR 0013; see `WriteBackFinished`. */
   readonly cleanedArtifacts: ReadonlyArray<string>;
   readonly stagedPaths: ReadonlyArray<string>;
   readonly prUrl: string | undefined;
@@ -356,7 +357,7 @@ export function deriveSteps(
               ? `pr #${payload.prUrl.split("/").pop() ?? ""}`
               : (payload.error ?? "no pr"),
           branch: usedBranch,
-          cleanedArtifacts: payload.cleanedArtifacts,
+          cleanedArtifacts: payload.cleanedArtifacts ?? [],
           stagedPaths: payload.stagedPaths,
           prUrl: payload.prUrl,
           error: payload.error,

@@ -129,7 +129,6 @@ describe("startRun cancellation", () => {
     });
     let call = 0;
     const adapter: AgentAdapter = {
-      async prepareWorkspace() {},
       async *stream() {
         call += 1;
         if (call === 1) {
@@ -399,7 +398,6 @@ describe("startRun agent and model (ADR 0013 §2)", () => {
     const inner = createSlowFakeAdapter(SLOW_CHUNKS, 1);
     return {
       calls,
-      prepareWorkspace: inner.prepareWorkspace,
       stream: (options) => {
         calls.push({ agent: options.agent, model: options.model });
         return inner.stream(options);
@@ -498,55 +496,5 @@ describe("startRun agent and model (ADR 0013 §2)", () => {
     );
     expect(startedSteps(events)).toEqual([]);
     expect(adapter.calls).toEqual([]);
-  });
-});
-
-describe("startRun prepareWorkspace (ADR 0012 §3, #37)", () => {
-  function trackingAdapter(): AgentAdapter & { readonly prepared: Array<string> } {
-    const prepared: Array<string> = [];
-    const inner = createSlowFakeAdapter([]);
-    return {
-      prepared,
-      async prepareWorkspace(dir: string): Promise<void> {
-        prepared.push(dir);
-      },
-      stream: inner.stream.bind(inner),
-    };
-  }
-
-  test("calls adapter.prepareWorkspace when prepareWorkspace is true", async () => {
-    const events: Array<RunEvent> = [];
-    const adapter = trackingAdapter();
-    const workflow = defineWorkflow("prep-clone", {
-      input: Schema.Struct({}),
-      run: async () => ({}),
-    });
-
-    await startRun(workflow, makeAgentRuntime(fakeAgents(adapter)), {
-      runId: "run-prep-clone",
-      dir: "/tmp/clone-dir",
-      input: {},
-      prepareWorkspace: true,
-      onEvent: (event) => events.push(event),
-    }).result;
-
-    expect(adapter.prepared).toEqual(["/tmp/clone-dir"]);
-  });
-
-  test("does not call adapter.prepareWorkspace when prepareWorkspace is absent", async () => {
-    const adapter = trackingAdapter();
-    const workflow = defineWorkflow("prep-scratch", {
-      input: Schema.Struct({}),
-      run: async () => ({}),
-    });
-
-    await startRun(workflow, makeAgentRuntime(fakeAgents(adapter)), {
-      runId: "run-prep-scratch",
-      dir: "/tmp/scratch-dir",
-      input: {},
-      onEvent: () => {},
-    }).result;
-
-    expect(adapter.prepared).toEqual([]);
   });
 });

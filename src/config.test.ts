@@ -308,7 +308,7 @@ describe("defineConfig agent (ADR 0013 §2, §3)", () => {
   });
 
   test("keeps an injected adapter", () => {
-    const adapter = { prepareWorkspace: async () => {}, stream: () => [] as never };
+    const adapter = { stream: () => [] as never };
     expect(withAgent({ adapter }).agent.adapter).toBe(adapter);
   });
 

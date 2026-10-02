@@ -210,7 +210,7 @@ export const RunEventPayload = Schema.TaggedUnion({
     finalText: Schema.String,
     /** Present only when tier 1 or tier 2 extraction produced an object. */
     output: Schema.optional(Schema.Json),
-    /** From the `opencode.session-id` CUSTOM chunk. Fresh per step (D10). */
+    /** The agent's session id, from the adapter's `sessionId` signal (ACP: `session/new`). Fresh per step (D10). */
     sessionId: Schema.optional(Schema.String),
     /**
      * Token counts from the step's `RUN_FINISHED.usage` chunk, **as the agent
@@ -319,10 +319,10 @@ export const RunEventPayload = Schema.TaggedUnion({
   /**
    * The summary. Individual git/gh commands appear as `ExecFinished` events.
    *
-   * `cleanedArtifacts` is the D16 workaround's output — the
-   * `.tanstack-projected-*` marker files a `defineWorkspace` config strews into
-   * the tree. It is surfaced rather than hidden so that the day upstream fixes
-   * the bug, the events go empty and the workaround can be deleted on evidence.
+   * `cleanedArtifacts` is only in logs written before ADR 0013: the D16
+   * workaround's output, the `.tanstack-projected-*` marker files the
+   * opencode adapter's sandbox strewed into the tree. The ACP runtime runs no
+   * sandbox, so the workaround and the field went with it.
    */
   WriteBackFinished: {
     branch: Schema.String,
@@ -332,7 +332,7 @@ export const RunEventPayload = Schema.TaggedUnion({
      */
     usedBranch: Schema.optional(Schema.String),
     outcome: Outcome,
-    cleanedArtifacts: Schema.Array(Schema.String),
+    cleanedArtifacts: Schema.optional(Schema.Array(Schema.String)),
     stagedPaths: Schema.Array(Schema.String),
     prUrl: Schema.optional(Schema.String),
     error: Schema.optional(Schema.String),

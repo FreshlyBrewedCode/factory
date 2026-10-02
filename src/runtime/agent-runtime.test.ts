@@ -10,7 +10,6 @@ import type { RunEvent } from "../events";
 import { fakeAgents, createSlowFakeAdapter } from "../replay/adapter";
 import { defineWorkflow, Schema } from "../workflow";
 import type { AcpAgentDefinition, AcpAgentKind, AcpAgentOptions } from "./acp-agents";
-import { opencodeAdapter } from "./opencode-adapter";
 import {
   acpAgentsAdapter,
   AgentRuntime,
@@ -25,7 +24,7 @@ describe("AgentRuntime service", () => {
   test("without an adapter, the layer provides the ACP runtime and the bare defaults", async () => {
     const runtime = ManagedRuntime.make(AgentRuntimeLayer());
     const { adapter, defaults } = await runtime.runPromise(AgentRuntime);
-    expect(adapter).not.toBe(opencodeAdapter);
+    expect(typeof adapter.stream).toBe("function");
     expect(defaults).toEqual({ default: "opencode", models: {} });
     await runtime.dispose();
   });
