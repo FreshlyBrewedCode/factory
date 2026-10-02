@@ -273,9 +273,6 @@ export function acpAdapter(
   const name = definition.agent;
 
   return {
-    // Permission is answered by the client (`headlessAllow`); nothing to write.
-    async prepareWorkspace(): Promise<void> {},
-
     async *stream(options: AgentAdapterOptions): AsyncIterable<AgentAdapterYield> {
       if (options.model.trim() === "")
         throw new AcpAgentError(`${name}: no model given; factory always sends one`);

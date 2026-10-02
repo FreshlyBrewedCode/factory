@@ -41,8 +41,9 @@ playwright-report/
 *.ndjson
 
 # ...except the recorded corpora promoted to committed test fixtures. D3's
-# event type is designed against these (ADR 0003) and phase 1's corpus-replay
-# adapter reads them, so they have to survive a fresh checkout. 128K total.
+# event type is designed against the opencode ones (ADR 0003), and the
+# corpus-replay adapter reads the ACP ones (`scripts/record-corpus.ts`), so
+# they have to survive a fresh checkout.
 !test/corpus/*.ndjson
 
 # playwright-cli session snapshots
@@ -58,6 +59,4 @@ playwright-report/
 # per-machine Tailscale cert for the Vite dev server (`tailscale cert`)
 .certs/
 
-# tanstack sandbox projected state
-.tanstack-projected-*
 spikes/out/

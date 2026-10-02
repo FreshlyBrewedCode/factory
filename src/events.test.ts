@@ -6,7 +6,10 @@
  *
  * Fixtures live in `test/corpus/` — promoted out of the gitignored
  * `.factory/runs/` so they survive a fresh checkout. See
- * `docs/findings/1-event-type-corpus-analysis.md`.
+ * `docs/findings/1-event-type-corpus-analysis.md`. The nine opencode-adapter
+ * corpora are the evidence D3 was designed against, and stay for it; the
+ * `acp-*` ones are the ACP adapter's (ADR 0013), with a `signal` beside each
+ * chunk that matters.
  */
 
 import { describe, expect, test } from "bun:test";
@@ -40,16 +43,22 @@ function readCorpus(file: string): ReadonlyArray<CorpusLine> {
     );
 }
 
-const CORPUS_FILES = readdirSync(CORPUS_DIR).filter((f) => f.endsWith(".ndjson"));
+const ALL_CORPUS_FILES = readdirSync(CORPUS_DIR).filter((f) => f.endsWith(".ndjson"));
+/** Recorded by the opencode adapter, before ADR 0013. */
+const CORPUS_FILES = ALL_CORPUS_FILES.filter((f) => !f.startsWith("acp-"));
 
 describe("corpus fixtures", () => {
-  test("all nine recorded corpora are present", () => {
+  test("all nine opencode corpora and both ACP ones are present", () => {
     expect(CORPUS_FILES.length).toBe(9);
+    expect(ALL_CORPUS_FILES.filter((f) => f.startsWith("acp-")).sort()).toEqual([
+      "acp-claude-implement-issue.ndjson",
+      "acp-opencode-implement-issue.ndjson",
+    ]);
   });
 });
 
 describe("AgentChunk carries every recorded chunk verbatim", () => {
-  for (const file of CORPUS_FILES) {
+  for (const file of ALL_CORPUS_FILES) {
     test(file, () => {
       const lines = readCorpus(file);
       expect(lines.length).toBeGreaterThan(0);
@@ -285,7 +294,7 @@ describe("Factory lifecycle events", () => {
     expect(event.payload).toMatchObject({ exitCode: 1 });
   });
 
-  test("write-back surfaces the D16 artifact cleanup instead of hiding it", () => {
+  test("a write-back from before ADR 0013 still decodes with its D16 artifact cleanup", () => {
     const event = decodeRunEvent({
       runId: "r1",
       seq: 10,
@@ -301,6 +310,22 @@ describe("Factory lifecycle events", () => {
     });
 
     expect(event.payload).toMatchObject({ outcome: "completed" });
+  });
+
+  test("a write-back without cleanedArtifacts decodes", () => {
+    const event = decodeRunEvent({
+      runId: "r1",
+      seq: 10,
+      ts: 1789300000000,
+      payload: {
+        _tag: "WriteBackFinished",
+        branch: "factory/issue-1",
+        outcome: "completed",
+        stagedPaths: ["src/index.ts"],
+      },
+    });
+
+    expect(event.payload).toMatchObject({ outcome: "completed", stagedPaths: ["src/index.ts"] });
   });
 
   test("a run's terminal event is exactly one of three tags", () => {

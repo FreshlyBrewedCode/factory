@@ -3,8 +3,8 @@ import { expect, test, type APIRequestContext } from "@playwright/test";
 
 /**
  * S4's transcript legs, matching the S3 precedent in `runs.e2e.ts`: a static
- * corpus-replay run whose expectations are derived from the same event log the
- * UI renders, and a live `createSlowFakeAdapter`/`live-workflow` run whose
+ * corpus-replay run (the ACP adapter's opencode recording) whose expectations
+ * are derived from the same event log the UI renders, and a live `createSlowFakeAdapter`/`live-workflow` run whose
  * transcript must fill in as the step streams. The static leg is also the
  * browser proof that `@tanstack/ai/client`'s `StreamProcessor` bundles and runs
  * in the SPA — finding 8 §6's biggest unverified risk.
@@ -19,6 +19,7 @@ interface Frame {
     readonly prompt?: string;
     readonly chunkType?: string;
     readonly chunk?: { readonly [key: string]: unknown };
+    readonly finalText?: string;
   };
 }
 
@@ -50,6 +51,19 @@ function agentStep(
   return { stepId: start!.payload.stepId!, prompt: start!.payload.prompt! };
 }
 
+/** The text of a step's first reasoning message, joined from its deltas. */
+function firstReasoning(chunks: ReadonlyArray<Frame>): string {
+  const start = chunks.findIndex((f) => f.payload.chunkType === "REASONING_MESSAGE_START");
+  const end = chunks.findIndex(
+    (f, i) => i > start && f.payload.chunkType === "REASONING_MESSAGE_END",
+  );
+  return chunks
+    .slice(start, end)
+    .filter((f) => f.payload.chunkType === "REASONING_MESSAGE_CONTENT")
+    .map((f) => f.payload.chunk!.delta as string)
+    .join("");
+}
+
 function chunksOf(events: ReadonlyArray<Frame>, stepId: string): ReadonlyArray<Frame> {
   return events.filter(
     (frame) => frame.payload._tag === "AgentChunk" && frame.payload.stepId === stepId,
@@ -60,21 +74,21 @@ test("a step's transcript renders text, tool calls and reasoning from the event 
   page,
   request,
 }) => {
-  const events = await collectEvents(request, "run-static-corpus");
+  const events = await collectEvents(request, "run-static-acp-replay");
 
   const implement = agentStep(events, "implement");
   const implementChunks = chunksOf(events, implement.stepId);
   const toolName = implementChunks.find((frame) => frame.payload.chunkType === "TOOL_CALL_START")!
     .payload.chunk!.toolCallName as string;
-  const textDeltas = implementChunks
-    .filter((frame) => frame.payload.chunkType === "TEXT_MESSAGE_CONTENT")
-    .map((frame) => frame.payload.chunk!.delta as string);
-  // The first delta is the prompt echoed back; the last is the step's closing prose.
-  const finalText = textDeltas.at(-1)!;
+  // The step's closing prose: its last assistant message.
+  const finalText = events.find(
+    (frame) =>
+      frame.payload._tag === "AgentStepFinished" && frame.payload.stepId === implement.stepId,
+  )!.payload.finalText!;
   expect(toolName).toBeTruthy();
-  expect(finalText).not.toBe(implement.prompt);
+  expect(finalText.trim()).not.toBe("");
 
-  await page.goto("/runs/run-static-corpus");
+  await page.goto("/runs/run-static-acp-replay");
   const implementRow = page
     .locator('[data-testid="step-row"][data-kind="agent"]')
     .filter({ hasText: "implement" })
@@ -87,7 +101,7 @@ test("a step's transcript renders text, tool calls and reasoning from the event 
   // The echoed prompt is rendered once, as the header, not twice.
   await expect(page.getByTestId("transcript-prompt")).toContainText(implement.prompt.slice(0, 48));
   await expect(
-    page.getByTestId("transcript-text").filter({ hasText: finalText.slice(0, 32) }),
+    page.getByTestId("transcript-text").filter({ hasText: finalText.trim().slice(0, 32) }),
   ).toHaveCount(1);
   // The tool call and its result share one disclosure, joined by toolCallId.
   await expect(
@@ -101,9 +115,7 @@ test("a step's transcript renders text, tool calls and reasoning from the event 
 
   // The fix step folds reasoning into a disclosure.
   const fix = agentStep(events, "fix");
-  const reasoning = chunksOf(events, fix.stepId).find(
-    (frame) => frame.payload.chunkType === "REASONING_MESSAGE_CONTENT",
-  )!.payload.chunk!.delta as string;
+  const reasoning = firstReasoning(chunksOf(events, fix.stepId));
   const fixRow = page
     .locator('[data-testid="step-row"][data-kind="agent"]')
     .filter({ hasText: "fix" })
@@ -111,7 +123,7 @@ test("a step's transcript renders text, tool calls and reasoning from the event 
   await fixRow.click();
   await page.getByTestId("open-transcript").click();
   await expect(
-    page.getByTestId("transcript-reasoning").filter({ hasText: reasoning.slice(0, 48) }),
+    page.getByTestId("transcript-reasoning").filter({ hasText: reasoning.trim().slice(0, 48) }),
   ).toHaveCount(1);
 });
 

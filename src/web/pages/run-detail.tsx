@@ -747,7 +747,9 @@ function StepDetails({
         fieldRow("branch", step.branch),
         fieldRow("outcome", <StatusCell status={step.status} />),
         fieldRow("staged", step.stagedPaths.join(", ") || "—"),
-        fieldRow("cleaned", step.cleanedArtifacts.join(", ") || "none"),
+        ...(step.cleanedArtifacts.length > 0
+          ? [fieldRow("cleaned", step.cleanedArtifacts.join(", "))]
+          : []),
         ...(step.error !== undefined ? [fieldRow("error", step.error)] : []),
       );
       break;

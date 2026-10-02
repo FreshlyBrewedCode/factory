@@ -19,7 +19,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, test } from "bun:test";
 import type { RunEvent } from "../events";
-import type { AgentAdapter } from "../runtime/agent-adapter";
 import echoWorkflow from "../../test/fixtures/echo-workflow";
 import { appendEvent, openStore, getRunEvents } from "../persistence/store";
 import { createSlowFakeAdapter } from "../replay/adapter";
@@ -445,77 +444,6 @@ describe("scratch workspaces through startTrackedRun (issue #13)", () => {
 
     expect(existsSync(join(root, "workspaces", "run-clone"))).toBe(true);
     expect(existsSync(join(root, "workspaces", "run-scratch-kept"))).toBe(true);
-    finish();
-  });
-});
-
-/**
- * #37 / #24: the adapter prepares only workspaces the daemon cloned. A clone
- * the daemon allocated must reach `adapter.prepareWorkspace` (or the opencode
- * sandbox deadlocks on a permission ask nobody answers); a scratch tree must not.
- */
-describe("adapter.prepareWorkspace through startTrackedRun (#37)", () => {
-  function trackingAdapter(): AgentAdapter & { readonly prepared: Array<string> } {
-    const prepared: Array<string> = [];
-    const inner = createSlowFakeAdapter([]);
-    return {
-      prepared,
-      async prepareWorkspace(dir: string): Promise<void> {
-        prepared.push(dir);
-      },
-      stream: inner.stream.bind(inner),
-    };
-  }
-
-  const scratchWorkflow = defineWorkflow("prep-scratch-test", {
-    input: Schema.Struct({}),
-    workspace: { kind: "scratch" },
-    run: async () => ({}),
-  });
-
-  test("an allocated clone workspace is prepared on the allocated dir", async () => {
-    const { root, finish } = tmpRoot();
-    const db = openStore(join(root, "factory.db"));
-    const adapter = trackingAdapter();
-    const seed = join(root, "seed");
-    await Bun.$`git init -b main -q ${seed}`.quiet();
-    const daemon = createTestDaemon(adapter);
-
-    const runId = await startTrackedRun(daemon.runtime, db, echoWorkflow, {
-      runId: "run-prep-clone",
-      workspace: {
-        workspaceRoot: join(root, "workspaces"),
-        sshUrl: seed,
-        identity: { name: "Test Bot", email: "test@factory.local" },
-        retainedWorkspaces: 10,
-      },
-      input: {},
-    });
-    await waitFor(() => !daemon.registry.isActive(runId));
-
-    expect(adapter.prepared).toEqual([join(root, "workspaces", "run-prep-clone")]);
-    finish();
-  });
-
-  test("a scratch workspace is not prepared", async () => {
-    const { root, finish } = tmpRoot();
-    const db = openStore(join(root, "factory.db"));
-    const adapter = trackingAdapter();
-    const daemon = createTestDaemon(adapter);
-
-    const runId = await startTrackedRun(daemon.runtime, db, scratchWorkflow, {
-      runId: "run-prep-scratch",
-      workspace: {
-        workspaceRoot: join(root, "workspaces"),
-        sshUrl: join(root, "no-such-remote"),
-        identity: { name: "Test Bot", email: "test@factory.local" },
-        retainedWorkspaces: 10,
-      },
-      input: {},
-    });
-    await waitFor(() => !daemon.registry.isActive(runId));
-
-    expect(adapter.prepared).toEqual([]);
     finish();
   });
 });

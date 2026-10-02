@@ -71,7 +71,6 @@ function waitingAdapter(options: {
   let tornDown = false;
   return {
     tornDown: () => tornDown,
-    async prepareWorkspace(): Promise<void> {},
     async *stream({ abortController }): AsyncIterable<AgentAdapterYield> {
       try {
         yield { chunk: { type: "RUN_STARTED" } };

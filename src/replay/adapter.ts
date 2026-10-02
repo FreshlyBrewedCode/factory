@@ -1,21 +1,24 @@
 /**
  * Fake `AgentAdapter`s for `bun test` (STATUS.md phase 1: "make the fake
  * adapter a corpus replayer") — the runtime code path is identical whether
- * chunks come from here or from live opencode; only this module swaps.
- *
- * ADR 0012 §2: adapters yield `AgentAdapterYield` items (opaque chunk +
- * optional signal). The corpus replay adapter extracts signals from recorded
- * opencode chunks using `extractOpencodeSignal`, so existing corpus traces
- * replay without modification. A second adapter could supply signals without
- * imitating opencode chunk shapes at all.
+ * chunks come from here or from a live agent; only this module swaps.
  *
  * `createCorpusReplayAdapter` replays a recorded NDJSON trace
- * (`test/corpus/*.ndjson`, one `{step, chunk}` line each). The traces were
- * captured one workflow step at a time, so consecutive lines sharing a
- * `step` label form one contiguous block (verified against every corpus file
- * before writing this: no interleaving). `.stream()` hands out blocks in
- * file order, one per call — a workflow's Nth `ctx.agent()` call replays the
- * Nth recorded step, independent of what the corpus happened to name it.
+ * (`test/corpus/*.ndjson`). A line is `{step, chunk, signal?}`: the step's
+ * name, the opaque AG-UI chunk, and the `AgentSignal` the live adapter
+ * attached to it (ADR 0012 §2). The signal is recorded rather than re-derived
+ * from the chunk, so replay knows no agent's event names, and a trace from
+ * any adapter replays the same way. `recordingAdapter` writes the shape;
+ * `scripts/record-corpus.ts` records the ACP corpora with it.
+ *
+ * Traces recorded before ADR 0013 (the opencode adapter's) carry no `signal`
+ * and replay as chunks only: no session id, and structured output only by
+ * the runtime's tier-2 re-parse. They stay for the tests about old logs.
+ *
+ * Consecutive lines sharing a `step` label form one contiguous block (a
+ * recording is made one workflow step at a time). `.stream()` hands out
+ * blocks in file order, one per call — a workflow's Nth `ctx.agent()` call
+ * replays the Nth recorded step, independent of what the corpus named it.
  */
 
 import { readFileSync } from "node:fs";
@@ -25,17 +28,20 @@ import type {
   AgentAdapterYield,
   AgentSignal,
 } from "../runtime/agent-adapter";
-import { extractOpencodeSignal } from "../runtime/opencode-adapter";
 import type { AgentRuntimeConfig } from "../runtime/agent-runtime";
 
 export interface CorpusStepBlock {
   readonly step: string;
   readonly chunks: ReadonlyArray<unknown>;
+  /** The recorded items, chunk and signal; `chunks` is their chunks. */
+  readonly yields: ReadonlyArray<AgentAdapterYield>;
 }
 
-interface CorpusLine {
+/** One line of a corpus file. */
+export interface CorpusLine {
   readonly step: string;
   readonly chunk: unknown;
+  readonly signal?: AgentSignal;
 }
 
 export function loadCorpusBlocks(path: string): ReadonlyArray<CorpusStepBlock> {
@@ -44,13 +50,19 @@ export function loadCorpusBlocks(path: string): ReadonlyArray<CorpusStepBlock> {
     .filter((line) => line.trim() !== "")
     .map((line) => JSON.parse(line) as CorpusLine);
 
-  const blocks: Array<{ step: string; chunks: Array<unknown> }> = [];
+  const blocks: Array<{ step: string; chunks: Array<unknown>; yields: Array<AgentAdapterYield> }> =
+    [];
   for (const line of lines) {
+    const item: AgentAdapterYield =
+      line.signal !== undefined
+        ? { chunk: line.chunk, signal: line.signal }
+        : { chunk: line.chunk };
     const last = blocks.at(-1);
     if (last !== undefined && last.step === line.step) {
       last.chunks.push(line.chunk);
+      last.yields.push(item);
     } else {
-      blocks.push({ step: line.step, chunks: [line.chunk] });
+      blocks.push({ step: line.step, chunks: [line.chunk], yields: [item] });
     }
   }
   return blocks;
@@ -67,8 +79,6 @@ export function createCorpusReplayAdapter(path: string): AgentAdapter {
   let cursor = 0;
 
   return {
-    async prepareWorkspace(_dir: string): Promise<void> {},
-
     stream(_options: AgentAdapterOptions): AsyncIterable<AgentAdapterYield> {
       const index = cursor;
       cursor += 1;
@@ -80,12 +90,34 @@ export function createCorpusReplayAdapter(path: string): AgentAdapter {
       }
       return {
         async *[Symbol.asyncIterator]() {
-          for (const chunk of block.chunks) {
-            const signal = extractOpencodeSignal(chunk);
-            yield signal !== undefined ? { chunk, signal } : { chunk };
-          }
+          yield* block.yields;
         },
       };
+    },
+  };
+}
+
+/**
+ * Wrap a live adapter so every item it yields is also written as a corpus
+ * line, under the name of the step that is running (`step()`, read when the
+ * step's stream starts). The items pass through unchanged.
+ */
+export function recordingAdapter(
+  inner: AgentAdapter,
+  step: () => string,
+  write: (line: CorpusLine) => void,
+): AgentAdapter {
+  return {
+    async *stream(options: AgentAdapterOptions): AsyncIterable<AgentAdapterYield> {
+      const name = step();
+      for await (const item of inner.stream(options)) {
+        write(
+          item.signal !== undefined
+            ? { step: name, chunk: item.chunk, signal: item.signal }
+            : { step: name, chunk: item.chunk },
+        );
+        yield item;
+      }
     },
   };
 }
@@ -113,8 +145,6 @@ export function createSlowFakeAdapter(
 ): AgentAdapter {
   const byIndex = new Map(signals.map((s) => [s.index, s.signal]));
   return {
-    async prepareWorkspace(_dir: string): Promise<void> {},
-
     stream(_options: AgentAdapterOptions): AsyncIterable<AgentAdapterYield> {
       return {
         async *[Symbol.asyncIterator]() {

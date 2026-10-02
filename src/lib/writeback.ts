@@ -5,22 +5,12 @@
  * message and the repo slug / base branch arrive from the caller: the
  * workflow and the run environment (config) respectively.
  *
- * Stray-artifact hazard (ADR 0001 §1 / D16): merely configuring
- * `defineWorkspace(...)` under `localProcessSandbox` leaves a
- * `.tanstack-projected-<hash>` marker file nested under a bogus `data/...`
- * path in the tree, untracked. `cleanStrayArtifacts` removes it (and
- * anything matching the same shape) before anything is staged, and
- * `writeBack` re-checks `git status --porcelain` afterwards and throws
- * rather than silently staging garbage.
- *
  * Adapted from `src/spike/lib/writeback.ts` (ADR 0001 §5): every git/gh
  * invocation now goes through an injected `exec` function rather than
  * `hostExec` directly, so `ctx.writeBack` (which owns the injection) gets
  * per-command `ExecStarted`/`ExecFinished` events for free (ADR 0003).
  */
 
-import { rm } from "node:fs/promises";
-import { join } from "node:path";
 import type { ExecFn, ExecResult } from "./exec";
 
 // Re-exported for existing importers; `ExecFn` now lives in `./exec` so the
@@ -43,7 +33,6 @@ export interface WriteBackResult {
   readonly branch: string;
   /** Whether the runId-suffixed retry happened because the first push or `gh pr create` collided. */
   readonly collided: boolean;
-  readonly cleanedArtifacts: ReadonlyArray<string>;
   readonly stagedPaths: ReadonlyArray<string>;
   readonly branchResult: ExecResult;
   readonly commitResult: ExecResult;
@@ -52,19 +41,11 @@ export interface WriteBackResult {
   readonly prUrl: string | null;
 }
 
-const STRAY_ARTIFACT_PATTERNS: ReadonlyArray<RegExp> = [/\.tanstack-projected-/, /^data(\/|$)/];
-
-function isStrayPath(path: string): boolean {
-  return STRAY_ARTIFACT_PATTERNS.some((re) => re.test(path));
-}
-
 /**
  * `git status --porcelain` lines are `XY path` (or `XY old -> new` for renames).
- * `--untracked-files=all` is required, not the default: for a wholly-new
- * untracked directory, plain `--porcelain` collapses it to one `?? dir/` line
- * instead of listing the files inside, which let a nested
- * `.tanstack-projected-*` marker (D16) slip past `isStrayPath` undetected and
- * ship into a real commit — the pattern only ever matches individual paths.
+ * `--untracked-files=all` lists the files inside a wholly-new untracked
+ * directory rather than one `?? dir/` line, so `stagedPaths` names every file
+ * the commit carries.
  */
 async function porcelainPaths(dir: string, exec: ExecFn): Promise<ReadonlyArray<string>> {
   const status = await exec(["git", "status", "--porcelain", "--untracked-files=all"]);
@@ -72,22 +53,6 @@ async function porcelainPaths(dir: string, exec: ExecFn): Promise<ReadonlyArray<
     .split("\n")
     .filter((line) => line.trim() !== "")
     .map((line) => line.slice(3).trim());
-}
-
-/**
- * Remove anything matching the known stray-artifact shape from the working
- * tree, based on `git status --porcelain`. Returns the paths it removed.
- */
-export async function cleanStrayArtifacts(
-  dir: string,
-  exec: ExecFn,
-): Promise<ReadonlyArray<string>> {
-  const paths = await porcelainPaths(dir, exec);
-  const stray = paths.filter(isStrayPath);
-  for (const path of stray) {
-    await rm(join(dir, path), { recursive: true, force: true });
-  }
-  return stray;
 }
 
 function extractUrl(stdout: string): string | null {
@@ -133,10 +98,8 @@ function collisionBranch(branch: string, runId: string): string {
 }
 
 /**
- * Branch, stage only intended paths, commit, push, and open a PR. Throws if
- * a stray artifact survives `cleanStrayArtifacts` (a hard rule: nothing from
- * the sandbox-projection bug may reach a commit), or if `git checkout -b`
- * fails outright. Every other step's failure is captured in its `ExecResult`
+ * Branch, stage the tree's changes, commit, push, and open a PR. Throws if
+ * `git checkout -b` or `git add` fails outright. Every other step's failure is captured in its `ExecResult`
  * rather than thrown, so a caller can inspect exactly where the chain broke.
  *
  * D32's collision handling is reactive: push the name it was given; only if
@@ -145,22 +108,12 @@ function collisionBranch(branch: string, runId: string): string {
  * and retry once. The result carries the branch actually used.
  */
 export async function writeBack(options: WriteBackOptions, exec: ExecFn): Promise<WriteBackResult> {
-  const cleanedArtifacts = await cleanStrayArtifacts(options.dir, exec);
-
-  const remaining = await porcelainPaths(options.dir, exec);
-  const stillStray = remaining.filter(isStrayPath);
-  if (stillStray.length > 0) {
-    throw new Error(
-      `stray artifacts survived cleanup, refusing to stage: ${stillStray.join(", ")}`,
-    );
-  }
-
-  const stagedPaths = remaining;
+  const stagedPaths = await porcelainPaths(options.dir, exec);
 
   const attempt = async (
     branch: string,
     allowPushWithoutNewCommit: boolean,
-  ): Promise<Omit<WriteBackResult, "collided" | "cleanedArtifacts" | "stagedPaths">> => {
+  ): Promise<Omit<WriteBackResult, "collided" | "stagedPaths">> => {
     const branchResult = await exec(["git", "checkout", "-b", branch]);
     if (branchResult.exitCode !== 0) {
       throw new Error(`git checkout -b ${branch} failed: ${branchResult.stderr.trim()}`);
@@ -209,9 +162,9 @@ export async function writeBack(options: WriteBackOptions, exec: ExecFn): Promis
   const first = await attempt(options.branch, false);
   const collided = isPushRejected(first.pushResult) || isPrAlreadyExists(first.prResult);
   if (!collided) {
-    return { ...first, collided: false, cleanedArtifacts, stagedPaths };
+    return { ...first, collided: false, stagedPaths };
   }
 
   const retry = await attempt(collisionBranch(options.branch, options.runId), true);
-  return { ...retry, collided: true, cleanedArtifacts, stagedPaths };
+  return { ...retry, collided: true, stagedPaths };
 }

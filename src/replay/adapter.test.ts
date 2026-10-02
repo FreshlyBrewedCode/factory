@@ -1,3 +1,6 @@
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
 import { Effect } from "effect";
 import { describe, expect, test } from "bun:test";
 import { AgentRuntimeLayer } from "../runtime/agent-runtime";
@@ -8,59 +11,89 @@ import {
   createCorpusReplayAdapter,
   createSlowFakeAdapter,
   loadCorpusBlocks,
+  recordingAdapter,
+  type CorpusLine,
 } from "./adapter";
 
-const FULL_ROUND_TRIP_CORPUS = `${import.meta.dir}/../../test/corpus/run-1789308170212.ndjson`;
+const CLAUDE_CORPUS = `${import.meta.dir}/../../test/corpus/acp-claude-implement-issue.ndjson`;
+/** Recorded by the opencode adapter before ADR 0013: chunks only, no signals. */
+const OPENCODE_LEGACY_CORPUS = `${import.meta.dir}/../../test/corpus/run-1789308170212.ndjson`;
+
+const OPTIONS = {
+  threadId: "t",
+  dir: "/tmp",
+  agent: "claude" as const,
+  model: "m",
+  prompt: "p",
+  abortController: new AbortController(),
+};
+
+async function collect(stream: AsyncIterable<AgentAdapterYield>): Promise<AgentAdapterYield[]> {
+  const yields: AgentAdapterYield[] = [];
+  for await (const y of stream) yields.push(y);
+  return yields;
+}
 
 describe("loadCorpusBlocks", () => {
-  test("groups the full round-trip corpus into its three recorded steps", () => {
-    const blocks = loadCorpusBlocks(FULL_ROUND_TRIP_CORPUS);
+  test("groups a recorded run into its steps, in order", () => {
+    const blocks = loadCorpusBlocks(CLAUDE_CORPUS);
+    expect(blocks.map((b) => [b.step, b.chunks.length])).toEqual([
+      ["implement", 163],
+      ["fix", 147],
+      ["pr-metadata", 75],
+    ]);
+  });
+
+  test("unwraps the {step, chunk, signal} envelope", () => {
+    const [first] = loadCorpusBlocks(CLAUDE_CORPUS);
+    expect((first!.chunks[0] as { type: string }).type).toBe("RUN_STARTED");
+    expect(first!.yields[0]).toEqual({ chunk: first!.chunks[0] });
+    expect(first!.yields.find((y) => y.signal !== undefined)?.signal).toEqual({
+      _tag: "sessionId",
+      value: "e636e9cb-ea93-4656-9dce-ef45806d72b5",
+    });
+  });
+
+  test("a legacy line without a signal loads as a bare chunk", () => {
+    const blocks = loadCorpusBlocks(OPENCODE_LEGACY_CORPUS);
     expect(blocks.map((b) => [b.step, b.chunks.length])).toEqual([
       ["implement", 39],
       ["fix", 63],
       ["pr-metadata", 33],
     ]);
-  });
-
-  test("unwraps the {step, chunk} envelope, keeping only the chunk", () => {
-    const blocks = loadCorpusBlocks(FULL_ROUND_TRIP_CORPUS);
-    const first = blocks[0]!.chunks[0] as { type: string };
-    expect(first.type).toBe("RUN_STARTED");
+    expect(blocks.every((b) => b.yields.every((y) => y.signal === undefined))).toBe(true);
   });
 });
 
 describe("createCorpusReplayAdapter", () => {
   test("hands out recorded steps in order, one per stream() call", () => {
-    const adapter = createCorpusReplayAdapter(FULL_ROUND_TRIP_CORPUS);
-    const options = {
-      threadId: "t",
-      dir: "/tmp",
-      agent: "opencode" as const,
-      model: "m",
-      prompt: "p",
-      abortController: new AbortController(),
-    };
+    const adapter = createCorpusReplayAdapter(CLAUDE_CORPUS);
+    const steps = [adapter.stream(OPTIONS), adapter.stream(OPTIONS), adapter.stream(OPTIONS)];
+    expect(() => adapter.stream(OPTIONS)).toThrow(/exhausted/);
+    expect(steps.every((step) => step !== undefined)).toBe(true);
+  });
 
-    const step1 = adapter.stream(options);
-    const step2 = adapter.stream(options);
-    const step3 = adapter.stream(options);
-
-    expect(() => adapter.stream(options)).toThrow(/exhausted/);
-    // Streams are lazily consumed; grab them here just to prove they exist.
-    expect(step1).toBeDefined();
-    expect(step2).toBeDefined();
-    expect(step3).toBeDefined();
+  test("replays the recorded signals with their chunks", async () => {
+    const adapter = createCorpusReplayAdapter(CLAUDE_CORPUS);
+    adapter.stream(OPTIONS);
+    adapter.stream(OPTIONS);
+    const yields = await collect(adapter.stream(OPTIONS));
+    expect(yields.length).toBe(75);
+    const structured = yields.find((y) => y.signal?._tag === "structuredOutput");
+    expect((structured!.chunk as { name?: string }).name).toBe("structured-output.complete");
+    expect(structured?.signal?.value).toMatchObject({ branch: "factory/issue-1-add-slugify" });
+    expect(yields.filter((y) => y.signal?._tag === "usage").length).toBe(6);
   });
 
   test("replays the first step through buildAgentStepEffect end to end", async () => {
-    const adapter = createCorpusReplayAdapter(FULL_ROUND_TRIP_CORPUS);
+    const adapter = createCorpusReplayAdapter(CLAUDE_CORPUS);
     const chunks: Array<unknown> = [];
 
     const handle = buildAgentStepEffect({
       threadId: "t",
       dir: "/tmp",
-      agent: "opencode",
-      model: "opencode-go/deepseek-v4.1-flash",
+      agent: "claude",
+      model: "haiku",
       prompt: "irrelevant, replay ignores it",
       onChunk: (chunk) => chunks.push(chunk),
     });
@@ -69,35 +102,39 @@ describe("createCorpusReplayAdapter", () => {
       Effect.provide(handle.effect, AgentRuntimeLayer(fakeAgents(adapter))),
     );
 
-    expect(outcome.chunkCount).toBe(39);
-    expect(chunks.length).toBe(39);
-    expect(outcome.sessionId).toBe("ses_f64ec04acffeJ0tjsHSkjAEqZF");
+    expect(outcome.chunkCount).toBe(163);
+    expect(chunks.length).toBe(163);
+    expect(outcome.sessionId).toBe("e636e9cb-ea93-4656-9dce-ef45806d72b5");
+    expect(outcome.context).toEqual({ used: 23_879, size: 200_000 });
+    expect(outcome.cost).toEqual({ amount: 0.05517899999999999, currency: "USD" });
     expect(outcome.finalText.length).toBeGreaterThan(0);
     expect(outcome.runError).toBeUndefined();
   });
+});
 
-  test("yields AgentAdapterYield items with signals extracted from opencode chunks", async () => {
-    const adapter = createCorpusReplayAdapter(FULL_ROUND_TRIP_CORPUS);
-    const stream = adapter.stream({
-      threadId: "t",
-      dir: "/tmp",
-      agent: "opencode",
-      model: "m",
-      prompt: "p",
-      abortController: new AbortController(),
-    });
+describe("recordingAdapter", () => {
+  test("writes each item under the running step and passes it through unchanged", async () => {
+    const [implement, fix] = loadCorpusBlocks(CLAUDE_CORPUS);
+    const source = createCorpusReplayAdapter(CLAUDE_CORPUS);
+    const lines: CorpusLine[] = [];
+    let step = "implement";
+    const recorder = recordingAdapter(
+      source,
+      () => step,
+      (line) => lines.push(line),
+    );
 
-    const yields: AgentAdapterYield[] = [];
-    for await (const y of stream) {
-      yields.push(y as AgentAdapterYield);
-    }
+    const first = await collect(recorder.stream(OPTIONS));
+    step = "fix";
+    const second = await collect(recorder.stream(OPTIONS));
 
-    expect(yields.length).toBe(39);
-    const sessionIdYield = yields.find((y) => y.signal?._tag === "sessionId");
-    expect(sessionIdYield).toBeDefined();
-    expect(sessionIdYield?.signal?.value).toBe("ses_f64ec04acffeJ0tjsHSkjAEqZF");
-    const textYields = yields.filter((y) => y.signal === undefined);
-    expect(textYields.length).toBeGreaterThan(0);
+    expect(first).toEqual([...implement!.yields]);
+    expect(second).toEqual([...fix!.yields]);
+    // What it wrote loads back into the same blocks.
+    const path = join(mkdtempSync(join(tmpdir(), "factory-record-test-")), "corpus.ndjson");
+    writeFileSync(path, lines.map((line) => JSON.stringify(line)).join("\n"));
+    expect(loadCorpusBlocks(path)).toEqual([implement!, fix!]);
+    rmSync(dirname(path), { recursive: true, force: true });
   });
 });
 

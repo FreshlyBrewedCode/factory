@@ -7,9 +7,12 @@
  *
  *   - **Static corpus.** `createCorpusReplayAdapter` turns a committed
  *     `test/corpus/*.ndjson` into a real event log with no AI in the loop. The
- *     rich one is the implement-issue round trip, run against a local bare
+ *     rich ones are the implement-issue round trip, run against a local bare
  *     `origin` and a fake `gh` (the same fixture `e2e/implement-issue.test.ts`
- *     uses); a second, small run adds ordering/status variety.
+ *     uses): `run-static-acp-replay` from the ACP adapter's recording, and
+ *     `run-static-corpus` from the opencode adapter's, for how the SPA reads
+ *     logs written before ADR 0013. A second, small run adds ordering/status
+ *     variety.
  *   - **Live.** The daemon serves with `createSlowFakeAdapter`, so a
  *     `POST /api/runs` from a test yields a run whose steps arrive over SSE on
  *     a controllable clock.
@@ -48,11 +51,15 @@ const nestedInputWorkflow = defineWorkflow("nested-input-test", {
   },
 });
 
+/** Recorded by the opencode adapter, before ADR 0013. */
 const CORPUS_ROUND_TRIP = join(import.meta.dir, "../test/corpus/run-1789308170212.ndjson");
-const CORPUS_ONE_STEP = join(
+/** Recorded through the ACP adapter by `scripts/record-corpus.ts`; opencode thinks aloud, so it has reasoning. */
+const CORPUS_ACP_ROUND_TRIP = join(
   import.meta.dir,
-  "../test/corpus/effect-boundary-control-3-1789309633183.ndjson",
+  "../test/corpus/acp-opencode-implement-issue.ndjson",
 );
+/** Its first step is all the one-step echo run replays. */
+const CORPUS_ONE_STEP = join(import.meta.dir, "../test/corpus/acp-claude-implement-issue.ndjson");
 
 const GREET_ONLY_INDEX = `/** Returns a friendly greeting for the given name. */
 export function greet(name: string): string {
@@ -148,6 +155,30 @@ async function seedCorpusRuns(root: string, db: ReturnType<typeof openStore>): P
       {
         runId: "run-static-corpus",
         dir: workDir,
+        repo: { slug: "local/fixture", baseBranch: "main" },
+        input: { issueNumber: 1 },
+        onEvent: (event) => appendEvent(db, event),
+      },
+    ),
+  );
+
+  await Bun.sleep(20);
+
+  // The same round trip as the ACP adapter records it, in its own clone: the
+  // run above already wrote back from `workDir`.
+  const acpWorkDir = join(root, "work-acp");
+  await hostExec(["git", "clone", "-q", "-b", "main", remoteDir, acpWorkDir]);
+  await git(acpWorkDir, ["config", "user.name", "Factory E2E"]);
+  await git(acpWorkDir, ["config", "user.email", "factory-e2e@example.com"]);
+  writeFileSync(join(acpWorkDir, "src/index.ts"), FINAL_INDEX);
+  writeFileSync(join(acpWorkDir, "src/index.test.ts"), FINAL_TEST);
+  await awaitRun(
+    startRun(
+      implementIssue,
+      makeAgentRuntime(fakeAgents(createCorpusReplayAdapter(CORPUS_ACP_ROUND_TRIP))),
+      {
+        runId: "run-static-acp-replay",
+        dir: acpWorkDir,
         repo: { slug: "local/fixture", baseBranch: "main" },
         input: { issueNumber: 1 },
         onEvent: (event) => appendEvent(db, event),
