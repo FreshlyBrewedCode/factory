@@ -2,7 +2,9 @@
  * Test support (#38): a fresh daemon runtime per test, with its per-daemon
  * services already resolved for assertions. A new runtime is new state — the
  * tests' isolation comes from building one each, not from resetting
- * singletons.
+ * singletons. Resolving the services below builds the runtime's layers
+ * eagerly and synchronously, so a layer that cannot build that way fails here,
+ * at construction, not inside a test's first `serviceOf`.
  */
 
 import type { DedupeRegistryShape } from "../lib/dedupe";

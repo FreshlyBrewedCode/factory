@@ -93,6 +93,9 @@ export async function startDaemon(options: DaemonOptions): Promise<DaemonHandle>
   const db = openStore(options.dbPath);
 
   const runtime = makeDaemonRuntime(options.config?.agent.adapter);
+  // Build the layers now: a failing (or, one day, asynchronous) layer
+  // surfaces at startup, and every later `serviceOf` reads the built context.
+  await runtime.context();
 
   const server = serve({
     db,
