@@ -195,6 +195,38 @@ describe("startTrackedRun admission (M1: the slot is reserved before any await)"
     finish();
   });
 
+  test("a second start with the same runId while the first is still reserving is refused", async () => {
+    const { root, finish } = tmpRoot();
+    const db = openStore(join(root, "factory.db"));
+    const daemon = createTestDaemon(SLOW_ADAPTER);
+    const gate = makeGate();
+    const workspace = await gatedWorkspace(root, daemon, gate);
+
+    // No limit, so admission cannot be what refuses it: the reserved slot is.
+    const first = startTrackedRun(daemon.runtime, db, echoWorkflow, {
+      runId: "run-same-id",
+      workspace,
+      input: {},
+    });
+    const second = startTrackedRun(daemon.runtime, db, echoWorkflow, {
+      runId: "run-same-id",
+      workspace,
+      input: {},
+    });
+
+    const err = await second.catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(Error);
+    expect((err as Error).message).toContain("already active");
+    expect(daemon.registry.activeRunIds()).toEqual(["run-same-id"]);
+
+    gate.release();
+    await first;
+    await waitFor(() => !daemon.registry.isActive("run-same-id"));
+
+    db.close();
+    finish();
+  });
+
   test("a start refused at the limit does not keep its dedupe key", async () => {
     const { root, finish } = tmpRoot();
     const db = openStore(join(root, "factory.db"));

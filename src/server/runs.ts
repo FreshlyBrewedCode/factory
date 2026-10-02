@@ -485,15 +485,17 @@ export async function startTrackedRun(
   // cancel-and-wait.
   if (registry.closed) throw DaemonShuttingDownError.of();
 
-  const existing = registry.get(runId);
-  if (existing !== undefined && !isReserved(existing)) {
+  // Running or still reserving alike: a run id is started once. (A reserved
+  // entry here can only be a concurrent start with the same explicit runId,
+  // which must not slip past admission and start a duplicate.)
+  if (registry.get(runId) !== undefined) {
     throw new Error(`run ${runId} is already active`);
   }
 
   // D29 admission is decided before the dedupe claim, so a refused start
   // throws having claimed nothing — otherwise its key would stay held by a
   // run that never started (and a `"skip"` schedule would skip forever).
-  const limit = existing === undefined ? options.maxConcurrentRuns : undefined;
+  const limit = options.maxConcurrentRuns;
   if (limit !== undefined && !admitRun(limit, registry.size)) {
     throw ConcurrencyLimitError.of({ maxConcurrentRuns: limit });
   }
@@ -506,7 +508,7 @@ export async function startTrackedRun(
   }
   // Every run reserves — not only limited ones — so shutdown sees runs that
   // are still allocating whether or not an admission limit applies.
-  if (existing === undefined) registry.reserve(runId);
+  registry.reserve(runId);
 
   try {
     // Issue #13: a scratch workspace takes its kind from the workflow and
