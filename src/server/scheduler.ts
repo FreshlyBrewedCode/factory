@@ -33,9 +33,9 @@ import type { FactoryConfig } from "../config";
 import { DedupeKeyError, type DedupeRegistry } from "../lib/dedupe";
 import type { WorkflowDefinition } from "../workflow";
 import {
-  startTrackedRun,
   ConcurrencyLimitError,
   DispatchCapError,
+  startTrackedRun,
   type DaemonServices,
   type DispatchEnv,
   type WorkspaceSpec,
@@ -47,6 +47,7 @@ export class SchedulerError extends Schema.TaggedError<SchedulerError>()("Schedu
   cause: Schema.Defect(),
 }) {}
 
+/** A config schedule resolved into the runtime's terms: workflow definition in hand, cron parsed. */
 export interface RuntimeSchedule {
   readonly id: string;
   readonly workflowId: string;
@@ -62,10 +63,17 @@ export function scheduleDedupeKey(schedule: RuntimeSchedule): string {
   return `schedule:${schedule.id}`;
 }
 
+/**
+ * Issue #17: when the schedule fires next, computed from the stored cron as
+ * of `now` — the concrete payoff for keeping cron as a cron string. The same
+ * `Cron.next` the loop itself uses, exposed for `GET /api/schedules` and the
+ * UI's next-fire display.
+ */
 export function nextFireAt(schedule: RuntimeSchedule, now: number): number {
   return Cron.next(schedule.cron, new Date(now)).getTime();
 }
 
+/** Resolves config's schedules (already validated at load) against the registry and parses each cron. */
 export function toRuntimeSchedules(config: FactoryConfig): ReadonlyArray<RuntimeSchedule> {
   return config.schedules.map((schedule) => {
     const workflow = config.workflows.find((w) => w.id === schedule.workflowId);
@@ -89,16 +97,26 @@ export function toRuntimeSchedules(config: FactoryConfig): ReadonlyArray<Runtime
 
 export interface SchedulerDeps {
   readonly schedules: ReadonlyArray<RuntimeSchedule>;
+  /** Starts the scheduled run; the daemon wires it to `startTrackedRun`. */
   readonly fire: (schedule: RuntimeSchedule) => Promise<string>;
+  /** Issue #38: the daemon's own dedupe registry — where schedule keys are held. */
   readonly dedupeRegistry: DedupeRegistry;
+  /** Issue #38: the wall clock windows are judged against; tests pass a `TestClock`. */
   readonly clock: Clock.Clock;
 }
 
 export interface SchedulerState {
+  /** Per schedule: the wall-clock the last tick observed (initialized to session start). */
   readonly lastTick: Map<string, number>;
+  /** Schedules still owed their single run-on-start fire this session. */
   readonly runOnStartPending: Set<string>;
 }
 
+/**
+ * The state a fresh daemon session starts with: `lastTick` = now — the
+ * no-catch-up rule — and every `runOnStart` schedule marked pending exactly
+ * once per session.
+ */
 export function createSchedulerState(deps: SchedulerDeps): SchedulerState {
   const now = deps.clock.currentTimeMillisUnsafe();
   const schedules = deps.schedules;
@@ -167,6 +185,10 @@ export async function tickOnce(
     const lastTick = state.lastTick.get(schedule.id) ?? now;
     state.lastTick.set(schedule.id, now);
 
+    // runOnStart fires on the first tick of the session, before any cron
+    // window; once attempted it is consumed whether or not the fire
+    // succeeded (the next cron window is the retry, not a second
+    // start-fire).
     const onStart = state.runOnStartPending.has(schedule.id);
     if (onStart) state.runOnStartPending.delete(schedule.id);
 
@@ -199,6 +221,7 @@ export async function tickOnce(
   return results;
 }
 
+/** The daemon's scheduler loop — `Effect.repeat` around the plain `tickOnce`. */
 export function runSchedulerLoop(
   deps: SchedulerDeps,
   state: SchedulerState,
@@ -225,6 +248,12 @@ export function runSchedulerLoop(
   return Effect.repeat(tick, Schedule.spaced(intervalMs));
 }
 
+/**
+ * The daemon's fire function: a scheduled run is a config-backed run started
+ * like any other — registry input, workspace, dispatch environment — made
+ * self-deduping with `schedule:<id>` (issue #15's registry) so the overlap
+ * policy and the trigger record both come for free.
+ */
 export function makeScheduleFire(options: {
   readonly db: Database;
   readonly runtime: ManagedRuntime.ManagedRuntime<AgentRuntime, never>;
@@ -239,7 +268,7 @@ export function makeScheduleFire(options: {
     return startTrackedRun(env.runtime, env.db, env.services, schedule.workflow, {
       input: schedule.input,
       repo: env.repo,
-      maxConcurrentRuns: env.maxConcurrentRuns,
+      maxConcurrentRuns: options.maxConcurrentRuns,
       workspace: env.workspace,
       dispatchEnv: env.dispatchEnv,
       scheduleId: schedule.id,

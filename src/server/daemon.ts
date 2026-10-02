@@ -41,30 +41,27 @@ import {
 } from "./scheduler";
 import { makeAgentRuntime } from "../runtime/agent-runtime";
 
-export function createLiveClock(): Clock.Clock {
-  return {
-    currentTimeMillisUnsafe: () => Date.now(),
-    currentTimeMillis: Effect.sync(() => Date.now()),
-    monotonicTimeNanosUnsafe: () => BigInt(Date.now()) * 1_000_000n,
-    monotonicTimeNanos: Effect.sync(() => BigInt(Date.now()) * 1_000_000n),
-    currentTimeNanosUnsafe: () => BigInt(Date.now()) * 1_000_000n,
-    currentTimeNanos: Effect.sync(() => BigInt(Date.now()) * 1_000_000n),
-    sleep: (duration) => Effect.sleep(duration),
-  };
-}
-
 export interface DaemonOptions {
   readonly dbPath: string;
   readonly port?: number;
   /** Issue #16: the tick cadence of the config schedules, over the default. */
   readonly schedulerIntervalMs?: number;
+  /**
+   * The run environment from `factory.config.ts` (D27). Present, every run —
+   * manual and scheduled alike — gets a per-run working tree under the
+   * configured `workspaceRoot` (D28) and shares one admission limit (D29).
+   * Absent, the legacy per-request `{dir, clone}` behaviour is kept.
+   */
   readonly config?: FactoryConfig;
+  /** Issue #38: the scheduler's clock, over Effect's default wall clock. */
   readonly clock?: Clock.Clock;
 }
 
 export interface DaemonHandle {
   readonly server: ReturnType<typeof serve>;
+  /** Issue #16: the loop that fires the config's schedules, when it has any. */
   readonly schedulerFiber: AnyFiber | undefined;
+  /** Issue #38: this daemon's own registry, pubsub, dedupe registry and refresh gates. */
   readonly services: DaemonServices;
   /**
    * Shut the daemon down: interrupt the scheduler, stop the HTTP server, and
@@ -73,6 +70,7 @@ export interface DaemonHandle {
   readonly stop: () => Promise<void>;
 }
 
+/** Issue #16: how often the scheduler's due window check runs. */
 export const DEFAULT_SCHEDULER_INTERVAL_MS = 30_000;
 
 export async function startDaemon(options: DaemonOptions): Promise<DaemonHandle> {
@@ -127,7 +125,7 @@ export async function startDaemon(options: DaemonOptions): Promise<DaemonHandle>
               dispatchEnv,
             }),
             dedupeRegistry: services.dedupeRegistry,
-            clock: options.clock ?? createLiveClock(),
+            clock: options.clock ?? Clock.Clock.defaultValue(),
           };
           const state = createSchedulerState(deps);
           return Effect.runFork(

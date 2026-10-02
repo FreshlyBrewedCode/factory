@@ -33,24 +33,29 @@
 import type { Database } from "bun:sqlite";
 import { isTerminal, type RunEvent } from "../events";
 import type { FactoryConfig } from "../config";
-import { Schema, SchemaParser } from "effect";
+import { Schema, SchemaParser, type ManagedRuntime } from "effect";
 import { resetClone, type GitIdentity } from "../lib/clone";
 import { loadWorkflow } from "../lib/load-workflow";
 import { getRunEvents, listRuns, type RunSummary } from "../persistence/store";
-import type { ManagedRuntime } from "effect";
 import type { AgentRuntime } from "../runtime/agent-runtime";
 import index from "../web/index.html";
 import { admitRun } from "./admission";
 import { DedupeKeyError } from "../lib/dedupe";
 import {
   ConcurrencyLimitError,
+  startTrackedRun,
   type DaemonServices,
   type DispatchEnv,
   type StartTrackedRunOptions,
-  startTrackedRun,
 } from "./runs";
 import { nextFireAt, toRuntimeSchedules } from "./scheduler";
 
+/**
+ * Issue #17: what `GET /api/schedules` serves for one schedule — the config's
+ * own record (id, workflow, input, cron, timezone, overlap, run-on-start),
+ * the next fire time computed from the stored cron, and the most recent run
+ * that carries the schedule's id.
+ */
 export interface ScheduleSummary {
   readonly id: string;
   readonly workflowId: string;
@@ -59,7 +64,9 @@ export interface ScheduleSummary {
   readonly timezone: string;
   readonly overlap: "skip" | "stack";
   readonly runOnStart: boolean;
+  /** Epoch ms of the cron's next fire after now. */
   readonly nextFireAt: number;
+  /** The schedule's latest run — scheduled *or* manually triggered. */
   readonly lastRun:
     | { readonly runId: string; readonly status: string; readonly startedAt: number }
     | undefined;
@@ -67,6 +74,7 @@ export interface ScheduleSummary {
 
 export interface ServerOptions {
   readonly db: Database;
+  /** Issue #38: this daemon's run registry, pubsub, dedupe registry and refresh gates. */
   readonly services: DaemonServices;
   /**
    * Issue #36: the Effect managed runtime that provides the agent runtime
@@ -74,18 +82,62 @@ export interface ServerOptions {
    * rather than threaded through `ServerOptions`.
    */
   readonly runtime: ManagedRuntime.ManagedRuntime<AgentRuntime, never>;
+  /**
+   * The loaded `factory.config.ts` (D27). Absent = the phase 3 path-based API
+   * behaves exactly as before (no limit, explicit dir+clone, `/api/workflows`
+   * serves an empty list) — the dispatcher legitimately keeps supplying
+   * filesystem paths (D31).
+   */
   readonly config?: FactoryConfig;
+  /**
+   * How often an open SSE stream emits its keepalive comment frame. Exposed
+   * only so tests can turn it down far enough for a sub-second quiet gap to
+   * exercise the timer; production has no reason to set it.
+   */
   readonly sseKeepaliveMs?: number;
 }
 
+/**
+ * `Bun.serve`'s `idleTimeout` defaults to **10 seconds** and closes any
+ * connection with no traffic in that window. A run's SSE stream only carries
+ * traffic when the workflow emits an event, so any quiet gap longer than that —
+ * `ctx.exec` running a test suite, write-back's `git push` + `gh pr create`, an
+ * agent thinking before its first chunk — dropped the connection under a
+ * perfectly healthy run. The SPA has no way to tell that apart from a dead
+ * process and rendered the run "interrupted" until a manual refresh.
+ *
+ * A comment frame on a timer is the fix rather than a raised `idleTimeout`,
+ * because Bun caps `idleTimeout` at 255s: a single long agent step would still
+ * outlast it, whereas a keepalive holds a stream open for any gap length.
+ * SSE comment frames (`:`-prefixed, no `data:` line) are inert to every client
+ * we ship — the SPA's `dataLine` (`web/api.ts`) and the CLI's tail both skip
+ * frames without a `data:` line.
+ *
+ * 5s leaves 2x margin under the 10s default. It is deliberately not derived
+ * from `idleTimeout`: we do not set that option, so the default is the contract.
+ */
 const DEFAULT_SSE_KEEPALIVE_MS = 5_000;
 
+/** `RunSummary` plus this process's live-registry bit — what the SPA reads. */
 export type RunSummaryResponse = RunSummary & { readonly active: boolean };
 
+/**
+ * A run with no terminal event is `"interrupted"` in the store, which cannot
+ * tell a crash apart from a run this process still holds. The runs page needs
+ * that bit to group live rows, so it is derived here from the in-memory
+ * registry (`server/runs.ts`) rather than stored (D24: active is process state).
+ */
 function listSummaries(db: Database, services: DaemonServices): ReadonlyArray<RunSummaryResponse> {
   return listRuns(db).map((run) => ({ ...run, active: services.registry.isActive(run.runId) }));
 }
 
+/**
+ * Issue #14: the dispatch environment a run's `ctx.dispatch` shares with its
+ * child runs — the same config wiring the run itself gets (workspace root,
+ * repo, adapter, admission). Present only for config-backed servers; without
+ * it `ctx.dispatch` throws, because in-process/path-based legacy runs have
+ * no registry to start children from.
+ */
 function dispatchEnvFor(config: FactoryConfig): DispatchEnv {
   return {
     workspace: {
@@ -101,6 +153,12 @@ function dispatchEnvFor(config: FactoryConfig): DispatchEnv {
   };
 }
 
+/**
+ * The start options every config-backed `startTrackedRun` shares: D28's
+ * workspace allocation, the run environment, D29's admission limit and #14's
+ * dispatch env. Used by the registry POST path and, since issue #17, by the
+ * manual schedule trigger.
+ */
 function configRunOptions(
   config: FactoryConfig,
   maxConcurrentRuns: number | undefined,
@@ -130,6 +188,11 @@ interface StartRunBody {
   readonly workflowId?: unknown;
   readonly workflowPath?: unknown;
   readonly input?: unknown;
+  /**
+   * Issue #15: an optional dedupe key. While a non-terminal run holds it,
+   * another start with the same key is a 409 conflict naming the key and the
+   * holding run — never a silently dropped duplicate.
+   */
   readonly dedupeKey?: unknown;
   readonly dir?: string;
   readonly clone?: { readonly sshUrl: string; readonly identity: GitIdentity };
@@ -142,6 +205,11 @@ function json(body: unknown, init?: { readonly status?: number }): Response {
   });
 }
 
+/**
+ * The SSE `Last-Event-ID` header, or `undefined` if absent or not a sequence
+ * number. `EventSource` sends it automatically on reconnect, and `seq` is the
+ * value we stamp on each frame's `id:` line, so it is the resume offset.
+ */
 function parseLastEventId(req: Request): number | undefined {
   const raw = req.headers.get("last-event-id");
   if (raw === null || !/^\d+$/.test(raw)) return undefined;
@@ -157,6 +225,9 @@ function sseStream(
 ): ReadableStream<Uint8Array> {
   const encoder = new TextEncoder();
 
+  // `closed`/`unsubscribe`/`keepalive` live on the stream (not just `start`) so
+  // the `cancel()` hook below can also mark them when a client disconnects
+  // without anyone having sent a terminal event.
   let closed = false;
   let unsubscribe: () => void = () => undefined;
   let keepalive: ReturnType<typeof setInterval> | undefined;
@@ -167,6 +238,9 @@ function sseStream(
 
   return new ReadableStream({
     start(controller) {
+      // `Last-Event-ID` makes this resume: seed `lastSeq` from it and the
+      // persisted replay below skips everything the client already has, exactly
+      // as the live tail already does. `seq` is the offset (D20/D26).
       let lastSeq = lastEventId ?? -1;
       let draining = false;
       const buffered: Array<RunEvent> = [];
@@ -178,6 +252,8 @@ function sseStream(
             encoder.encode(`id: ${event.seq}\ndata: ${JSON.stringify(event)}\n\n`),
           );
         } catch {
+          // The client is gone (navigated away, fetch aborted) — Bun has
+          // already closed this controller. Stop pushing and leave the fan-out.
           closed = true;
           stopKeepalive();
           unsubscribe();
@@ -222,6 +298,10 @@ function sseStream(
         return;
       }
 
+      // The run is still live, so this stream stays open indefinitely and must
+      // beat `idleTimeout` on its own. The same enqueue guard as `send`: once
+      // Bun has closed the controller under us, stop the timer rather than
+      // throw outside request context.
       keepalive = setInterval(() => {
         if (closed) {
           stopKeepalive();
@@ -237,6 +317,10 @@ function sseStream(
       }, keepaliveMs);
     },
     cancel(): void {
+      // A navigating/aborted client must drop its pubsub subscription and its
+      // keepalive timer; otherwise a later event (or tick) would enqueue into a
+      // controller Bun has already closed, throwing outside request context —
+      // which kills the whole serve() process.
       closed = true;
       stopKeepalive();
       unsubscribe();
@@ -263,6 +347,11 @@ export function createHandler(options: ServerOptions): (req: Request) => Promise
     }
 
     if (req.method === "POST" && url.pathname === "/api/runs") {
+      // D29: the one admission function, consulted here (refused atomically
+      // inside `startTrackedRun` — the registry slot is reserved before any
+      // await, so concurrent starts cannot lose the race) and on the dispatch
+      // path alike. 409 over the limit; the limit is only consulted when a
+      // config is present (the no-config legacy path kept its old behaviour).
       const maxConcurrentRuns = options.config?.maxConcurrentRuns;
       if (
         maxConcurrentRuns !== undefined &&
@@ -385,6 +474,9 @@ export function createHandler(options: ServerOptions): (req: Request) => Promise
         ...(runEnv !== undefined ? { dispatchEnv: dispatchEnvFor(runEnv) } : {}),
         input: body.input,
         ...(typeof body.dedupeKey === "string" ? { dedupeKey: body.dedupeKey } : {}),
+        ...(body.clone !== undefined && typeof body.dir === "string"
+          ? { prepareWorkspace: true }
+          : {}),
       };
       let runId: string;
       try {
@@ -410,9 +502,18 @@ export function createHandler(options: ServerOptions): (req: Request) => Promise
       return json({ runId }, { status: 201 });
     }
 
+    /**
+     * Issue #17: the schedules exactly as the running daemon carries them —
+     * read from `options.config`, the same object the scheduler loop rides on,
+     * never a separate persisted copy. Next fire computed from the stored cron
+     * (the payoff for keeping cron as cron), the last run matched on the
+     * schedule id recorded in `RunStarted`.
+     */
     if (req.method === "GET" && url.pathname === "/api/schedules") {
       const config = options.config;
       const schedules = config?.schedules ?? [];
+      // `listRuns` is newest-first, so the first hit per schedule id is its
+      // most recent run.
       const lastRunBySchedule = new Map<string, RunSummary>();
       for (const run of listRuns(options.db)) {
         if (run.scheduleId !== undefined && !lastRunBySchedule.has(run.scheduleId)) {
@@ -461,6 +562,8 @@ export function createHandler(options: ServerOptions): (req: Request) => Promise
       }
       const workflow = options.config!.workflows.find((w) => w.id === schedule.workflowId)!;
 
+      // D29 admission, checked here exactly like POST /api/runs so a manual
+      // trigger over the limit is a visible 409 rather than a surprise.
       const maxConcurrentRuns = options.config.maxConcurrentRuns;
       if (!admitRun(maxConcurrentRuns, services.registry.activeRunIds().length)) {
         return json(
@@ -469,6 +572,11 @@ export function createHandler(options: ServerOptions): (req: Request) => Promise
         );
       }
 
+      // Overlap policy (the epic's dispatch decision): under `"skip"` the
+      // manual run takes the schedule's own dedupe key, so a trigger while
+      // another run holds it throws `DedupeKeyError` — surfaced as a 409
+      // naming the key and the holder, never a silent no-op. Under `"stack"`
+      // it fires regardless.
       let runId: string;
       try {
         runId = await startTrackedRun(options.runtime, options.db, services, workflow, {
@@ -541,6 +649,11 @@ export function serve(options: ServerOptions & { port?: number }): ReturnType<ty
       "/api/*": (req) => handler(req),
       "/*": index,
     },
+    // Bun's `development: true` HMR mode crashes TanStack Router at boot
+    // (`Cannot read properties of null (reading 'replaceRouteChunk')` from
+    // router-core's dev-only prototype patch). Runtime bundling with
+    // `development: false` still serves the same HTML-route bundle, cached and
+    // minified, so the POC takes correctness over hot reload. See STATUS S2.
     development: false,
   });
 }

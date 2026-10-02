@@ -7,9 +7,6 @@
  * - a `cancel` arriving while a run is only a reserved slot is deferred into
  *   run start (L1): the run starts, is cancelled immediately, and ends as a
  *   clean RunCancelled with no orphaned slot.
- *
- * #38: tests create their own DaemonServices instead of using module-level
- * singletons or test seams.
  */
 
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
@@ -25,13 +22,13 @@ import { makeAgentRuntime } from "../runtime/agent-runtime";
 import { defineWorkflow, Schema } from "../workflow";
 import {
   ConcurrencyLimitError,
-  createRunRegistry,
+  DispatchCapError,
+  activeRunIds,
+  cancelRegisteredRun,
+  getActiveHandle,
+  isActive,
   startTrackedRun,
-  type DaemonServices,
 } from "./runs";
-import { createPubSub } from "./pubsub";
-import { createDedupeRegistry } from "../lib/dedupe";
-import { createRefreshGates } from "../lib/workspace";
 
 const SLOW_ADAPTER = createSlowFakeAdapter(
   [
@@ -57,13 +54,17 @@ function tmpRoot(): { root: string; finish: () => void } {
   return { root, finish: () => rmSync(root, { recursive: true, force: true }) };
 }
 
-function createTestServices(): DaemonServices {
-  return {
-    registry: createRunRegistry(),
-    pubsub: createPubSub(),
-    dedupeRegistry: createDedupeRegistry(),
-    refreshGates: createRefreshGates(),
-  };
+interface Gate {
+  readonly wait: () => Promise<void>;
+  readonly release: () => void;
+}
+
+function makeGate(): Gate {
+  let release: () => void = () => undefined;
+  const promise = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  return { wait: () => promise, release };
 }
 
 async function waitFor(predicate: () => boolean, timeoutMs = 5_000): Promise<void> {
@@ -75,32 +76,47 @@ async function waitFor(predicate: () => boolean, timeoutMs = 5_000): Promise<voi
   throw new Error("condition not met within timeout");
 }
 
+describe("domain errors as TaggedError (#34)", () => {
+  test("ConcurrencyLimitError carries _tag and maxConcurrentRuns", () => {
+    const err = ConcurrencyLimitError.of({ maxConcurrentRuns: 5 });
+    expect(err._tag).toBe("ConcurrencyLimitError");
+    expect(err.maxConcurrentRuns).toBe(5);
+    expect(err instanceof Error).toBe(true);
+  });
+
+  test("DispatchCapError carries _tag and message", () => {
+    const err = new DispatchCapError({ message: "depth exceeded" });
+    expect(err._tag).toBe("DispatchCapError");
+    expect(err.message).toContain("depth exceeded");
+    expect(err instanceof Error).toBe(true);
+  });
+
+  test("ConcurrencyLimitError constructs its message, so the stack header names it", () => {
+    const err = ConcurrencyLimitError.of({ maxConcurrentRuns: 5 });
+    expect(err.message).toBe("concurrency limit reached (max 5 concurrent runs)");
+    expect(err.stack?.split("\n")[0]).toBe(`ConcurrencyLimitError: ${err.message}`);
+  });
+});
+
 describe("startTrackedRun admission (M1: the slot is reserved before any await)", () => {
   test("a second start while the first is still reserving is refused atomically, and the slot frees after", async () => {
     const { root, finish } = tmpRoot();
     const db = openStore(join(root, "factory.db"));
-    const services = createTestServices();
+    const gate = makeGate();
 
-    const seed = join(root, "seed");
-    await Bun.$`git init -b main -q ${seed}`.quiet();
-    await Bun.$`git -C ${seed} -c user.name=seed -c user.email=seed@seed.local commit -q --allow-empty -m seed`.quiet();
-
-    const first = startTrackedRun(runtime, db, services, echoWorkflow, {
+    const first = startTrackedRun(runtime, db, echoWorkflow, {
       runId: "run-first",
-      workspace: {
-        workspaceRoot: join(root, "workspaces"),
-        sshUrl: seed,
-        identity: { name: "T", email: "t@t.test" },
-        retainedWorkspaces: 10,
-      },
+      dir: join(root, "first-dir"),
       input: {},
       maxConcurrentRuns: 1,
+      beforeStart: gate.wait,
     });
 
-    await waitFor(() => services.registry.activeRunIds().length === 1);
-    expect(services.registry.activeRunIds()).toEqual(["run-first"]);
+    await waitFor(() => activeRunIds().length === 1);
+    expect(activeRunIds()).toEqual(["run-first"]);
+    expect(getActiveHandle("run-first")).toBeUndefined();
 
-    const second = startTrackedRun(runtime, db, services, echoWorkflow, {
+    const second = startTrackedRun(runtime, db, echoWorkflow, {
       runId: "run-second",
       dir: join(root, "second-dir"),
       input: {},
@@ -114,10 +130,11 @@ describe("startTrackedRun admission (M1: the slot is reserved before any await)"
       ),
     ).resolves.toBeInstanceOf(ConcurrencyLimitError);
 
+    gate.release();
     const firstRunId = await first;
     expect(firstRunId).toBe("run-first");
-    await waitFor(() => !services.registry.isActive(firstRunId));
-    expect(services.registry.activeRunIds()).toEqual([]);
+    await waitFor(() => !isActive(firstRunId));
+    expect(activeRunIds()).toEqual([]);
 
     db.close();
     finish();
@@ -126,10 +143,9 @@ describe("startTrackedRun admission (M1: the slot is reserved before any await)"
   test("a failed allocation releases the reserved slot", async () => {
     const { root, finish } = tmpRoot();
     const db = openStore(join(root, "factory.db"));
-    const services = createTestServices();
 
     await expect(
-      startTrackedRun(runtime, db, services, echoWorkflow, {
+      startTrackedRun(runtime, db, echoWorkflow, {
         runId: "run-doomed",
         input: {},
         maxConcurrentRuns: 1,
@@ -142,15 +158,15 @@ describe("startTrackedRun admission (M1: the slot is reserved before any await)"
       }),
     ).rejects.toThrow(/workspace/);
 
-    expect(services.registry.activeRunIds()).toEqual([]);
+    expect(activeRunIds()).toEqual([]);
 
-    const runId = await startTrackedRun(runtime, db, services, echoWorkflow, {
+    const runId = await startTrackedRun(runtime, db, echoWorkflow, {
       dir: join(root, "dir"),
       input: {},
       maxConcurrentRuns: 1,
     });
-    expect(services.registry.activeRunIds()).toEqual([runId]);
-    await waitFor(() => !services.registry.isActive(runId));
+    expect(activeRunIds()).toEqual([runId]);
+    await waitFor(() => !isActive(runId));
 
     db.close();
     finish();
@@ -161,40 +177,35 @@ describe("cancel of a reserved-but-not-started run (L1)", () => {
   test("cancelling during the allocation window defers into run start; the run ends cancelled with no leak", async () => {
     const { root, finish } = tmpRoot();
     const db = openStore(join(root, "factory.db"));
-    const services = createTestServices();
+    mkdirSync(join(root, "dir"), { recursive: true });
+    const gate = makeGate();
 
-    const seed = join(root, "seed");
-    await Bun.$`git init -b main -q ${seed}`.quiet();
-    await Bun.$`git -C ${seed} -c user.name=seed -c user.email=seed@seed.local commit -q --allow-empty -m seed`.quiet();
-
-    const starting = startTrackedRun(runtime, db, services, sleepWorkflow, {
+    const starting = startTrackedRun(runtime, db, sleepWorkflow, {
       runId: "run-gated",
-      workspace: {
-        workspaceRoot: join(root, "workspaces"),
-        sshUrl: seed,
-        identity: { name: "T", email: "t@t.test" },
-        retainedWorkspaces: 10,
-      },
+      dir: join(root, "dir"),
       input: {},
       maxConcurrentRuns: 1,
+      beforeStart: gate.wait,
     });
 
-    await waitFor(() => services.registry.activeRunIds().length === 1);
+    await waitFor(() => activeRunIds().length === 1);
+    expect(getActiveHandle("run-gated")).toBeUndefined();
 
-    const cancelled = services.registry.cancelRegisteredRun("run-gated");
-    expect(cancelled).toBeDefined();
+    const cancelled = cancelRegisteredRun("run-gated");
+    expect(cancelled).toEqual({ kind: "reserved" });
 
+    gate.release();
     const runId = await starting;
     expect(runId).toBe("run-gated");
 
-    await waitFor(() => services.registry.activeRunIds().length === 0);
+    await waitFor(() => activeRunIds().length === 0);
     const events = getRunEvents(db, runId).map((e) => e.payload._tag);
     expect(events).toContain("RunStarted");
     expect(events).toContain("RunCancelled");
-    expect(services.registry.cancelRegisteredRun(runId)).toBeUndefined();
+    expect(cancelRegisteredRun(runId)).toBeUndefined();
 
     await Bun.sleep(50);
-    expect(services.registry.activeRunIds()).toEqual([]);
+    expect(activeRunIds()).toEqual([]);
 
     db.close();
     finish();
@@ -237,17 +248,17 @@ describe("scratch workspaces through startTrackedRun (issue #13)", () => {
     _tmp = root;
     const db = openStore(join(root, "factory.db"));
     mkdirSync(join(root, "seed"), { recursive: true });
-    const services = createTestServices();
 
-    const runId = await startTrackedRun(runtime, db, services, failingScratchWorkflow, {
+    const runId = await startTrackedRun(runtime, db, failingScratchWorkflow, {
       runId: "run-scratch-empty",
       workspace: { ...workspaceSpec(), sshUrl: join(root, "no-such-remote") },
       input: {},
     });
-    await waitFor(() => !services.registry.isActive(runId));
+    await waitFor(() => !isActive(runId));
 
     const dir = join(root, "workspaces", "run-scratch-empty");
     expect(existsSync(dir)).toBe(true);
+    // failing, so the dir survives for inspection (a completed scratch dir is reaped).
     expect(readdirSync(dir)).toEqual([]);
     expect(existsSync(join(root, "workspaces", ".mirror.git"))).toBe(false);
     finish();
@@ -258,23 +269,22 @@ describe("scratch workspaces through startTrackedRun (issue #13)", () => {
     _tmp = root;
     const db = openStore(join(root, "factory.db"));
     mkdirSync(join(root, "seed"), { recursive: true });
-    const services = createTestServices();
 
-    const okId = await startTrackedRun(runtime, db, services, scratchWorkflow, {
+    const okId = await startTrackedRun(runtime, db, scratchWorkflow, {
       runId: "run-scratch-ok",
       workspace: workspaceSpec(),
       input: {},
     });
-    await waitFor(() => !services.registry.isActive(okId));
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    await waitFor(() => !isActive(okId));
+    await new Promise((resolve) => setTimeout(resolve, 50)); // reap lands async
     expect(existsSync(join(root, "workspaces", "run-scratch-ok"))).toBe(false);
 
-    const badId = await startTrackedRun(runtime, db, services, failingScratchWorkflow, {
+    const badId = await startTrackedRun(runtime, db, failingScratchWorkflow, {
       runId: "run-scratch-bad",
       workspace: workspaceSpec(),
       input: {},
     });
-    await waitFor(() => !services.registry.isActive(badId));
+    await waitFor(() => !isActive(badId));
     await new Promise((resolve) => setTimeout(resolve, 50));
     expect(existsSync(join(root, "workspaces", "run-scratch-bad"))).toBe(true);
     finish();
@@ -287,6 +297,7 @@ describe("scratch workspaces through startTrackedRun (issue #13)", () => {
     const seed = join(root, "seed");
     await Bun.$`git init -b main -q ${seed}`.quiet();
 
+    // A kept (failed) scratch dir, already recorded in the log.
     appendEvent(db, {
       runId: "run-scratch-kept",
       seq: 0,
@@ -300,14 +311,15 @@ describe("scratch workspaces through startTrackedRun (issue #13)", () => {
       },
     } satisfies RunEvent);
     mkdirSync(join(root, "workspaces", "run-scratch-kept"), { recursive: true });
-    const services = createTestServices();
 
-    await startTrackedRun(runtime, db, services, echoWorkflow, {
+    // retention = 1: with the scratch dir correctly excluded, the only clone
+    // survives: the leftover must not count toward retention.
+    await startTrackedRun(runtime, db, echoWorkflow, {
       runId: "run-clone",
       workspace: { ...workspaceSpec(), sshUrl: seed, retainedWorkspaces: 1 },
       input: {},
     });
-    await waitFor(() => !services.registry.isActive("run-clone"));
+    await waitFor(() => !isActive("run-clone"));
 
     expect(existsSync(join(root, "workspaces", "run-clone"))).toBe(true);
     expect(existsSync(join(root, "workspaces", "run-scratch-kept"))).toBe(true);
@@ -345,9 +357,8 @@ describe("adapter.prepareWorkspace through startTrackedRun (#37)", () => {
     const seed = join(root, "seed");
     await Bun.$`git init -b main -q ${seed}`.quiet();
     const adapter = trackingAdapter();
-    const services = createTestServices();
 
-    const runId = await startTrackedRun(makeAgentRuntime(adapter), db, services, echoWorkflow, {
+    const runId = await startTrackedRun(makeAgentRuntime(adapter), db, echoWorkflow, {
       runId: "run-prep-clone",
       workspace: {
         workspaceRoot: join(root, "workspaces"),
@@ -357,7 +368,7 @@ describe("adapter.prepareWorkspace through startTrackedRun (#37)", () => {
       },
       input: {},
     });
-    await waitFor(() => !services.registry.isActive(runId));
+    await waitFor(() => !isActive(runId));
 
     expect(adapter.prepared).toEqual([join(root, "workspaces", "run-prep-clone")]);
     finish();
@@ -367,9 +378,8 @@ describe("adapter.prepareWorkspace through startTrackedRun (#37)", () => {
     const { root, finish } = tmpRoot();
     const db = openStore(join(root, "factory.db"));
     const adapter = trackingAdapter();
-    const services = createTestServices();
 
-    const runId = await startTrackedRun(makeAgentRuntime(adapter), db, services, scratchWorkflow, {
+    const runId = await startTrackedRun(makeAgentRuntime(adapter), db, scratchWorkflow, {
       runId: "run-prep-scratch",
       workspace: {
         workspaceRoot: join(root, "workspaces"),
@@ -379,7 +389,7 @@ describe("adapter.prepareWorkspace through startTrackedRun (#37)", () => {
       },
       input: {},
     });
-    await waitFor(() => !services.registry.isActive(runId));
+    await waitFor(() => !isActive(runId));
 
     expect(adapter.prepared).toEqual([]);
     finish();

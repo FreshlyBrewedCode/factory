@@ -17,9 +17,9 @@
  * coexist in one process without sharing state.
  */
 
+import { Schema, type ManagedRuntime } from "effect";
 import type { Database } from "bun:sqlite";
 import { rm } from "node:fs/promises";
-import { Schema, type ManagedRuntime } from "effect";
 import { admitRun } from "./admission";
 import { appendEvent, getRunEvents, listRuns } from "../persistence/store";
 import type { RunRepo } from "../runtime/run";
@@ -35,10 +35,6 @@ interface ReservedSlot {
   cancelled: boolean;
 }
 
-function isReserved(entry: RunHandle<unknown> | ReservedSlot | undefined): boolean {
-  return entry !== undefined && !("result" in entry) && "cancelled" in entry;
-}
-
 /**
  * Issue #14: how deep a parent → child → grandchild chain may nest — the cap
  * that keeps a workflow which dispatches itself from filling the daemon.
@@ -51,6 +47,10 @@ export const DEFAULT_MAX_CHILDREN_PER_RUN = 20;
 export class DispatchCapError extends Schema.TaggedError<DispatchCapError>()("DispatchCapError", {
   message: Schema.String,
 }) {}
+
+function isReserved(entry: RunHandle<unknown> | ReservedSlot | undefined): boolean {
+  return entry !== undefined && !("result" in entry) && "cancelled" in entry;
+}
 
 export class ConcurrencyLimitError extends Schema.TaggedError<ConcurrencyLimitError>()(
   "ConcurrencyLimitError",
@@ -199,6 +199,13 @@ export interface StartTrackedRunOptions {
    * through to the run's model precedence chain.
    */
   readonly agentOverrides?: { readonly model?: string };
+  /**
+   * ADR 0012 §3 (#37): when true, the runtime calls `adapter.prepareWorkspace`
+   * before the workflow runs. The caller sets this when it has done a
+   * `resetClone` on `dir`. Combined with the daemon's own allocation check,
+   * this covers both clone paths.
+   */
+  readonly prepareWorkspace?: boolean;
 }
 
 /**
@@ -414,6 +421,8 @@ export async function startTrackedRun(
       dir,
       ...(options.repo !== undefined ? { repo: options.repo } : {}),
       workspaceKind: kind,
+      prepareWorkspace:
+        options.prepareWorkspace === true || (workspaceAllocated && kind === "clone"),
       ...(dispatch !== undefined ? { dispatch } : {}),
       ...(options.parentRunId !== undefined ? { parentRunId: options.parentRunId } : {}),
       ...(options.dedupeKey !== undefined ? { dedupeKey: options.dedupeKey } : {}),
