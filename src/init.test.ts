@@ -9,6 +9,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { hostExec } from "./lib/exec";
+import { loadFactoryConfig } from "./config";
 import { detectRepo, initProject, slugFromRemote } from "./init";
 
 let cwd: string;
@@ -86,6 +87,30 @@ describe("initProject", () => {
     expect(config).toContain(`import hello from "./workflows/hello"`);
     expect(config).toContain(`slug: "acme/widgets"`);
     expect(workflow).toContain(`defineWorkflow("hello"`);
+  });
+
+  test("writes the default agent and a model for each agent (ADR 0013 §2)", async () => {
+    await makeGitRepo(cwd, "git@github.com:acme/widgets.git");
+    await initProject({ cwd });
+
+    const config = await read(join(cwd, ".factory/factory.config.ts"));
+    expect(config).toContain(`default: "claude"`);
+    expect(config).toContain(`claude: "sonnet"`);
+    expect(config).toContain(`opencode: "opencode/big-pickle"`);
+    // The generated config loads, and the agent block validates. The temp
+    // project has no node_modules, so point the package import at this source.
+    const index = join(import.meta.dir, "index.ts");
+    for (const file of [".factory/factory.config.ts", ".factory/workflows/hello.ts"]) {
+      const path = join(cwd, file);
+      await Bun.write(
+        path,
+        (await read(path)).replaceAll(`"@frebreco/factory"`, JSON.stringify(index)),
+      );
+    }
+    const loaded = await loadFactoryConfig(join(cwd, ".factory/factory.config.ts"));
+    expect(loaded.agent.default).toBe("claude");
+    expect(loaded.agent.models).toEqual({ claude: "sonnet", opencode: "opencode/big-pickle" });
+    expect(loaded.agent.hostSettings).toEqual({ claude: "ignore", opencode: "ignore" });
   });
 
   test("marks the repo block as needing edits when there is no remote", async () => {

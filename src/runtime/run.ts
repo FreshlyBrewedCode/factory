@@ -29,6 +29,7 @@ import type {
   WriteBackCallOptions,
 } from "../workflow";
 import { DedupeKeyError } from "../lib/dedupe";
+import { resolveAgentChoice, type AgentChoice, type ResolvedAgent } from "./agent-choice";
 import { AgentRuntime } from "./agent-runtime";
 import { buildAgentStepEffect } from "./agent-step";
 
@@ -40,9 +41,6 @@ export class RunCancelledSignal extends Schema.TaggedError<RunCancelledSignal>()
     return new RunCancelledSignal({ message: "run cancelled" });
   }
 }
-
-/** Matches the spike's model (STATUS.md); overridden per-call or per-workflow. */
-export const DEFAULT_MODEL = "opencode-go/deepseek-v4.1-flash";
 
 /**
  * The deployment-known half of write-back (D27/D32): the repo slug pushed to
@@ -96,11 +94,11 @@ export interface StartRunOptions {
    */
   readonly scheduleId?: string;
   /**
-   * Issue #16: agent-level overrides the starting schedule carries (its
-   * `agent.model`). Sits between a per-call option and the workflow's own
-   * default in the precedence chain.
+   * The run level of the agent/model choice (ADR 0013 §2): what the run
+   * request or the starting schedule (issue #16) names. Sits between a
+   * per-call option and the workflow's own default.
    */
-  readonly agentOverrides?: { readonly model?: string };
+  readonly agentOverrides?: AgentChoice;
   readonly onEvent: (event: RunEvent) => void;
 }
 
@@ -248,11 +246,20 @@ export function startRun<I, O>(
   ): Promise<AgentResult<O2>> => {
     if (cancelled) throw RunCancelledSignal.of();
 
+    // ADR 0013 §2: call > run (request or schedule) > workflow > config. An
+    // unresolvable choice fails here, before the step starts and before any
+    // agent process does.
+    const { defaults } = await runtime.runPromise(Effect.service(AgentRuntime));
+    let choice: ResolvedAgent;
+    try {
+      choice = resolveAgentChoice([opts, options.agentOverrides, workflow.agent], defaults);
+    } catch (err) {
+      throw new Error(`agent step "${name}": ${err instanceof Error ? err.message : String(err)}`);
+    }
+    const { agent, model } = choice;
+    if (cancelled) throw RunCancelledSignal.of();
+
     const stepId = nextStepId();
-    // Precedence (issue #16): per-call option > the starting schedule's
-    // override > the workflow's `agent` default > the runtime fallback.
-    const model =
-      opts?.model ?? options.agentOverrides?.model ?? workflow.agent?.model ?? DEFAULT_MODEL;
     const outputSchema =
       opts?.output !== undefined ? Schema.toJsonSchemaDocument(opts.output) : undefined;
 
@@ -260,6 +267,7 @@ export function startRun<I, O>(
       _tag: "AgentStepStarted",
       stepId,
       name,
+      agent,
       model,
       prompt,
       structured: opts?.output !== undefined,
@@ -269,6 +277,7 @@ export function startRun<I, O>(
     const handle = buildAgentStepEffect({
       threadId: options.runId,
       dir: options.dir,
+      agent,
       model,
       prompt,
       outputSchema,

@@ -10,6 +10,7 @@
 import type { DedupeRegistryShape } from "../lib/dedupe";
 import { DedupeRegistry } from "../lib/dedupe";
 import { RefreshGates, type RefreshGatesShape } from "../lib/workspace";
+import { FAKE_AGENT_MODELS } from "../replay/adapter";
 import type { AgentAdapter } from "../runtime/agent-adapter";
 import { makeDaemonRuntime, serviceOf, type DaemonRuntime } from "./daemon-runtime";
 import { RunPubSub, type PubSub } from "./pubsub";
@@ -24,7 +25,11 @@ export interface TestDaemon {
 }
 
 export function createTestDaemon(adapter?: AgentAdapter): TestDaemon {
-  const runtime = makeDaemonRuntime(adapter);
+  const runtime = makeDaemonRuntime({
+    ...(adapter !== undefined ? { adapter } : {}),
+    // Factory always sends a model (ADR 0013 §2); the fakes ignore it.
+    models: FAKE_AGENT_MODELS,
+  });
   return {
     runtime,
     registry: serviceOf(runtime, RunRegistry),

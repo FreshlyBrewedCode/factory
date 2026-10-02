@@ -11,10 +11,25 @@ import {
   type CliOptions,
   type StartCliOptions,
 } from "./cli";
+import { ACP_AGENT_KINDS, type AcpAgentKind } from "./runtime/acp-agents";
 import { startDaemon, type DaemonOptions } from "./server/daemon";
 
 const DEFAULT_DB_PATH = ".factory/factory.db";
 const DEFAULT_DAEMON_URL = "http://localhost:3000";
+
+/** `--agent` / `--model` as the run's agent choice, absent when neither is given. */
+function agentChoiceOf(
+  agent: AcpAgentKind | undefined,
+  model: string | undefined,
+): Pick<StartCliOptions, "agent"> {
+  if (agent === undefined && model === undefined) return {};
+  return {
+    agent: {
+      ...(agent !== undefined ? { agent } : {}),
+      ...(model !== undefined ? { model } : {}),
+    },
+  };
+}
 
 // Each command's flag/argument spec is exported on its own so the argv tests
 // parse against these exact specs with a capturing handler, instead of a
@@ -112,6 +127,14 @@ export const startConfig = {
     Flag.withDefault(false),
     Flag.withDescription("Stream the run's events and exit with its exit code"),
   ),
+  agent: Flag.Literals("agent", ACP_AGENT_KINDS).pipe(
+    Flag.optional,
+    Flag.withDescription("The agent this run's steps use, unless a step names one"),
+  ),
+  model: Flag.String("model").pipe(
+    Flag.optional,
+    Flag.withDescription("The model this run's steps use, unless a step names one"),
+  ),
 };
 
 export const startCommand = Command.make("start", startConfig, (config) =>
@@ -130,6 +153,7 @@ export const startCommand = Command.make("start", startConfig, (config) =>
       workflowId: config.workflowId,
       input,
       watch: config.watch,
+      ...agentChoiceOf(Option.getOrUndefined(config.agent), Option.getOrUndefined(config.model)),
       baseUrl: Option.getOrElse(config.url, () => process.env.FACTORY_URL ?? DEFAULT_DAEMON_URL),
     };
 

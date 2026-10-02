@@ -37,6 +37,8 @@ interface StepBase {
 export interface AgentStepView extends StepBase {
   readonly kind: "agent";
   readonly stepId: string;
+  /** The agent the step ran on; absent in logs from before agents were selectable. */
+  readonly agent: string | undefined;
   readonly model: string;
   readonly structured: boolean;
   readonly prompt: string;
@@ -141,6 +143,7 @@ export function deriveSteps(
           durationMs: undefined,
           descriptor: live ? "streaming" : "killed mid-step",
           stepId: payload.stepId,
+          agent: payload.agent,
           model: payload.model,
           structured: payload.structured,
           prompt: payload.prompt,
@@ -181,6 +184,7 @@ export function deriveSteps(
           durationMs: payload.durationMs,
           descriptor: `${payload.chunkCount} chunks`,
           stepId: payload.stepId,
+          agent: base?.agent,
           model: base?.model ?? "unknown",
           structured: base?.structured ?? false,
           prompt: base?.prompt ?? "",
@@ -460,7 +464,9 @@ export function summarizeEvent(event: RunEvent): string {
     case "RunCancelled":
       return `cancelled · ${payload.durationMs}ms`;
     case "AgentStepStarted":
-      return `${payload.name} · ${payload.model}`;
+      return payload.agent !== undefined
+        ? `${payload.name} · ${payload.agent} · ${payload.model}`
+        : `${payload.name} · ${payload.model}`;
     case "AgentChunk":
       return payload.chunkType;
     case "AgentStepFinished":

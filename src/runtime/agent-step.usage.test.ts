@@ -17,7 +17,7 @@ import { Effect } from "effect";
 import { agentStepContextTokens } from "../events";
 import type { AgentAdapter, AgentAdapterYield } from "./agent-adapter";
 import { AgentRuntimeLayer } from "./agent-runtime";
-import { loadCorpusBlocks } from "../replay/adapter";
+import { fakeAgents, loadCorpusBlocks } from "../replay/adapter";
 import { buildAgentStepEffect } from "./agent-step";
 
 const CORPUS = "test/corpus/run-1789308170212.ndjson";
@@ -34,11 +34,14 @@ async function runBlock(chunks: ReadonlyArray<unknown>) {
   const handle = buildAgentStepEffect({
     threadId: "thread",
     dir: ".",
+    agent: "opencode",
     model: "model",
     prompt: "prompt",
     onChunk: () => {},
   });
-  return await Effect.runPromise(Effect.provide(handle.effect, AgentRuntimeLayer(adapter)));
+  return await Effect.runPromise(
+    Effect.provide(handle.effect, AgentRuntimeLayer(fakeAgents(adapter))),
+  );
 }
 
 describe("agent step usage", () => {

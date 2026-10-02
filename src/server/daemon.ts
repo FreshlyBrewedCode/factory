@@ -32,7 +32,8 @@ import { mkdir } from "node:fs/promises";
 import { dirname } from "node:path";
 import { Effect, Fiber } from "effect";
 type AnyFiber = Fiber.Fiber<unknown, unknown>;
-import type { FactoryConfig } from "../config";
+import { configuredAgents, type FactoryConfig } from "../config";
+import { checkAgents, type AcpAgentKind, type AgentProblem } from "../runtime/acp-agents";
 import { openStore } from "../persistence/store";
 import { serve } from "./http";
 import {
@@ -61,6 +62,8 @@ export interface DaemonOptions {
    * them, over `DEFAULT_SHUTDOWN_TIMEOUT_MS`.
    */
   readonly shutdownTimeoutMs?: number;
+  /** The agent availability check run at start, over `checkAgents` (tests). */
+  readonly checkAgents?: (agents: ReadonlyArray<AcpAgentKind>) => Promise<AgentProblem[]>;
 }
 
 export interface DaemonHandle {
@@ -82,6 +85,28 @@ export interface DaemonHandle {
   readonly stop: () => Promise<void>;
 }
 
+/**
+ * Log every configured agent that cannot run on this host. Returns the
+ * problems for tests; never throws — a failing check is itself only logged.
+ */
+export async function reportAgentProblems(
+  agents: ReadonlyArray<AcpAgentKind>,
+  check: (agents: ReadonlyArray<AcpAgentKind>) => Promise<AgentProblem[]> = checkAgents,
+  log: (line: string) => void = console.warn,
+): Promise<AgentProblem[]> {
+  let problems: AgentProblem[];
+  try {
+    problems = await check(agents);
+  } catch (err) {
+    log(`agents: availability check failed: ${err instanceof Error ? err.message : String(err)}`);
+    return [];
+  }
+  for (const { agent, problem } of problems) {
+    log(`agents: ${agent} is configured but cannot run on this host: ${problem}`);
+  }
+  return problems;
+}
+
 /** After disposal, how long `stop()` still waits for cancelled runs to record their end. */
 const SETTLE_AFTER_DISPOSE_MS = 2_000;
 
@@ -92,10 +117,16 @@ export async function startDaemon(options: DaemonOptions): Promise<DaemonHandle>
   await mkdir(dirname(options.dbPath), { recursive: true });
   const db = openStore(options.dbPath);
 
-  const runtime = makeDaemonRuntime(options.config?.agent.adapter);
+  const runtime = makeDaemonRuntime(options.config?.agent);
   // Build the layers now: a failing (or, one day, asynchronous) layer
   // surfaces at startup, and every later `serviceOf` reads the built context.
   await runtime.context();
+
+  // ADR 0013: name a configured agent that cannot run on this host now,
+  // rather than fail its first step. In the background — it only logs.
+  if (options.config !== undefined && options.config.agent.adapter === undefined) {
+    void reportAgentProblems(configuredAgents(options.config), options.checkAgents ?? checkAgents);
+  }
 
   const server = serve({
     db,

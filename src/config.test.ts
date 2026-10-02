@@ -5,6 +5,7 @@ import {
   DEFAULT_RETAINED_WORKSPACES,
   DEFAULT_SCHEDULE_TIMEZONE,
   DEFAULT_WORKSPACE_ROOT,
+  configuredAgents,
   defineConfig,
   type ScheduleConfigInput,
 } from "./config";
@@ -278,5 +279,107 @@ export function typeCheckScheduleDefinition(workflow: typeof TYPED_WORKFLOW): vo
 describe("defineSchedule inference", () => {
   test("the input type comes from the workflow definition", () => {
     typeCheckScheduleDefinition(TYPED_WORKFLOW);
+  });
+});
+
+describe("defineConfig agent (ADR 0013 §2, §3)", () => {
+  const withAgent = (agent: unknown) => defineConfig({ ...baseInput(), agent: agent as never });
+
+  test("defaults: opencode, no models, host settings ignored for both agents", () => {
+    const config = defineConfig(baseInput());
+    expect(config.agent).toEqual({
+      default: "opencode",
+      models: {},
+      hostSettings: { claude: "ignore", opencode: "ignore" },
+    });
+  });
+
+  test("carries default, models and hostSettings through", () => {
+    const config = withAgent({
+      default: "claude",
+      models: { claude: "sonnet", opencode: "opencode/big-pickle" },
+      hostSettings: { opencode: "include" },
+    });
+    expect(config.agent).toEqual({
+      default: "claude",
+      models: { claude: "sonnet", opencode: "opencode/big-pickle" },
+      hostSettings: { claude: "ignore", opencode: "include" },
+    });
+  });
+
+  test("keeps an injected adapter", () => {
+    const adapter = { prepareWorkspace: async () => {}, stream: () => [] as never };
+    expect(withAgent({ adapter }).agent.adapter).toBe(adapter);
+  });
+
+  test.each([
+    [{ default: "codex" }, /agent.default must be one of "claude" \| "opencode" \(got "codex"\)/],
+    [{ models: { codex: "x" } }, /agent.models has an unknown agent "codex"/],
+    [{ models: { claude: "" } }, /agent.models.claude must be a non-empty model id/],
+    [{ models: { claude: 4 } }, /agent.models.claude must be a non-empty model id \(got 4\)/],
+    [
+      { hostSettings: { claude: "yes" } },
+      /agent.hostSettings.claude must be "ignore" or "include"/,
+    ],
+    [{ hostSettings: { codex: "ignore" } }, /agent.hostSettings has an unknown agent "codex"/],
+  ])("rejects %j at load", (agent, message) => {
+    expect(() => withAgent(agent)).toThrow(message);
+  });
+
+  test("a workflow's unknown agent fails at load, naming the workflow", () => {
+    const workflow = defineWorkflow("bad-agent", {
+      input: Schema.Struct({}),
+      agent: { agent: "codex" as never },
+      run: async () => ({}),
+    });
+    expect(() => defineConfig({ ...baseInput(), workflows: [workflow] })).toThrow(
+      /workflow "bad-agent"'s agent has an unknown agent "codex"/,
+    );
+  });
+
+  test("a schedule's unknown agent or empty model fails at load, naming the schedule", () => {
+    const workflow = defineWorkflow("wf", { input: Schema.Struct({}), run: async () => ({}) });
+    const schedule = (agent: unknown): ScheduleConfigInput => ({
+      id: "nightly",
+      workflow: "wf",
+      input: {},
+      cron: "0 3 * * *",
+      agent: agent as never,
+    });
+    expect(() =>
+      defineConfig({
+        ...baseInput(),
+        workflows: [workflow],
+        schedules: [schedule({ agent: "x" })],
+      }),
+    ).toThrow(/schedule "nightly"'s agent has an unknown agent "x"/);
+    expect(() =>
+      defineConfig({ ...baseInput(), workflows: [workflow], schedules: [schedule({ model: "" })] }),
+    ).toThrow(/schedule "nightly"'s agent has an invalid model ""/);
+    const ok = defineConfig({
+      ...baseInput(),
+      workflows: [workflow],
+      schedules: [schedule({ agent: "claude", model: "haiku" })],
+    });
+    expect(ok.schedules[0]?.agent).toEqual({ agent: "claude", model: "haiku" });
+  });
+
+  test("configuredAgents: the default, agents with a model, and agents a workflow or schedule names", () => {
+    const pinned = defineWorkflow("pinned", {
+      input: Schema.Struct({}),
+      agent: { agent: "claude" },
+      run: async () => ({}),
+    });
+    expect(configuredAgents(defineConfig(baseInput()))).toEqual(["opencode"]);
+    expect(configuredAgents(withAgent({ default: "claude" }))).toEqual(["claude"]);
+    expect(
+      configuredAgents(
+        withAgent({ default: "claude", models: { opencode: "opencode/big-pickle" } }),
+      ),
+    ).toEqual(["claude", "opencode"]);
+    expect(configuredAgents(defineConfig({ ...baseInput(), workflows: [pinned] }))).toEqual([
+      "claude",
+      "opencode",
+    ]);
   });
 });

@@ -392,3 +392,30 @@ describe("Factory lifecycle events", () => {
     });
   });
 });
+
+describe("AgentStepStarted.agent (ADR 0013 §2)", () => {
+  const started = (extra: Record<string, unknown>) => ({
+    runId: "r",
+    seq: 0,
+    ts: 0,
+    payload: {
+      _tag: "AgentStepStarted",
+      stepId: "step-0",
+      name: "implement",
+      model: "sonnet",
+      prompt: "p",
+      structured: false,
+      ...extra,
+    },
+  });
+
+  test("records the agent beside the model", () => {
+    const event = decodeRunEvent(started({ agent: "claude" }));
+    expect(event.payload._tag === "AgentStepStarted" && event.payload.agent).toBe("claude");
+  });
+
+  test("a log written before agents were selectable has none, and still decodes", () => {
+    const event = decodeRunEvent(started({}));
+    expect(event.payload._tag === "AgentStepStarted" && "agent" in event.payload).toBe(false);
+  });
+});

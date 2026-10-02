@@ -16,8 +16,7 @@
 import { Effect, Layer, ManagedRuntime, type Context } from "effect";
 import { DedupeRegistry, DedupeRegistryLayer } from "../lib/dedupe";
 import { RefreshGates, RefreshGatesLayer } from "../lib/workspace";
-import type { AgentAdapter } from "../runtime/agent-adapter";
-import { AgentRuntime, AgentRuntimeLayer } from "../runtime/agent-runtime";
+import { AgentRuntime, AgentRuntimeLayer, type AgentRuntimeConfig } from "../runtime/agent-runtime";
 import { RunPubSub, RunPubSubLayer } from "./pubsub";
 import { RunRegistry, RunRegistryLayer } from "./runs";
 
@@ -27,10 +26,13 @@ export type DaemonServices = AgentRuntime | RunRegistry | RunPubSub | DedupeRegi
 /** The daemon's `ManagedRuntime`: the agent runtime plus its per-daemon state. */
 export type DaemonRuntime = ManagedRuntime.ManagedRuntime<DaemonServices, never>;
 
-/** The daemon's layer: `adapter` (or the opencode default) plus fresh per-daemon state. */
-export const DaemonLayer = (adapter?: AgentAdapter): Layer.Layer<DaemonServices> =>
+/**
+ * The daemon's layer: the agent runtime for `agent` (config's `agent` block —
+ * the ACP runtime unless it injects an adapter) plus fresh per-daemon state.
+ */
+export const DaemonLayer = (agent?: AgentRuntimeConfig): Layer.Layer<DaemonServices> =>
   Layer.mergeAll(
-    AgentRuntimeLayer(adapter),
+    AgentRuntimeLayer(agent),
     RunRegistryLayer,
     RunPubSubLayer,
     DedupeRegistryLayer,
@@ -41,8 +43,8 @@ export const DaemonLayer = (adapter?: AgentAdapter): Layer.Layer<DaemonServices>
  * Build a daemon runtime. The caller owns it and must `dispose()` it; tests
  * build one per case for isolated state.
  */
-export const makeDaemonRuntime = (adapter?: AgentAdapter): DaemonRuntime =>
-  ManagedRuntime.make(DaemonLayer(adapter));
+export const makeDaemonRuntime = (agent?: AgentRuntimeConfig): DaemonRuntime =>
+  ManagedRuntime.make(DaemonLayer(agent));
 
 /**
  * Resolve one of the daemon's services from its runtime, synchronously — the

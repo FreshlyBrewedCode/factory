@@ -26,6 +26,19 @@ export default defineConfig({
   // Add a workflow by importing it and listing it here.
   workflows: [hello, implementParentIssue],
 
+  // The coding agent a step runs on ("claude" or "opencode") unless the
+  // workflow, the run or the ctx.agent call names one, and the model each
+  // agent runs on unless one of those names a model. Factory always sends a
+  // model; ids are the agent's own and passed verbatim. This project's runs
+  // stay on opencode, where they ran before agents were selectable.
+  agent: {
+    default: "opencode",
+    models: {
+      claude: "sonnet",
+      opencode: "opencode/big-pickle",
+    },
+  },
+
   // How many runs may be in flight at once. A run over the limit is refused,
   // not queued.
   maxConcurrentRuns: 2,

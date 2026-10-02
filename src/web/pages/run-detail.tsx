@@ -648,6 +648,7 @@ function StepDetails({
     case "agent":
       fields.push(
         fieldRow("stepId", step.stepId),
+        fieldRow("agent", step.agent ?? "—"),
         fieldRow("model", step.model),
         fieldRow("structured", String(step.structured)),
         fieldRow("outcome", <StatusCell status={step.status} />),

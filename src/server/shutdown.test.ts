@@ -14,7 +14,7 @@ import { Schema } from "effect";
 import { defineConfig } from "../config";
 import { RefreshGates } from "../lib/workspace";
 import { getRunEvents, openStore } from "../persistence/store";
-import { createSlowFakeAdapter } from "../replay/adapter";
+import { fakeAgents, createSlowFakeAdapter } from "../replay/adapter";
 import type { AgentAdapter, AgentAdapterYield } from "../runtime/agent-adapter";
 import { makeAgentRuntime } from "../runtime/agent-runtime";
 import { startRun } from "../runtime/run";
@@ -120,7 +120,7 @@ async function makeDaemon(root: string, sshUrl = join(root, "no-remote")): Promi
     dbPath: join(root, "factory.db"),
     port: 0,
     config: defineConfig({
-      agent: { adapter: createSlowFakeAdapter([], 1) },
+      agent: fakeAgents(createSlowFakeAdapter([], 1)),
       repo: {
         sshUrl,
         identity: { name: "Factory", email: "factory@factory.test" },
@@ -242,7 +242,7 @@ describe("daemon shutdown cancels active runs (#38)", () => {
     const pidFile = join(root, "child.pid");
     const dbPath = join(root, "factory.db");
     const db = openStore(dbPath);
-    const runtime = makeDaemonRuntime(createSlowFakeAdapter([], 1));
+    const runtime = makeDaemonRuntime(fakeAgents(createSlowFakeAdapter([], 1)));
     try {
       const runId = await startTrackedRun(runtime, db, longExec, {
         workspace: {
@@ -269,7 +269,7 @@ describe("daemon shutdown cancels active runs (#38)", () => {
   test("a cancel mid-agent-step records RunCancelled promptly even if the adapter never yields again", async () => {
     const adapter = waitingAdapter({ cooperative: false });
     const events: Array<RunEvent> = [];
-    const handle = startRun(agentStep, makeAgentRuntime(adapter), {
+    const handle = startRun(agentStep, makeAgentRuntime(fakeAgents(adapter)), {
       runId: "run-blocked-agent",
       dir: tmpdir(),
       input: {},
@@ -293,7 +293,7 @@ describe("daemon shutdown cancels active runs (#38)", () => {
       dbPath: join(root, "factory.db"),
       port: 0,
       config: defineConfig({
-        agent: { adapter },
+        agent: fakeAgents(adapter),
         repo: {
           sshUrl: join(root, "no-remote"),
           identity: { name: "Factory", email: "factory@factory.test" },
@@ -329,7 +329,7 @@ describe("daemon shutdown cancels active runs (#38)", () => {
       port: 0,
       shutdownTimeoutMs: 200,
       config: defineConfig({
-        agent: { adapter: waitingAdapter({ cooperative: false }) },
+        agent: fakeAgents(waitingAdapter({ cooperative: false })),
         repo: {
           sshUrl: join(root, "no-remote"),
           identity: { name: "Factory", email: "factory@factory.test" },

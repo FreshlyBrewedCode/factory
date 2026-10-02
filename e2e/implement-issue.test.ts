@@ -25,7 +25,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, test } from "bun:test";
 import { hostExec } from "../src/lib/exec";
-import { createCorpusReplayAdapter } from "../src/replay/adapter";
+import { fakeAgents, createCorpusReplayAdapter } from "../src/replay/adapter";
 import { makeAgentRuntime } from "../src/runtime/agent-runtime";
 import { startRun } from "../src/runtime/run";
 import implementIssue from "./implement-issue";
@@ -121,7 +121,7 @@ describe("implement-issue workflow, replayed against the recorded round-trip cor
       const events: Array<unknown> = [];
       const handle = startRun(
         implementIssue,
-        makeAgentRuntime(createCorpusReplayAdapter(FULL_ROUND_TRIP_CORPUS)),
+        makeAgentRuntime(fakeAgents(createCorpusReplayAdapter(FULL_ROUND_TRIP_CORPUS))),
         {
           runId: "test-run-corpus-replay",
           dir: workDir,

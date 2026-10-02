@@ -189,7 +189,7 @@ const adapter = acpAdapter(definition, {
 
 const dir = await scratchRepo();
 console.log(`${mode} ${agent} model=${model} dir=${dir}`);
-const runtime = makeAgentRuntime(adapter);
+const runtime = makeAgentRuntime({ adapter, default: agent });
 const t0 = Date.now();
 const handle = startRun(mode === "isolation" ? isolation : hello, runtime, {
   runId: `spike-${stamp}`,

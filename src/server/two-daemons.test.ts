@@ -13,7 +13,7 @@ import { describe, expect, test } from "bun:test";
 import { Schema } from "effect";
 import { defineWorkflow } from "../workflow";
 import { defineConfig } from "../config";
-import { createSlowFakeAdapter } from "../replay/adapter";
+import { createSlowFakeAdapter, fakeAgents } from "../replay/adapter";
 import { startDaemon } from "./daemon";
 import { isTerminal, type RunEvent } from "../events";
 import type { DaemonHandle } from "./daemon";
@@ -98,7 +98,7 @@ describe("two daemons in one process (#38)", () => {
       dbPath: join(root, "daemon1.db"),
       port: 0,
       config: defineConfig({
-        agent: { adapter },
+        agent: fakeAgents(adapter),
         repo: {
           sshUrl: join(root, "seed-not-used"),
           identity: { name: "Factory", email: "factory@factory.test" },
@@ -115,7 +115,7 @@ describe("two daemons in one process (#38)", () => {
       dbPath: join(root, "daemon2.db"),
       port: 0,
       config: defineConfig({
-        agent: { adapter },
+        agent: fakeAgents(adapter),
         repo: {
           sshUrl: join(root, "seed-not-used"),
           identity: { name: "Factory", email: "factory@factory.test" },

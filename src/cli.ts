@@ -2,7 +2,7 @@
 /**
  * `factory run <workflow.ts>` (STATUS.md phase 1: "CLI-driven, in-memory; no
  * server, no sqlite"). Dynamic-imports a workflow module's `default` export,
- * optionally clones a fresh working tree, runs it against real opencode,
+ * optionally clones a fresh working tree, runs it on the agents the config names (ADR 0013),
  * and streams `RunEvent`s to stdout and an NDJSON file. `SIGINT` cancels the
  * in-flight run rather than killing the process outright, so the runtime's
  * own cancellation path (`RunCancelledSignal`, `AgentStepFinished{outcome:
@@ -27,8 +27,8 @@ import { resetClone } from "./lib/clone";
 import { loadWorkflow } from "./lib/load-workflow";
 import { streamSse } from "./lib/sse-client";
 import { appendEvent, getRunEvents, listRuns, openStore } from "./persistence/store";
-import type { AgentAdapter } from "./runtime/agent-adapter";
-import { makeAgentRuntime } from "./runtime/agent-runtime";
+import type { AgentChoice } from "./runtime/agent-choice";
+import { makeAgentRuntime, type AgentRuntimeConfig } from "./runtime/agent-runtime";
 import { startRun } from "./runtime/run";
 import { factoryCommand } from "./cli-commands";
 
@@ -40,10 +40,11 @@ export interface CliOptions {
   readonly outPath: string;
   readonly dbPath: string;
   /**
-   * Injectable agent adapter for tests. When omitted, `runCli` falls back to
-   * `factory.config.ts`'s `agent.adapter` (or the live opencode adapter).
+   * Injectable agent runtime for tests. When omitted, `runCli` uses
+   * `factory.config.ts`'s `agent` block (the ACP runtime unless it injects an
+   * adapter), or the bare defaults without a config.
    */
-  readonly adapter?: AgentAdapter;
+  readonly agent?: AgentRuntimeConfig;
 }
 
 function formatEvent(event: RunEvent): string {
@@ -66,17 +67,18 @@ export async function runCli(options: CliOptions): Promise<number> {
 
   const runId = `run-${Date.now()}`;
   let repo: RunRepo | undefined;
-  let adapter = options.adapter;
+  let agent: AgentRuntimeConfig = {};
   try {
     const config = await loadFactoryConfig();
     repo = { slug: config.repo.slug, baseBranch: config.repo.baseBranch };
-    adapter ??= config.agent.adapter;
+    agent = config.agent;
   } catch {
     repo = undefined;
   }
   // The direct-run path's composition root (issue #36): one runtime for this
-  // one run, disposed once the run settles.
-  const runtime = makeAgentRuntime(adapter);
+  // one run, disposed once the run settles. Without a config the steps run
+  // on `DEFAULT_AGENT` and must name their model themselves.
+  const runtime = makeAgentRuntime(options.agent ?? agent);
   const handle = startRun(workflow, runtime, {
     runId,
     dir: options.dir,
@@ -151,6 +153,8 @@ export interface StartCliOptions {
   readonly workflowId: string;
   readonly input: unknown;
   readonly watch: boolean;
+  /** The run level of the agent/model choice (ADR 0013 §2): `--agent` / `--model`. */
+  readonly agent?: AgentChoice;
 }
 
 export interface WatchSseOptions {
@@ -215,7 +219,11 @@ export async function startCli(options: StartCliOptions): Promise<number> {
     res = await fetch(`${options.baseUrl}/api/runs`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ workflowId: options.workflowId, input: options.input }),
+      body: JSON.stringify({
+        workflowId: options.workflowId,
+        input: options.input,
+        ...(options.agent !== undefined ? { agent: options.agent } : {}),
+      }),
     });
   } catch (err) {
     console.error(

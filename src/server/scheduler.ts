@@ -30,6 +30,7 @@
  * `tickOnce` receives them as ordinary arguments in `SchedulerDeps`.
  */
 
+import type { AgentChoice } from "../runtime/agent-choice";
 import { Clock, Cron, Effect, Schedule, Schema } from "effect";
 import type { Database } from "bun:sqlite";
 import type { FactoryConfig } from "../config";
@@ -58,7 +59,7 @@ export interface RuntimeSchedule {
   readonly cron: Cron.Cron;
   readonly overlap: "skip" | "stack";
   readonly runOnStart: boolean;
-  readonly agent: { readonly model?: string } | undefined;
+  readonly agent: AgentChoice | undefined;
 }
 
 export function scheduleDedupeKey(schedule: RuntimeSchedule): string {
