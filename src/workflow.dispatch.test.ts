@@ -18,7 +18,7 @@ import { join } from "node:path";
 import { describe, expect, test } from "bun:test";
 import { Schema } from "effect";
 import type { RunEvent } from "./events";
-import { createSlowFakeAdapter } from "./replay/adapter";
+import { fakeAgents, createSlowFakeAdapter } from "./replay/adapter";
 import { makeAgentRuntime } from "./runtime/agent-runtime";
 import { startRun } from "./runtime/run";
 import { defineWorkflow } from "./workflow";
@@ -57,7 +57,7 @@ describe("ctx.dispatch (issue #14)", () => {
       },
     });
 
-    const handle = startRun(parent, makeAgentRuntime(SLOW_ADAPTER), {
+    const handle = startRun(parent, makeAgentRuntime(fakeAgents(SLOW_ADAPTER)), {
       runId: "run-parent-1",
       dir: root,
       input: {},
@@ -93,22 +93,26 @@ describe("ctx.dispatch (issue #14)", () => {
 
     let childResult: Promise<{ outcome: string }> | undefined;
 
-    const handle = startRun(parent, makeAgentRuntime(SLOW_ADAPTER), {
+    const handle = startRun(parent, makeAgentRuntime(fakeAgents(SLOW_ADAPTER)), {
       runId: "run-parent-x",
       dir: root,
       input: {},
       dispatch: (childWorkflow, input) => {
         void childWorkflow.id;
         childEvents = [];
-        const childRun = startRun(childWorkflow as never, makeAgentRuntime(SLOW_ADAPTER), {
-          runId: "run-child-x",
-          dir: root,
-          input,
-          parentRunId: "run-parent-x",
-          onEvent: (event) => {
-            childEvents.push(event);
+        const childRun = startRun(
+          childWorkflow as never,
+          makeAgentRuntime(fakeAgents(SLOW_ADAPTER)),
+          {
+            runId: "run-child-x",
+            dir: root,
+            input,
+            parentRunId: "run-parent-x",
+            onEvent: (event) => {
+              childEvents.push(event);
+            },
           },
-        });
+        );
         childResult = childRun.result;
         return Promise.resolve("run-child-x");
       },
@@ -145,7 +149,7 @@ describe("ctx.dispatch (issue #14)", () => {
       run: async (ctx) => ctx.dispatch(numberedChild, { n: 1 }),
     });
 
-    const handle = startRun(parent, makeAgentRuntime(SLOW_ADAPTER), {
+    const handle = startRun(parent, makeAgentRuntime(fakeAgents(SLOW_ADAPTER)), {
       runId: "run-no-daemon",
       dir: root,
       input: {},

@@ -22,6 +22,7 @@ export { defineWorkflow, Schema } from "./workflow";
 
 export type {
   AgentCallOptions,
+  AgentKind,
   AgentResult,
   AssertCallback,
   AssertResult,
@@ -47,6 +48,7 @@ export {
 } from "./config";
 
 export type {
+  AgentConfigInput,
   FactoryConfig,
   FactoryConfigInput,
   RepoConfig,

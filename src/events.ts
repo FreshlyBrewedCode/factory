@@ -160,6 +160,13 @@ export const RunEventPayload = Schema.TaggedUnion({
      */
     stepId: Schema.String,
     name: Schema.String,
+    /**
+     * The agent the step ran on (ADR 0013 §2): `claude`, `opencode`. Optional
+     * because logs written before agents were selectable have none (they
+     * all ran on opencode).
+     */
+    agent: Schema.optional(Schema.String),
+    /** The agent's own model id, as sent to it. */
     model: Schema.String,
     prompt: Schema.String,
     /** Whether an `output` schema was passed, i.e. whether to expect structured output. */

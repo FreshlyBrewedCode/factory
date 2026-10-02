@@ -137,6 +137,32 @@ describe("CLI argv parsing with effect/unstable/cli", () => {
       expect(Option.getOrNull(r.url)).toBe("http://localhost:3000");
     });
 
+    test("--agent and --model (ADR 0013 §2)", async () => {
+      const result = await Effect.runPromise(
+        runFactory(["start", "wf", "--input", "{}", "--agent", "claude", "--model", "haiku"]),
+      );
+      const r = result as { agent: Option.Option<string>; model: Option.Option<string> };
+      expect(Option.getOrNull(r.agent)).toBe("claude");
+      expect(Option.getOrNull(r.model)).toBe("haiku");
+    });
+
+    test("--agent and --model are optional", async () => {
+      const result = await Effect.runPromise(runFactory(["start", "wf", "--input", "{}"]));
+      const r = result as { agent: Option.Option<string>; model: Option.Option<string> };
+      expect(Option.isNone(r.agent)).toBe(true);
+      expect(Option.isNone(r.model)).toBe(true);
+    });
+
+    test("an unknown --agent fails", async () => {
+      let failed = false;
+      try {
+        await Effect.runPromise(runFactory(["start", "wf", "--input", "{}", "--agent", "codex"]));
+      } catch {
+        failed = true;
+      }
+      expect(failed).toBe(true);
+    });
+
     test("missing --input fails", async () => {
       let failed = false;
       try {

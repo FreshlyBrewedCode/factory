@@ -21,7 +21,11 @@ import { join } from "node:path";
 import { defineConfig } from "../src/config";
 import { hostExec } from "../src/lib/exec";
 import { appendEvent, openStore } from "../src/persistence/store";
-import { createCorpusReplayAdapter, createSlowFakeAdapter } from "../src/replay/adapter";
+import {
+  fakeAgents,
+  createCorpusReplayAdapter,
+  createSlowFakeAdapter,
+} from "../src/replay/adapter";
 import { makeAgentRuntime } from "../src/runtime/agent-runtime";
 import { startRun } from "../src/runtime/run";
 import { startDaemon } from "../src/server/daemon";
@@ -138,25 +142,33 @@ async function seedCorpusRuns(root: string, db: ReturnType<typeof openStore>): P
   process.env.PATH = `${binDir}:${originalPath}`;
 
   await awaitRun(
-    startRun(implementIssue, makeAgentRuntime(createCorpusReplayAdapter(CORPUS_ROUND_TRIP)), {
-      runId: "run-static-corpus",
-      dir: workDir,
-      repo: { slug: "local/fixture", baseBranch: "main" },
-      input: { issueNumber: 1 },
-      onEvent: (event) => appendEvent(db, event),
-    }),
+    startRun(
+      implementIssue,
+      makeAgentRuntime(fakeAgents(createCorpusReplayAdapter(CORPUS_ROUND_TRIP))),
+      {
+        runId: "run-static-corpus",
+        dir: workDir,
+        repo: { slug: "local/fixture", baseBranch: "main" },
+        input: { issueNumber: 1 },
+        onEvent: (event) => appendEvent(db, event),
+      },
+    ),
   );
 
   await Bun.sleep(20);
 
   // A second, cheap run so list ordering has more than one data point.
   await awaitRun(
-    startRun(echoWorkflow, makeAgentRuntime(createCorpusReplayAdapter(CORPUS_ONE_STEP)), {
-      runId: "run-static-echo",
-      dir: workDir,
-      input: {},
-      onEvent: (event) => appendEvent(db, event),
-    }),
+    startRun(
+      echoWorkflow,
+      makeAgentRuntime(fakeAgents(createCorpusReplayAdapter(CORPUS_ONE_STEP))),
+      {
+        runId: "run-static-echo",
+        dir: workDir,
+        input: {},
+        onEvent: (event) => appendEvent(db, event),
+      },
+    ),
   );
 
   await Bun.sleep(20);
@@ -276,7 +288,7 @@ async function main(): Promise<void> {
         timezone: "UTC",
       },
     ],
-    agent: { adapter: createSlowFakeAdapter(SLOW_CHUNKS, 1_000) },
+    agent: fakeAgents(createSlowFakeAdapter(SLOW_CHUNKS, 1_000)),
   });
   const { server } = await startDaemon({ dbPath, port, config });
   console.log(`factory e2e: listening on http://localhost:${server.port}`);

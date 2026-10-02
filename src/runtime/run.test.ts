@@ -9,10 +9,10 @@
 import { describe, expect, test } from "bun:test";
 import type { RunEvent } from "../events";
 import { defineWorkflow, Schema } from "../workflow";
-import { createSlowFakeAdapter } from "../replay/adapter";
+import { fakeAgents, createSlowFakeAdapter } from "../replay/adapter";
 import { makeAgentRuntime } from "./agent-runtime";
 import { startRun, RunCancelledSignal } from "./run";
-import type { AgentAdapter } from "./agent-adapter";
+import type { AgentAdapter, AgentAdapterOptions } from "./agent-adapter";
 
 describe("RunCancelledSignal as TaggedError (#34)", () => {
   test("carries the _tag and the cancellation message", () => {
@@ -41,12 +41,16 @@ describe("startRun cancellation", () => {
       },
     });
 
-    const handle = startRun(workflow, makeAgentRuntime(createSlowFakeAdapter(SLOW_CHUNKS, 20)), {
-      runId: "run-cancel-test",
-      dir: "/tmp",
-      input: {},
-      onEvent: (event) => events.push(event),
-    });
+    const handle = startRun(
+      workflow,
+      makeAgentRuntime(fakeAgents(createSlowFakeAdapter(SLOW_CHUNKS, 20))),
+      {
+        runId: "run-cancel-test",
+        dir: "/tmp",
+        input: {},
+        onEvent: (event) => events.push(event),
+      },
+    );
 
     // Let the first chunk or two land, then cancel while the step is still streaming.
     await new Promise((resolve) => setTimeout(resolve, 30));
@@ -75,12 +79,16 @@ describe("startRun cancellation", () => {
       },
     });
 
-    const handle = startRun(workflow, makeAgentRuntime(createSlowFakeAdapter(SLOW_CHUNKS, 1)), {
-      runId: "run-no-cancel-test",
-      dir: "/tmp",
-      input: {},
-      onEvent: () => {},
-    });
+    const handle = startRun(
+      workflow,
+      makeAgentRuntime(fakeAgents(createSlowFakeAdapter(SLOW_CHUNKS, 1))),
+      {
+        runId: "run-no-cancel-test",
+        dir: "/tmp",
+        input: {},
+        onEvent: () => {},
+      },
+    );
 
     const outcome = await handle.result;
     expect(outcome.outcome).toBe("completed");
@@ -105,7 +113,7 @@ describe("startRun workspace kind (issue #13)", () => {
       },
     });
 
-    const handle = startRun(workflow, makeAgentRuntime(createSlowFakeAdapter([])), {
+    const handle = startRun(workflow, makeAgentRuntime(fakeAgents(createSlowFakeAdapter([]))), {
       runId: "run-scratch-wb",
       dir: "/tmp/nothing",
       input: {},
@@ -139,7 +147,7 @@ describe("startRun workspace kind (issue #13)", () => {
         }),
     });
 
-    const handle = startRun(workflow, makeAgentRuntime(createSlowFakeAdapter([])), {
+    const handle = startRun(workflow, makeAgentRuntime(fakeAgents(createSlowFakeAdapter([]))), {
       runId: "run-clone-wb",
       dir: "/tmp/nothing",
       input: {},
@@ -164,7 +172,7 @@ describe("startRun workspace kind (issue #13)", () => {
     });
 
     const scratchEvents: Array<RunEvent> = [];
-    await startRun(workflow, makeAgentRuntime(createSlowFakeAdapter([])), {
+    await startRun(workflow, makeAgentRuntime(fakeAgents(createSlowFakeAdapter([]))), {
       runId: "run-kind-scratch",
       dir: "/tmp/s",
       input: {},
@@ -172,7 +180,7 @@ describe("startRun workspace kind (issue #13)", () => {
       onEvent: (event) => scratchEvents.push(event),
     }).result;
     const cloneEvents: Array<RunEvent> = [];
-    await startRun(workflow, makeAgentRuntime(createSlowFakeAdapter([])), {
+    await startRun(workflow, makeAgentRuntime(fakeAgents(createSlowFakeAdapter([]))), {
       runId: "run-kind-clone",
       dir: "/tmp/c",
       input: {},
@@ -198,13 +206,17 @@ describe("startRun schedule trigger (issue #16)", () => {
         return { finalText: result.finalText };
       },
     });
-    const handle = startRun(workflow, makeAgentRuntime(createSlowFakeAdapter(SLOW_CHUNKS, 5)), {
-      runId: "run-by-schedule",
-      dir: "/tmp",
-      input: { issueNumber: 7 },
-      scheduleId: "nightly",
-      onEvent: (event) => events.push(event),
-    });
+    const handle = startRun(
+      workflow,
+      makeAgentRuntime(fakeAgents(createSlowFakeAdapter(SLOW_CHUNKS, 5))),
+      {
+        runId: "run-by-schedule",
+        dir: "/tmp",
+        input: { issueNumber: 7 },
+        scheduleId: "nightly",
+        onEvent: (event) => events.push(event),
+      },
+    );
     await handle.result;
     const started = events.find((e) => e.payload._tag === "RunStarted");
     expect(started?.payload).toMatchObject({ scheduleId: "nightly" });
@@ -216,7 +228,7 @@ describe("startRun schedule trigger (issue #16)", () => {
       input: Schema.Struct({}),
       run: async () => ({}),
     });
-    const handle = startRun(workflow, makeAgentRuntime(createSlowFakeAdapter([])), {
+    const handle = startRun(workflow, makeAgentRuntime(fakeAgents(createSlowFakeAdapter([]))), {
       runId: "run-manual",
       dir: "/tmp",
       input: {},
@@ -242,13 +254,17 @@ describe("startRun model precedence (issue #16)", () => {
         return {};
       },
     });
-    const handle = startRun(workflow, makeAgentRuntime(createSlowFakeAdapter(SLOW_CHUNKS, 5)), {
-      runId: "run-models",
-      dir: "/tmp",
-      input: {},
-      agentOverrides: { model: "schedule-override" },
-      onEvent: (event) => events.push(event),
-    });
+    const handle = startRun(
+      workflow,
+      makeAgentRuntime(fakeAgents(createSlowFakeAdapter(SLOW_CHUNKS, 5))),
+      {
+        runId: "run-models",
+        dir: "/tmp",
+        input: {},
+        agentOverrides: { model: "schedule-override" },
+        onEvent: (event) => events.push(event),
+      },
+    );
     const outcome = await handle.result;
     expect(outcome.outcome).toBe("completed");
 
@@ -269,18 +285,132 @@ describe("startRun model precedence (issue #16)", () => {
         return {};
       },
     });
-    const handle = startRun(workflow, makeAgentRuntime(createSlowFakeAdapter(SLOW_CHUNKS, 5)), {
-      runId: "run-models-fallback",
-      dir: "/tmp",
-      input: {},
-      onEvent: (event) => events.push(event),
-    });
+    const handle = startRun(
+      workflow,
+      makeAgentRuntime(fakeAgents(createSlowFakeAdapter(SLOW_CHUNKS, 5))),
+      {
+        runId: "run-models-fallback",
+        dir: "/tmp",
+        input: {},
+        onEvent: (event) => events.push(event),
+      },
+    );
     const outcome = await handle.result;
     expect(outcome.outcome).toBe("completed");
     const started = events.find((e) => e.payload._tag === "AgentStepStarted");
     expect(started?.payload._tag === "AgentStepStarted" && started.payload.model).toBe(
       "workflow-default",
     );
+  });
+});
+
+describe("startRun agent and model (ADR 0013 §2)", () => {
+  function recordingAdapter(): AgentAdapter & {
+    readonly calls: Array<Pick<AgentAdapterOptions, "agent" | "model">>;
+  } {
+    const calls: Array<Pick<AgentAdapterOptions, "agent" | "model">> = [];
+    const inner = createSlowFakeAdapter(SLOW_CHUNKS, 1);
+    return {
+      calls,
+      prepareWorkspace: inner.prepareWorkspace,
+      stream: (options) => {
+        calls.push({ agent: options.agent, model: options.model });
+        return inner.stream(options);
+      },
+    };
+  }
+
+  const startedSteps = (events: ReadonlyArray<RunEvent>) =>
+    events.flatMap((e) =>
+      e.payload._tag === "AgentStepStarted"
+        ? [{ agent: e.payload.agent, model: e.payload.model }]
+        : [],
+    );
+
+  test("each level resolves, the adapter gets the agent and model, and AgentStepStarted records both", async () => {
+    const events: Array<RunEvent> = [];
+    const adapter = recordingAdapter();
+    const workflow = defineWorkflow("agent-choice", {
+      input: Schema.Struct({}),
+      agent: { agent: "claude", model: "opus" },
+      run: async (ctx) => {
+        await ctx.agent("workflow-level", "p");
+        await ctx.agent("model-only", "p", { model: "haiku" });
+        await ctx.agent("agent-change", "p", { agent: "opencode" });
+        await ctx.agent("both", "p", { agent: "opencode", model: "opencode/other" });
+        return {};
+      },
+    });
+    const handle = startRun(
+      workflow,
+      makeAgentRuntime({
+        adapter,
+        default: "opencode",
+        models: { claude: "sonnet", opencode: "opencode/big-pickle" },
+      }),
+      { runId: "run-agent-choice", dir: "/tmp", input: {}, onEvent: (e) => events.push(e) },
+    );
+    expect((await handle.result).outcome).toBe("completed");
+
+    const expected: Array<Pick<AgentAdapterOptions, "agent" | "model">> = [
+      { agent: "claude", model: "opus" },
+      { agent: "claude", model: "haiku" },
+      // The workflow's `opus` belongs to claude: it does not carry across.
+      { agent: "opencode", model: "opencode/big-pickle" },
+      { agent: "opencode", model: "opencode/other" },
+    ];
+    expect(startedSteps(events)).toEqual(expected);
+    expect(adapter.calls).toEqual(expected);
+  });
+
+  test("the run level (request or schedule) sits between the call and the workflow", async () => {
+    const events: Array<RunEvent> = [];
+    const workflow = defineWorkflow("agent-choice-run-level", {
+      input: Schema.Struct({}),
+      agent: { model: "workflow-model" },
+      run: async (ctx) => {
+        await ctx.agent("step", "p");
+        return {};
+      },
+    });
+    const handle = startRun(
+      workflow,
+      makeAgentRuntime({ adapter: recordingAdapter(), models: { claude: "sonnet" } }),
+      {
+        runId: "run-agent-choice-run-level",
+        dir: "/tmp",
+        input: {},
+        agentOverrides: { agent: "claude" },
+        onEvent: (e) => events.push(e),
+      },
+    );
+    expect((await handle.result).outcome).toBe("completed");
+    expect(startedSteps(events)).toEqual([{ agent: "claude", model: "sonnet" }]);
+  });
+
+  test("an unresolvable model fails the run before the step starts, naming the fix", async () => {
+    const events: Array<RunEvent> = [];
+    const adapter = recordingAdapter();
+    const workflow = defineWorkflow("agent-choice-unresolvable", {
+      input: Schema.Struct({}),
+      run: async (ctx) => {
+        await ctx.agent("implement", "p", { agent: "claude" });
+        return {};
+      },
+    });
+    const handle = startRun(
+      workflow,
+      makeAgentRuntime({ adapter, models: { opencode: "opencode/big-pickle" } }),
+      { runId: "run-agent-choice-none", dir: "/tmp", input: {}, onEvent: (e) => events.push(e) },
+    );
+    const outcome = await handle.result;
+    expect(outcome.outcome).toBe("failed");
+    expect(outcome.outcome === "failed" && outcome.error).toBe(
+      'agent step "implement": no model for agent "claude": name one with `model` on the ctx.agent call, ' +
+        "the run, the schedule or the workflow, or set `agent.models.claude` in factory.config.ts",
+    );
+    expect(startedSteps(events)).toEqual([]);
+    expect(adapter.calls).toEqual([]);
   });
 });
 
@@ -305,7 +435,7 @@ describe("startRun prepareWorkspace (ADR 0012 §3, #37)", () => {
       run: async () => ({}),
     });
 
-    await startRun(workflow, makeAgentRuntime(adapter), {
+    await startRun(workflow, makeAgentRuntime(fakeAgents(adapter)), {
       runId: "run-prep-clone",
       dir: "/tmp/clone-dir",
       input: {},
@@ -323,7 +453,7 @@ describe("startRun prepareWorkspace (ADR 0012 §3, #37)", () => {
       run: async () => ({}),
     });
 
-    await startRun(workflow, makeAgentRuntime(adapter), {
+    await startRun(workflow, makeAgentRuntime(fakeAgents(adapter)), {
       runId: "run-prep-scratch",
       dir: "/tmp/scratch-dir",
       input: {},

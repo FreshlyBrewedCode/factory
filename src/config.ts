@@ -11,6 +11,8 @@ import { Cron, Result, SchemaParser } from "effect";
 import type { GitIdentity } from "./lib/clone";
 import type { WorkflowDefinition } from "./workflow";
 import type { AgentAdapter } from "./runtime/agent-adapter";
+import { ACP_AGENT_KINDS, type AcpAgentKind, type HostSettings } from "./runtime/acp-agents";
+import { DEFAULT_AGENT, isAcpAgentKind, type AgentChoice } from "./runtime/agent-choice";
 
 export const DEFAULT_WORKSPACE_ROOT = ".factory/workspaces";
 export const DEFAULT_MAX_CONCURRENT_RUNS = 3;
@@ -70,12 +72,135 @@ export interface FactoryConfig {
    */
   readonly maxDispatchDepth: number;
   readonly maxChildrenPerRun: number;
+  /** The agent runtime and the config rung of the agent/model choice, defaults applied. */
+  readonly agent: AgentConfig;
+}
+
+/**
+ * The project's agent settings (ADR 0013 §2, §3), as the operator writes them.
+ *
+ * ```ts
+ * agent: {
+ *   default: "claude",
+ *   models: { claude: "sonnet", opencode: "opencode/big-pickle" },
+ *   hostSettings: { opencode: "include" },
+ * }
+ * ```
+ */
+export interface AgentConfigInput {
   /**
-   * Issue #36: the agent runtime. `adapter` unset means the runtime's default
-   * (the live opencode adapter, `runtime/agent-runtime.ts`), so existing
-   * configs keep working unchanged.
+   * The agent a step runs on when neither the call, the run, the schedule nor
+   * the workflow names one. Default `"opencode"` (`DEFAULT_AGENT`).
    */
-  readonly agent: { readonly adapter?: AgentAdapter };
+  readonly default?: AcpAgentKind;
+  /**
+   * Each agent's model, used when no level that may name one does (a model
+   * never carries across a change of agent). Factory always sends a model and
+   * has no built-in one: a step whose model resolves to nothing fails before
+   * the agent starts. Ids are the agent's own and passed verbatim.
+   */
+  readonly models?: Readonly<Partial<Record<AcpAgentKind, string>>>;
+  /**
+   * Whether runs see the operator's own agent settings (`~/.claude`,
+   * `~/.config/opencode`), per agent. Default `"ignore"`: a run reads the
+   * project's agent configuration only. Credentials stay available either way.
+   */
+  readonly hostSettings?: Readonly<Partial<Record<AcpAgentKind, HostSettings>>>;
+  /**
+   * Issue #36: replaces the ACP runtime with another adapter — the injection
+   * point for replay and fakes. An injected adapter still receives the
+   * resolved agent and model.
+   */
+  readonly adapter?: AgentAdapter;
+}
+
+/** `AgentConfigInput` with its defaults applied. */
+export interface AgentConfig {
+  readonly default: AcpAgentKind;
+  readonly models: Readonly<Partial<Record<AcpAgentKind, string>>>;
+  readonly hostSettings: Readonly<Record<AcpAgentKind, HostSettings>>;
+  readonly adapter?: AgentAdapter;
+}
+
+const HOST_SETTINGS: ReadonlyArray<HostSettings> = ["ignore", "include"];
+
+function describeAgentKinds(): string {
+  return ACP_AGENT_KINDS.map((kind) => JSON.stringify(kind)).join(" | ");
+}
+
+function checkAgentChoice(where: string, choice: AgentChoice | undefined): void {
+  if (choice === undefined) return;
+  if (choice.agent !== undefined && !isAcpAgentKind(choice.agent)) {
+    throw new Error(
+      `${where} has an unknown agent ${JSON.stringify(choice.agent)} (expected ${describeAgentKinds()})`,
+    );
+  }
+  if (choice.model !== undefined && (typeof choice.model !== "string" || choice.model === "")) {
+    throw new Error(
+      `${where} has an invalid model ${JSON.stringify(choice.model)} (expected a non-empty string)`,
+    );
+  }
+}
+
+/** Validate `agent` and apply its defaults. Throws naming the offending field. */
+export function resolveAgentConfig(input: AgentConfigInput = {}): AgentConfig {
+  const fallback = input.default ?? DEFAULT_AGENT;
+  if (!isAcpAgentKind(fallback)) {
+    throw new Error(
+      `agent.default must be one of ${describeAgentKinds()} (got ${JSON.stringify(input.default)})`,
+    );
+  }
+  const models: Partial<Record<AcpAgentKind, string>> = {};
+  for (const [key, model] of Object.entries(input.models ?? {})) {
+    if (!isAcpAgentKind(key)) {
+      throw new Error(
+        `agent.models has an unknown agent "${key}" (expected ${describeAgentKinds()})`,
+      );
+    }
+    if (model === undefined) continue;
+    if (typeof model !== "string" || model === "") {
+      throw new Error(
+        `agent.models.${key} must be a non-empty model id (got ${JSON.stringify(model)})`,
+      );
+    }
+    models[key] = model;
+  }
+  const hostSettings: Record<AcpAgentKind, HostSettings> = { claude: "ignore", opencode: "ignore" };
+  for (const [key, value] of Object.entries(input.hostSettings ?? {})) {
+    if (!isAcpAgentKind(key)) {
+      throw new Error(
+        `agent.hostSettings has an unknown agent "${key}" (expected ${describeAgentKinds()})`,
+      );
+    }
+    if (value === undefined) continue;
+    if (!HOST_SETTINGS.includes(value)) {
+      throw new Error(
+        `agent.hostSettings.${key} must be "ignore" or "include" (got ${JSON.stringify(value)})`,
+      );
+    }
+    hostSettings[key] = value;
+  }
+  return {
+    default: fallback,
+    models,
+    hostSettings,
+    ...(input.adapter !== undefined ? { adapter: input.adapter } : {}),
+  };
+}
+
+/**
+ * The agents a config can run on: the default, every agent with a configured
+ * model, and every agent a workflow or schedule names. What the daemon checks
+ * at start (ADR 0013 Consequences). A per-call choice is not visible here.
+ */
+export function configuredAgents(config: FactoryConfig): AcpAgentKind[] {
+  const kinds = new Set<AcpAgentKind>([config.agent.default]);
+  for (const kind of ACP_AGENT_KINDS) if (config.agent.models[kind] !== undefined) kinds.add(kind);
+  for (const workflow of config.workflows)
+    if (workflow.agent?.agent !== undefined) kinds.add(workflow.agent.agent);
+  for (const schedule of config.schedules)
+    if (schedule.agent?.agent !== undefined) kinds.add(schedule.agent.agent);
+  return ACP_AGENT_KINDS.filter((kind) => kinds.has(kind));
 }
 
 /**
@@ -111,14 +236,10 @@ export interface ScheduleConfigInput {
   /** Fire once when the daemon starts. Default `false`. */
   readonly runOnStart?: boolean;
   /**
-   * Schedule-level agent default, above the workflow's and below a per-call
-   * option's — precedence for anything a schedule can override follows the
-   * rule already used for agent options:
-   * run request > schedule > workflow > config default.
+   * The schedule's runs' agent and model: the run level of the choice, below
+   * a per-call option and above the workflow's and the config's (ADR 0013 §2).
    */
-  readonly agent?: {
-    readonly model?: string;
-  };
+  readonly agent?: AgentChoice;
 }
 
 /**
@@ -138,9 +259,7 @@ export interface ScheduleDefinition<I = unknown> {
   readonly timezone?: string;
   readonly overlap?: ScheduleOverlapPolicy;
   readonly runOnStart?: boolean;
-  readonly agent?: {
-    readonly model?: string;
-  };
+  readonly agent?: AgentChoice;
 }
 
 /**
@@ -164,7 +283,7 @@ export interface ScheduleConfig {
   readonly timezone: string;
   readonly overlap: ScheduleOverlapPolicy;
   readonly runOnStart: boolean;
-  readonly agent: { readonly model?: string } | undefined;
+  readonly agent: AgentChoice | undefined;
 }
 
 export interface FactoryConfigInput {
@@ -176,11 +295,8 @@ export interface FactoryConfigInput {
   readonly maxDispatchDepth?: number;
   readonly maxChildrenPerRun?: number;
   readonly schedules?: ReadonlyArray<ScheduleConfigInput | ScheduleDefinition<any>>;
-  /**
-   * Issue #36: the agent runtime. Optional — when omitted the runtime uses
-   * the live opencode adapter.
-   */
-  readonly agent?: { readonly adapter?: AgentAdapter };
+  /** The agents and their models (ADR 0013). Optional; see `AgentConfigInput`. */
+  readonly agent?: AgentConfigInput;
 }
 
 export function defineConfig(config: FactoryConfigInput): FactoryConfig {
@@ -208,6 +324,9 @@ export function defineConfig(config: FactoryConfigInput): FactoryConfig {
       `maxChildrenPerRun must be an integer >= 1 (got ${JSON.stringify(config.maxChildrenPerRun)})`,
     );
   }
+  const agent = resolveAgentConfig(config.agent);
+  for (const workflow of config.workflows)
+    checkAgentChoice(`workflow "${workflow.id}"'s agent`, workflow.agent);
   const schedules = normalizeSchedules(config.schedules ?? []);
   validateSchedules(schedules, config.workflows);
   return {
@@ -228,7 +347,7 @@ export function defineConfig(config: FactoryConfigInput): FactoryConfig {
     retainedWorkspaces,
     maxDispatchDepth,
     maxChildrenPerRun,
-    agent: config.agent?.adapter !== undefined ? { adapter: config.agent.adapter } : {},
+    agent,
   };
 }
 
@@ -313,6 +432,7 @@ export function validateSchedules(
       throw new Error(`duplicate schedule id "${schedule.id}"`);
     }
     ids.add(schedule.id);
+    checkAgentChoice(`schedule "${schedule.id}"'s agent`, schedule.agent);
 
     const workflow =
       workflows.find((w) => w.id === schedule.workflow) ??

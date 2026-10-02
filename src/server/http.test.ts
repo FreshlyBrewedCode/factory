@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { describe, expect, test } from "bun:test";
 import { Schema } from "effect";
 import { defineWorkflow, type WorkflowDefinition } from "../workflow";
-import { createSlowFakeAdapter } from "../replay/adapter";
+import { fakeAgents, createSlowFakeAdapter } from "../replay/adapter";
 import type { AgentAdapter } from "../runtime/agent-adapter";
 import { getRunEvents, openStore } from "../persistence/store";
 import { defineConfig, loadFactoryConfig } from "../config";
@@ -95,7 +95,7 @@ describe("GET /api/workflows (D30)", () => {
     const config = await loadFactoryConfig(FIXTURE_CONFIG);
     const server = serve({
       db,
-      runtime: makeDaemonRuntime(adapter),
+      runtime: makeDaemonRuntime(fakeAgents(adapter)),
       port: 0,
       config,
     });
@@ -125,7 +125,7 @@ describe("GET /api/workflows (D30)", () => {
     const adapter = createSlowFakeAdapter([], 1);
     const server = serve({
       db,
-      runtime: makeDaemonRuntime(adapter),
+      runtime: makeDaemonRuntime(fakeAgents(adapter)),
       port: 0,
     });
     const base = `http://localhost:${server.port}`;
@@ -149,7 +149,7 @@ describe("GET /api/workflows (D30)", () => {
     const adapter = createSlowFakeAdapter([], 1);
     const server = serve({
       db,
-      runtime: makeDaemonRuntime(adapter),
+      runtime: makeDaemonRuntime(fakeAgents(adapter)),
       port: 0,
     });
     const base = `http://localhost:${server.port}`;
@@ -173,7 +173,7 @@ describe("phase 4 SPA serving", () => {
     const adapter = createSlowFakeAdapter([{ type: "TEXT_MESSAGE_START" }], 1);
     const server = serve({
       db,
-      runtime: makeDaemonRuntime(adapter),
+      runtime: makeDaemonRuntime(fakeAgents(adapter)),
       port: 0,
     });
     const base = `http://localhost:${server.port}`;
@@ -260,7 +260,7 @@ describe("SSE keepalive", () => {
     const adapter = createSlowFakeAdapter([], 1);
     const server = serve({
       db,
-      runtime: makeDaemonRuntime(adapter),
+      runtime: makeDaemonRuntime(fakeAgents(adapter)),
       port: 0,
       sseKeepaliveMs: 25,
     });
@@ -301,7 +301,7 @@ describe("SSE keepalive", () => {
     const adapter = createSlowFakeAdapter([], 1);
     const server = serve({
       db,
-      runtime: makeDaemonRuntime(adapter),
+      runtime: makeDaemonRuntime(fakeAgents(adapter)),
       port: 0,
       sseKeepaliveMs: 10,
     });
@@ -346,7 +346,7 @@ describe("phase 3 HTTP API + SSE", () => {
     );
     const server = serve({
       db,
-      runtime: makeDaemonRuntime(adapter),
+      runtime: makeDaemonRuntime(fakeAgents(adapter)),
       port: 0,
     });
     const base = `http://localhost:${server.port}`;
@@ -399,7 +399,7 @@ describe("phase 3 HTTP API + SSE", () => {
     );
     const server = serve({
       db,
-      runtime: makeDaemonRuntime(adapter),
+      runtime: makeDaemonRuntime(fakeAgents(adapter)),
       port: 0,
     });
     const base = `http://localhost:${server.port}`;
@@ -439,7 +439,7 @@ describe("phase 3 HTTP API + SSE", () => {
     );
     const server = serve({
       db,
-      runtime: makeDaemonRuntime(adapter),
+      runtime: makeDaemonRuntime(fakeAgents(adapter)),
       port: 0,
     });
     const base = `http://localhost:${server.port}`;
@@ -482,7 +482,7 @@ describe("phase 3 HTTP API + SSE", () => {
     );
     const server = serve({
       db,
-      runtime: makeDaemonRuntime(adapter),
+      runtime: makeDaemonRuntime(fakeAgents(adapter)),
       port: 0,
     });
     const base = `http://localhost:${server.port}`;
@@ -524,7 +524,7 @@ describe("phase 3 HTTP API + SSE", () => {
     );
     const server = serve({
       db,
-      runtime: makeDaemonRuntime(adapter),
+      runtime: makeDaemonRuntime(fakeAgents(adapter)),
       port: 0,
     });
     const base = `http://localhost:${server.port}`;
@@ -574,7 +574,7 @@ describe("POST /api/runs {workflowId, input} (D31)", () => {
     const config = await loadFactoryConfig(FIXTURE_CONFIG);
     const server = serve({
       db,
-      runtime: makeDaemonRuntime(adapter),
+      runtime: makeDaemonRuntime(fakeAgents(adapter)),
       port: 0,
       config,
     });
@@ -605,7 +605,7 @@ describe("POST /api/runs {workflowId, input} (D31)", () => {
     const config = await loadFactoryConfig(FIXTURE_CONFIG);
     const server = serve({
       db,
-      runtime: makeDaemonRuntime(adapter),
+      runtime: makeDaemonRuntime(fakeAgents(adapter)),
       port: 0,
       config,
     });
@@ -656,7 +656,7 @@ describe("POST /api/runs {workflowId, input} (D31)", () => {
     });
     const server = serve({
       db,
-      runtime: makeDaemonRuntime(adapter),
+      runtime: makeDaemonRuntime(fakeAgents(adapter)),
       port: 0,
       config,
     });
@@ -724,7 +724,7 @@ describe("POST /api/runs {workflowId, input} (D31)", () => {
     });
     const server = serve({
       db,
-      runtime: makeDaemonRuntime(adapter),
+      runtime: makeDaemonRuntime(fakeAgents(adapter)),
       port: 0,
       config,
     });
@@ -796,7 +796,7 @@ describe("a scratch workflow through POST /api/runs (issue #13)", () => {
     });
     const server = serve({
       db,
-      runtime: makeDaemonRuntime(adapter),
+      runtime: makeDaemonRuntime(fakeAgents(adapter)),
       port: 0,
       config,
     });
@@ -872,7 +872,7 @@ describe("ctx.dispatch through POST /api/runs (issue #14)", () => {
 
     const server = serve({
       db,
-      runtime: makeDaemonRuntime(adapter),
+      runtime: makeDaemonRuntime(fakeAgents(adapter)),
       port: 0,
       config: defineConfig({
         repo: {
@@ -970,7 +970,7 @@ describe("GET /api/schedules (issue #17)", () => {
     });
     const server = serve({
       db,
-      runtime: makeDaemonRuntime(createSlowFakeAdapter([], 1)),
+      runtime: makeDaemonRuntime(fakeAgents(createSlowFakeAdapter([], 1))),
       port: 0,
       config: schedulesConfig(root, workflow),
     });
@@ -1039,7 +1039,7 @@ describe("GET /api/schedules (issue #17)", () => {
     });
     const server = serve({
       db,
-      runtime: makeDaemonRuntime(createSlowFakeAdapter([], 1)),
+      runtime: makeDaemonRuntime(fakeAgents(createSlowFakeAdapter([], 1))),
       port: 0,
       config,
     });
@@ -1065,7 +1065,7 @@ describe("GET /api/schedules (issue #17)", () => {
     const db = openStore(join(root, "factory.db"));
     const server = serve({
       db,
-      runtime: makeDaemonRuntime(createSlowFakeAdapter([], 1)),
+      runtime: makeDaemonRuntime(fakeAgents(createSlowFakeAdapter([], 1))),
       port: 0,
     });
     const base = `http://localhost:${server.port}`;
@@ -1111,7 +1111,7 @@ describe("GET /api/schedules (issue #17)", () => {
     });
     const server = serve({
       db,
-      runtime: makeDaemonRuntime(createSlowFakeAdapter([], 1)),
+      runtime: makeDaemonRuntime(fakeAgents(createSlowFakeAdapter([], 1))),
       port: 0,
       config,
     });
@@ -1212,7 +1212,7 @@ describe("POST /api/schedules/:id/run (issue #17)", () => {
     });
     const server = serve({
       db,
-      runtime: makeDaemonRuntime(createSlowFakeAdapter([], 1)),
+      runtime: makeDaemonRuntime(fakeAgents(createSlowFakeAdapter([], 1))),
       port: 0,
       config,
     });
@@ -1266,7 +1266,7 @@ describe("POST /api/schedules/:id/run (issue #17)", () => {
     });
     const server = serve({
       db,
-      runtime: makeDaemonRuntime(createSlowFakeAdapter([], 1)),
+      runtime: makeDaemonRuntime(fakeAgents(createSlowFakeAdapter([], 1))),
       port: 0,
       config,
     });
@@ -1309,7 +1309,7 @@ describe("POST /api/schedules/:id/run (issue #17)", () => {
     });
     const server = serve({
       db,
-      runtime: makeDaemonRuntime(createSlowFakeAdapter([], 1)),
+      runtime: makeDaemonRuntime(fakeAgents(createSlowFakeAdapter([], 1))),
       port: 0,
       config,
     });
@@ -1374,7 +1374,7 @@ describe("POST /api/schedules/:id/run (issue #17)", () => {
     });
     const server = serve({
       db,
-      runtime: makeDaemonRuntime(createSlowFakeAdapter([], 1)),
+      runtime: makeDaemonRuntime(fakeAgents(createSlowFakeAdapter([], 1))),
       port: 0,
       config,
     });
@@ -1425,7 +1425,7 @@ describe("adapter.prepareWorkspace through the legacy POST /api/runs (#37)", () 
     const adapter = trackingAdapter();
     const server = serve({
       db,
-      runtime: makeDaemonRuntime(adapter),
+      runtime: makeDaemonRuntime(fakeAgents(adapter)),
       port: 0,
     });
     const base = `http://localhost:${server.port}`;
@@ -1459,5 +1459,96 @@ describe("adapter.prepareWorkspace through the legacy POST /api/runs (#37)", () 
       db.close();
       rmSync(root, { recursive: true, force: true });
     }
+  });
+});
+
+describe("POST /api/runs agent choice (ADR 0013 §2)", () => {
+  async function withServer(
+    fn: (base: string, db: ReturnType<typeof openStore>) => Promise<void>,
+  ): Promise<void> {
+    const root = mkdtempSync(join(tmpdir(), "factory-agent-choice-test-"));
+    const db = openStore(join(root, "factory.db"));
+    const config = defineConfig({
+      repo: {
+        sshUrl: join(root, "seed-not-used"),
+        identity: { name: "Factory", email: "factory@factory.test" },
+        baseBranch: "main",
+        slug: "acme/widgets",
+      },
+      workflows: [registryScratchWorkflow],
+      workspaceRoot: join(root, "workspaces"),
+      agent: { default: "opencode", models: { claude: "sonnet", opencode: "opencode/big-pickle" } },
+    });
+    const server = serve({
+      db,
+      runtime: makeDaemonRuntime({ ...config.agent, adapter: createSlowFakeAdapter([], 1) }),
+      port: 0,
+      config,
+    });
+    try {
+      await fn(`http://localhost:${server.port}`, db);
+    } finally {
+      await server.stop(true);
+      db.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  }
+
+  const post = (base: string, body: unknown) =>
+    fetch(`${base}/api/runs`, { method: "POST", body: JSON.stringify(body) });
+
+  const stepStarted = (db: ReturnType<typeof openStore>, runId: string) => {
+    const event = getRunEvents(db, runId).find((e) => e.payload._tag === "AgentStepStarted");
+    return event?.payload._tag === "AgentStepStarted"
+      ? { agent: event.payload.agent, model: event.payload.model }
+      : undefined;
+  };
+
+  test("the request's agent picks that agent's configured model", async () => {
+    await withServer(async (base, db) => {
+      const res = await post(base, {
+        workflowId: "registry-scratch-test",
+        input: {},
+        agent: { agent: "claude" },
+      });
+      expect(res.status).toBe(201);
+      const { runId } = (await res.json()) as { runId: string };
+      await waitForTerminal(db, runId, 10_000);
+      expect(stepStarted(db, runId)).toEqual({ agent: "claude", model: "sonnet" });
+    });
+  });
+
+  test("without a choice, the config's default agent and model apply", async () => {
+    await withServer(async (base, db) => {
+      const res = await post(base, { workflowId: "registry-scratch-test", input: {} });
+      const { runId } = (await res.json()) as { runId: string };
+      await waitForTerminal(db, runId, 10_000);
+      expect(stepStarted(db, runId)).toEqual({ agent: "opencode", model: "opencode/big-pickle" });
+    });
+  });
+
+  test("the request's model applies", async () => {
+    await withServer(async (base, db) => {
+      const res = await post(base, {
+        workflowId: "registry-scratch-test",
+        input: {},
+        agent: { agent: "claude", model: "haiku" },
+      });
+      const { runId } = (await res.json()) as { runId: string };
+      await waitForTerminal(db, runId, 10_000);
+      expect(stepStarted(db, runId)).toEqual({ agent: "claude", model: "haiku" });
+    });
+  });
+
+  test.each([
+    [{ agent: "codex" }, /agent.agent must be one of claude, opencode/],
+    [{ model: "" }, /agent.model must be a non-empty string/],
+    ["claude", /agent must be an object/],
+  ])("400s for agent %j", async (agent, message) => {
+    await withServer(async (base) => {
+      const res = await post(base, { workflowId: "registry-scratch-test", input: {}, agent });
+      expect(res.status).toBe(400);
+      expect(((await res.json()) as { error: string }).error).toMatch(message);
+    });
   });
 });

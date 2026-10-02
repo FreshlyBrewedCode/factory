@@ -38,6 +38,7 @@
 
 import { Effect, Schema, Stream } from "effect";
 import type { AgentStepUsage } from "../events";
+import type { AcpAgentKind } from "./acp-agents";
 import type { AgentAdapterYield } from "./agent-adapter";
 import { AgentRuntime } from "./agent-runtime";
 
@@ -78,6 +79,7 @@ export class AgentStepChunkError extends Schema.TaggedError<AgentStepChunkError>
 export interface AgentStepEffectOptions {
   readonly threadId: string;
   readonly dir: string;
+  readonly agent: AcpAgentKind;
   readonly model: string;
   readonly prompt: string;
   readonly outputSchema?: unknown;
@@ -197,6 +199,7 @@ export function buildAgentStepEffect(options: AgentStepEffectOptions): AgentStep
         adapter.stream({
           threadId: options.threadId,
           dir: options.dir,
+          agent: options.agent,
           model: options.model,
           prompt: options.prompt,
           outputSchema: options.outputSchema,

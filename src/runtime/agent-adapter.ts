@@ -1,6 +1,6 @@
 /**
  * The seam between `runAgentStep` (runtime/agent-step.ts) and whatever
- * actually produces a chunk stream. Live opencode for real runs, corpus
+ * actually produces a chunk stream. The ACP runtime for real runs, corpus
  * replay for `bun test` (STATUS.md phase 1: "make the fake adapter a corpus
  * replayer") — same runtime code path either way, only this function swaps.
  *
@@ -11,9 +11,19 @@
  * field for it (`AgentStepFinished.sessionId`, `.output`, `.error`).
  */
 
+import type { AcpAgentKind } from "./acp-agents";
+
 export interface AgentAdapterOptions {
   readonly threadId: string;
   readonly dir: string;
+  /**
+   * The agent this step runs on, resolved like `model` (ADR 0013 §2). The
+   * runtime's default adapter launches it; an adapter that stands in for
+   * every agent (replay, fakes, an injected single-agent adapter) may ignore
+   * it.
+   */
+  readonly agent: AcpAgentKind;
+  /** The agent's own model id, always present (ADR 0013 §2). */
   readonly model: string;
   readonly prompt: string;
   /** JSON Schema, converted from the workflow's Effect Schema at this boundary. */

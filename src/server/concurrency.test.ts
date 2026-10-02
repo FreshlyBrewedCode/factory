@@ -18,7 +18,7 @@ import { join } from "node:path";
 import { describe, expect, test } from "bun:test";
 import { defineConfig } from "../config";
 import { getRunEvents, openStore } from "../persistence/store";
-import { createSlowFakeAdapter } from "../replay/adapter";
+import { fakeAgents, createSlowFakeAdapter } from "../replay/adapter";
 import { admitRun } from "./admission";
 import { serve } from "./http";
 import { makeDaemonRuntime } from "./daemon-runtime";
@@ -74,13 +74,15 @@ describe("phase 5 P1: per-run working trees (D28) over the real server", () => {
     const server = serve({
       db,
       runtime: makeDaemonRuntime(
-        createSlowFakeAdapter(
-          [
-            { type: "TEXT_MESSAGE_START" },
-            { type: "TEXT_MESSAGE_CONTENT", delta: "hi" },
-            { type: "TEXT_MESSAGE_END" },
-          ],
-          30,
+        fakeAgents(
+          createSlowFakeAdapter(
+            [
+              { type: "TEXT_MESSAGE_START" },
+              { type: "TEXT_MESSAGE_CONTENT", delta: "hi" },
+              { type: "TEXT_MESSAGE_END" },
+            ],
+            30,
+          ),
         ),
       ),
       port: 0,
@@ -163,13 +165,15 @@ describe("phase 5 P1: per-run working trees (D28) over the real server", () => {
     const server = serve({
       db,
       runtime: makeDaemonRuntime(
-        createSlowFakeAdapter(
-          [
-            { type: "TEXT_MESSAGE_START" },
-            { type: "TEXT_MESSAGE_CONTENT", delta: "hi" },
-            { type: "TEXT_MESSAGE_END" },
-          ],
-          300,
+        fakeAgents(
+          createSlowFakeAdapter(
+            [
+              { type: "TEXT_MESSAGE_START" },
+              { type: "TEXT_MESSAGE_CONTENT", delta: "hi" },
+              { type: "TEXT_MESSAGE_END" },
+            ],
+            300,
+          ),
         ),
       ),
       port: 0,
@@ -225,13 +229,15 @@ describe("phase 5 P1: per-run working trees (D28) over the real server", () => {
     const server = serve({
       db,
       runtime: makeDaemonRuntime(
-        createSlowFakeAdapter(
-          [
-            { type: "TEXT_MESSAGE_START" },
-            { type: "TEXT_MESSAGE_CONTENT", delta: "hi" },
-            { type: "TEXT_MESSAGE_END" },
-          ],
-          1_000,
+        fakeAgents(
+          createSlowFakeAdapter(
+            [
+              { type: "TEXT_MESSAGE_START" },
+              { type: "TEXT_MESSAGE_CONTENT", delta: "hi" },
+              { type: "TEXT_MESSAGE_END" },
+            ],
+            1_000,
+          ),
         ),
       ),
       port: 0,

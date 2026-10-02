@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { describe, expect, test } from "bun:test";
 import { defineConfig } from "./config";
 import { getRunEvents, openStore } from "./persistence/store";
-import { createSlowFakeAdapter } from "./replay/adapter";
+import { createSlowFakeAdapter, fakeAgents } from "./replay/adapter";
 import registryWorkflow from "../test/fixtures/registry-workflow";
 import { startDaemon } from "./server/daemon";
 
@@ -26,8 +26,8 @@ async function startTestDaemon(delayMs: number, root: string): Promise<TestDaemo
     dbPath,
     port: 0,
     config: defineConfig({
-      agent: {
-        adapter: createSlowFakeAdapter(
+      agent: fakeAgents(
+        createSlowFakeAdapter(
           [
             { type: "TEXT_MESSAGE_START" },
             { type: "TEXT_MESSAGE_CONTENT", delta: "hi" },
@@ -35,7 +35,7 @@ async function startTestDaemon(delayMs: number, root: string): Promise<TestDaemo
           ],
           delayMs,
         ),
-      },
+      ),
       repo: {
         sshUrl: seed,
         identity: { name: "Factory", email: "factory@factory.test" },

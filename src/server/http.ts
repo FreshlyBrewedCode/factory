@@ -32,6 +32,8 @@
  * (ADR 0009 §5) — the runtime is only the way into the context.
  */
 
+import { ACP_AGENT_KINDS } from "../runtime/acp-agents";
+import { isAcpAgentKind, type AgentChoice } from "../runtime/agent-choice";
 import type { Database } from "bun:sqlite";
 import { isTerminal, type RunEvent } from "../events";
 import type { FactoryConfig } from "../config";
@@ -173,7 +175,7 @@ function configRunOptions(
   extra: {
     readonly scheduleId?: string;
     readonly dedupeKey?: string;
-    readonly agentOverrides?: { readonly model?: string };
+    readonly agentOverrides?: AgentChoice;
   } = {},
 ): Omit<StartTrackedRunOptions, "input"> {
   return {
@@ -202,8 +204,38 @@ interface StartRunBody {
    * holding run — never a silently dropped duplicate.
    */
   readonly dedupeKey?: unknown;
+  /**
+   * The run level of the agent/model choice (ADR 0013 §2): `{ agent?, model? }`,
+   * above the workflow's default and the config's, below a per-call option.
+   */
+  readonly agent?: unknown;
   readonly dir?: string;
   readonly clone?: { readonly sshUrl: string; readonly identity: GitIdentity };
+}
+
+/** A request body's `agent` field, validated: the choice, or the 400 message. */
+export function parseAgentChoice(
+  raw: unknown,
+): { readonly choice: AgentChoice | undefined } | { readonly error: string } {
+  if (raw === undefined || raw === null) return { choice: undefined };
+  if (typeof raw !== "object" || Array.isArray(raw)) {
+    return { error: "agent must be an object: { agent?, model? }" };
+  }
+  const { agent, model } = raw as { agent?: unknown; model?: unknown };
+  if (agent !== undefined && !isAcpAgentKind(agent)) {
+    return {
+      error: `agent.agent must be one of ${ACP_AGENT_KINDS.join(", ")} (got ${JSON.stringify(agent)})`,
+    };
+  }
+  if (model !== undefined && (typeof model !== "string" || model === "")) {
+    return { error: "agent.model must be a non-empty string" };
+  }
+  return {
+    choice: {
+      ...(agent !== undefined ? { agent } : {}),
+      ...(model !== undefined ? { model: model as string } : {}),
+    },
+  };
 }
 
 function json(body: unknown, init?: { readonly status?: number }): Response {
@@ -379,6 +411,9 @@ export function createHandler(options: ServerOptions): (req: Request) => Promise
       } catch {
         return json({ error: "invalid JSON body" }, { status: 400 });
       }
+      const parsedAgent = parseAgentChoice(body.agent);
+      if ("error" in parsedAgent) return json({ error: parsedAgent.error }, { status: 400 });
+      const agentOverrides = parsedAgent.choice;
       if (typeof body.workflowId === "string") {
         if (
           body.dedupeKey !== undefined &&
@@ -410,6 +445,7 @@ export function createHandler(options: ServerOptions): (req: Request) => Promise
         const startOptions: StartTrackedRunOptions = {
           ...configRunOptions(runEnv, maxConcurrentRuns, {
             dedupeKey: typeof body.dedupeKey === "string" ? body.dedupeKey : undefined,
+            ...(agentOverrides !== undefined ? { agentOverrides } : {}),
           }),
           input: decodedInput,
         };
@@ -481,6 +517,7 @@ export function createHandler(options: ServerOptions): (req: Request) => Promise
         ...(runEnv !== undefined ? { dispatchEnv: dispatchEnvFor(runEnv) } : {}),
         input: body.input,
         ...(typeof body.dedupeKey === "string" ? { dedupeKey: body.dedupeKey } : {}),
+        ...(agentOverrides !== undefined ? { agentOverrides } : {}),
         ...(body.clone !== undefined && typeof body.dir === "string"
           ? { prepareWorkspace: true }
           : {}),

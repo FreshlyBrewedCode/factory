@@ -13,6 +13,7 @@ import type { RunEvent } from "../events";
 import { defineWorkflow, Schema } from "../workflow";
 import { makeAgentRuntime } from "./agent-runtime";
 import { startRun } from "./run";
+import { fakeAgents } from "../replay/adapter";
 
 const FAKE = join(import.meta.dir, "../../test/fixtures/fake-acp-agent.ts");
 
@@ -49,6 +50,7 @@ async function collect(
     for await (const y of adapter.stream({
       threadId: "thread",
       dir: options.dir ?? import.meta.dir,
+      agent: "opencode",
       model: options.model ?? "fake/fast",
       prompt,
       outputSchema: options.outputSchema,
@@ -257,7 +259,9 @@ describe("acpAdapter", () => {
   test("through the runtime: a cancelled run cancels the step and leaves no agent process", async () => {
     const diagnostics: AcpDiagnostic[] = [];
     const runtime = makeAgentRuntime(
-      acpAdapter(fake(), { onDiagnostic: (d) => diagnostics.push(d), cancelGraceMs: 300 }),
+      fakeAgents(
+        acpAdapter(fake(), { onDiagnostic: (d) => diagnostics.push(d), cancelGraceMs: 300 }),
+      ),
     );
     const workflow = defineWorkflow("acp-cancel", {
       input: Schema.Struct({}),

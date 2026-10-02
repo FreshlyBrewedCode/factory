@@ -55,6 +55,42 @@ describe("deriveSteps", () => {
     expect(step.sessionId).toBe("ses-1");
   });
 
+  test("an agent step carries its agent beside the model, and an old log has none (ADR 0013 §2)", () => {
+    const started = (stepId: string, agent: string | undefined): RunEvent =>
+      event(stepId === "step-0" ? 1 : 2, {
+        _tag: "AgentStepStarted",
+        stepId,
+        name: stepId,
+        ...(agent !== undefined ? { agent } : {}),
+        model: "sonnet",
+        prompt: "p",
+        structured: false,
+      });
+    const finished = event(3, {
+      _tag: "AgentStepFinished",
+      stepId: "step-0",
+      name: "step-0",
+      outcome: "completed",
+      chunkCount: 0,
+      durationMs: 1,
+      finalText: "",
+    });
+    const steps = deriveSteps([
+      STARTED,
+      started("step-0", "claude"),
+      started("step-1", undefined),
+      finished,
+    ]);
+    const agents = steps.map((step) => (step.kind === "agent" ? [step.agent, step.model] : []));
+    // The finished step keeps the agent it started with.
+    expect(agents).toEqual([
+      ["claude", "sonnet"],
+      [undefined, "sonnet"],
+    ]);
+    expect(summarizeEvent(started("step-0", "claude"))).toBe("step-0 · claude · sonnet");
+    expect(summarizeEvent(started("step-1", undefined))).toBe("step-1 · sonnet");
+  });
+
   test("an agent step takes usage from AgentStepFinished, not from the raw chunk", () => {
     // The numbers are step-0 of run-69780571 verbatim. The RUN_FINISHED chunk
     // is present and carries the adapter's under-reported `totalTokens: 3648`;

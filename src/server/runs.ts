@@ -32,6 +32,7 @@
  * code over plain maps.
  */
 
+import type { AgentChoice } from "../runtime/agent-choice";
 import { Context, Effect, Layer, Schema } from "effect";
 import type { Database } from "bun:sqlite";
 import { rm } from "node:fs/promises";
@@ -320,10 +321,10 @@ export interface StartTrackedRunOptions {
    */
   readonly scheduleId?: string;
   /**
-   * Issue #16: agent-level overrides the starting schedule carries. Passed
-   * through to the run's model precedence chain.
+   * The run level of the agent/model choice (ADR 0013 §2): what the run
+   * request or the starting schedule (issue #16) names.
    */
-  readonly agentOverrides?: { readonly model?: string };
+  readonly agentOverrides?: AgentChoice;
   /**
    * ADR 0012 §3 (#37): when true, the runtime calls `adapter.prepareWorkspace`
    * before the workflow runs. The caller sets this when it has done a

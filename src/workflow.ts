@@ -12,17 +12,29 @@
 
 import { Schema } from "effect";
 import type { ExecResult } from "./lib/exec";
+import type { AcpAgentKind } from "./runtime/acp-agents";
 import type { WriteBackResult } from "./lib/writeback";
 
 export { Schema };
 
+/** The coding agents a step can run on (ADR 0013). */
+export type AgentKind = AcpAgentKind;
+
 /**
- * Per-call agent options. Precedence for `model`/`permissionMode`:
- * per-call option > workflow's `agent` default > runtime fallback.
+ * Per-call agent options. `agent` and `model` resolve separately (ADR 0013
+ * §2, `runtime/agent-choice.ts`), most specific level first: this call > the
+ * run request or schedule > the workflow's `agent` default > the config's
+ * `agent.default` / `agent.models`. A model named below the level that chose
+ * the agent does not apply: `{ agent: "opencode" }` here runs on opencode's
+ * configured model even when the workflow pins a Claude model.
+ *
+ * There is no permission option: every permission ask is answered by the
+ * runtime (ADR 0013 §4).
  */
 export interface AgentCallOptions {
+  readonly agent?: AgentKind;
+  /** Passed to the agent verbatim — its own id (`sonnet`, `opencode/big-pickle`). */
   readonly model?: string;
-  readonly permissionMode?: "acceptEdits" | "default";
   /** An Effect Schema. Converted to JSON Schema only at the adapter boundary. */
   readonly output?: Schema.Codec<any, any>;
 }
@@ -127,9 +139,10 @@ export interface WorkflowCtx {
   ): Promise<string>;
 }
 
+/** A workflow's agent defaults: one level of `AgentCallOptions`' precedence chain. */
 export interface WorkflowAgentDefaults {
+  readonly agent?: AgentKind;
   readonly model?: string;
-  readonly permissionMode?: "acceptEdits" | "default";
 }
 
 /**

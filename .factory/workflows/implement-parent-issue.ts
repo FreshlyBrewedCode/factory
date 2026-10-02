@@ -12,17 +12,16 @@
  * agent owns them here, because each sub-issue's PR is created mid-run (not
  * once, at the end), which `writeBack`'s single-write shape doesn't cover.
  *
- * Inputs: the parent issue number and an optional `model` override, forwarded
- * as the per-call model for every agent step (run.ts's precedence:
- * per-call > workflow default > runtime fallback).
+ * Inputs: the parent issue number and an optional `agent` and `model`,
+ * forwarded as the per-call choice for every agent step. Left out, the run's
+ * own choice applies, then the config's `agent.default` / `agent.models`
+ * (ADR 0013 §2; a model only applies to the agent it was named with).
  *
  * Output: the array of pull requests the loop opened, `{ issueNumber, prUrl,
  * branch }` per sub-issue served.
  */
 
 import { defineWorkflow, Schema, type AgentCallOptions } from "@frebreco/factory";
-
-const DEFAULT_MODEL = "omniroute/opencode-go/glm-5.3-flash";
 
 const NextIssueOutput = Schema.Struct({
   /** The sub-issue to work on next, or null when every sub-issue is served/blockered. */
@@ -42,6 +41,7 @@ const PullRequest = Schema.Struct({
 
 const Input = Schema.Struct({
   parentIssueNumber: Schema.Int,
+  agent: Schema.optional(Schema.Literals(["claude", "opencode"])),
   model: Schema.optional(Schema.String),
 });
 
@@ -140,8 +140,12 @@ To undo a link, use removeCloseIssueReferences with the same inputs. It only
 works while the issue is open.
 `;
 
-const agentOpts = (input: { readonly model?: string }): AgentCallOptions => ({
-  model: input.model ?? DEFAULT_MODEL,
+const agentOpts = (input: {
+  readonly agent?: AgentCallOptions["agent"];
+  readonly model?: string;
+}): AgentCallOptions => ({
+  ...(input.agent !== undefined ? { agent: input.agent } : {}),
+  ...(input.model !== undefined ? { model: input.model } : {}),
 });
 
 export default defineWorkflow("implement-parent-issue", {

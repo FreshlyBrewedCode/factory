@@ -3,6 +3,7 @@ import { describe, expect, test } from "bun:test";
 import type { AgentAdapterYield, AgentSignal } from "./agent-adapter";
 import { AgentRuntimeLayer } from "./agent-runtime";
 import { abortableIterable, buildAgentStepEffect } from "./agent-step";
+import { fakeAgents } from "../replay/adapter";
 
 function makeYield(chunk: unknown, signal?: AgentSignal): AgentAdapterYield {
   return signal !== undefined ? { chunk, signal } : { chunk };
@@ -37,13 +38,14 @@ describe("buildAgentStepEffect signal extraction", () => {
     const handle = buildAgentStepEffect({
       threadId: "t",
       dir: "/tmp",
+      agent: "opencode",
       model: "m",
       prompt: "p",
       onChunk: () => {},
     });
 
     const outcome = await Effect.runPromise(
-      Effect.provide(handle.effect, AgentRuntimeLayer(adapter)),
+      Effect.provide(handle.effect, AgentRuntimeLayer(fakeAgents(adapter))),
     );
     expect(outcome.sessionId).toBe("ses_abc");
     expect(outcome.finalText).toBe("hello");
@@ -65,13 +67,14 @@ describe("buildAgentStepEffect signal extraction", () => {
     const handle = buildAgentStepEffect({
       threadId: "t",
       dir: "/tmp",
+      agent: "opencode",
       model: "m",
       prompt: "p",
       onChunk: () => {},
     });
 
     const outcome = await Effect.runPromise(
-      Effect.provide(handle.effect, AgentRuntimeLayer(adapter)),
+      Effect.provide(handle.effect, AgentRuntimeLayer(fakeAgents(adapter))),
     );
     expect(outcome.structuredOutput).toEqual(outputObject);
   });
@@ -88,13 +91,14 @@ describe("buildAgentStepEffect signal extraction", () => {
     const handle = buildAgentStepEffect({
       threadId: "t",
       dir: "/tmp",
+      agent: "opencode",
       model: "m",
       prompt: "p",
       onChunk: () => {},
     });
 
     const outcome = await Effect.runPromise(
-      Effect.provide(handle.effect, AgentRuntimeLayer(adapter)),
+      Effect.provide(handle.effect, AgentRuntimeLayer(fakeAgents(adapter))),
     );
     expect(outcome.runError).toBe("something broke");
   });
@@ -107,12 +111,13 @@ describe("buildAgentStepEffect signal extraction", () => {
     const handle = buildAgentStepEffect({
       threadId: "t",
       dir: "/tmp",
+      agent: "opencode",
       model: "m",
       prompt: "p",
       onChunk: (chunk) => chunks.push(chunk),
     });
 
-    await Effect.runPromise(Effect.provide(handle.effect, AgentRuntimeLayer(adapter)));
+    await Effect.runPromise(Effect.provide(handle.effect, AgentRuntimeLayer(fakeAgents(adapter))));
     expect(chunks).toHaveLength(1);
     expect(chunks[0]).toBe(rawChunk);
   });
@@ -127,13 +132,14 @@ describe("buildAgentStepEffect signal extraction", () => {
     const handle = buildAgentStepEffect({
       threadId: "t",
       dir: "/tmp",
+      agent: "opencode",
       model: "m",
       prompt: "p",
       onChunk: () => {},
     });
 
     const outcome = await Effect.runPromise(
-      Effect.provide(handle.effect, AgentRuntimeLayer(adapter)),
+      Effect.provide(handle.effect, AgentRuntimeLayer(fakeAgents(adapter))),
     );
     expect(outcome.chunkCount).toBe(3);
     expect(outcome.finalText).toBe("no signals here");
@@ -156,13 +162,14 @@ describe("buildAgentStepEffect signal extraction", () => {
     const handle = buildAgentStepEffect({
       threadId: "t",
       dir: "/tmp",
+      agent: "opencode",
       model: "m",
       prompt: "p",
       onChunk: () => {},
     });
     expect(streamed).toBe(0);
 
-    const runtime = ManagedRuntime.make(AgentRuntimeLayer(adapter));
+    const runtime = ManagedRuntime.make(AgentRuntimeLayer(fakeAgents(adapter)));
     const outcome = await runtime.runPromise(handle.effect);
     await runtime.dispose();
     expect(streamed).toBe(1);

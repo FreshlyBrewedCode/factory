@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, test } from "bun:test";
 import { getRunEvents, listRuns, openStore } from "./persistence/store";
-import { createSlowFakeAdapter } from "./replay/adapter";
+import { createSlowFakeAdapter, fakeAgents } from "./replay/adapter";
 import { runCli } from "./cli";
 
 const ECHO_WORKFLOW = `${import.meta.dir}/../test/fixtures/echo-workflow.ts`;
@@ -19,13 +19,15 @@ describe("runCli", () => {
       dir,
       outPath,
       dbPath: join(dir, "factory.db"),
-      adapter: createSlowFakeAdapter(
-        [
-          { type: "TEXT_MESSAGE_START" },
-          { type: "TEXT_MESSAGE_CONTENT", delta: "hi" },
-          { type: "TEXT_MESSAGE_END" },
-        ],
-        1,
+      agent: fakeAgents(
+        createSlowFakeAdapter(
+          [
+            { type: "TEXT_MESSAGE_START" },
+            { type: "TEXT_MESSAGE_CONTENT", delta: "hi" },
+            { type: "TEXT_MESSAGE_END" },
+          ],
+          1,
+        ),
       ),
     });
 
@@ -66,7 +68,7 @@ describe("runCli", () => {
         dir,
         outPath,
         dbPath: join(dir, "factory.db"),
-        adapter: createSlowFakeAdapter([], 1),
+        agent: fakeAgents(createSlowFakeAdapter([], 1)),
       });
     } catch (err) {
       thrown = err;

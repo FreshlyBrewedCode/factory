@@ -3,7 +3,12 @@ import { describe, expect, test } from "bun:test";
 import { AgentRuntimeLayer } from "../runtime/agent-runtime";
 import { buildAgentStepEffect } from "../runtime/agent-step";
 import type { AgentAdapterYield } from "../runtime/agent-adapter";
-import { createCorpusReplayAdapter, createSlowFakeAdapter, loadCorpusBlocks } from "./adapter";
+import {
+  fakeAgents,
+  createCorpusReplayAdapter,
+  createSlowFakeAdapter,
+  loadCorpusBlocks,
+} from "./adapter";
 
 const FULL_ROUND_TRIP_CORPUS = `${import.meta.dir}/../../test/corpus/run-1789308170212.ndjson`;
 
@@ -30,6 +35,7 @@ describe("createCorpusReplayAdapter", () => {
     const options = {
       threadId: "t",
       dir: "/tmp",
+      agent: "opencode" as const,
       model: "m",
       prompt: "p",
       abortController: new AbortController(),
@@ -53,13 +59,14 @@ describe("createCorpusReplayAdapter", () => {
     const handle = buildAgentStepEffect({
       threadId: "t",
       dir: "/tmp",
+      agent: "opencode",
       model: "opencode-go/deepseek-v4.1-flash",
       prompt: "irrelevant, replay ignores it",
       onChunk: (chunk) => chunks.push(chunk),
     });
 
     const outcome = await Effect.runPromise(
-      Effect.provide(handle.effect, AgentRuntimeLayer(adapter)),
+      Effect.provide(handle.effect, AgentRuntimeLayer(fakeAgents(adapter))),
     );
 
     expect(outcome.chunkCount).toBe(39);
@@ -74,6 +81,7 @@ describe("createCorpusReplayAdapter", () => {
     const stream = adapter.stream({
       threadId: "t",
       dir: "/tmp",
+      agent: "opencode",
       model: "m",
       prompt: "p",
       abortController: new AbortController(),
@@ -107,13 +115,14 @@ describe("createSlowFakeAdapter", () => {
     const handle = buildAgentStepEffect({
       threadId: "t",
       dir: "/tmp",
+      agent: "opencode",
       model: "m",
       prompt: "p",
       onChunk: () => {},
     });
 
     const outcome = await Effect.runPromise(
-      Effect.provide(handle.effect, AgentRuntimeLayer(adapter)),
+      Effect.provide(handle.effect, AgentRuntimeLayer(fakeAgents(adapter))),
     );
     expect(outcome.chunkCount).toBe(3);
     expect(outcome.finalText).toBe("hi");

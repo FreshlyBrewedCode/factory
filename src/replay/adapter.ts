@@ -26,6 +26,7 @@ import type {
   AgentSignal,
 } from "../runtime/agent-adapter";
 import { extractOpencodeSignal } from "../runtime/opencode-adapter";
+import type { AgentRuntimeConfig } from "../runtime/agent-runtime";
 
 export interface CorpusStepBlock {
   readonly step: string;
@@ -128,4 +129,15 @@ export function createSlowFakeAdapter(
       };
     },
   };
+}
+
+/**
+ * A model for every agent, so a fake-driven step resolves without naming one
+ * (ADR 0013 §2: factory always sends a model). The fakes ignore it.
+ */
+export const FAKE_AGENT_MODELS = { claude: "fake-model", opencode: "fake-model" } as const;
+
+/** An agent runtime config that runs every step on `adapter`, with `FAKE_AGENT_MODELS`. */
+export function fakeAgents(adapter: AgentAdapter): AgentRuntimeConfig {
+  return { adapter, models: FAKE_AGENT_MODELS };
 }
