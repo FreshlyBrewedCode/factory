@@ -22,12 +22,18 @@
  * non-terminal run holds it. The fired run itself is started with the same
  * key by the daemon's fire function, which makes the skip observable exactly
  * like any other dedupe collision; `"stack"` fires regardless.
+ *
+ * #38: the clock comes from Effect's Clock service. Tests use TestClock or
+ * provide a custom Clock instance rather than an injected `now` function.
+ * In the daemon, `runSchedulerLoop` resolves both the clock and the dedupe
+ * registry from the context of the daemon runtime it is forked on; the plain
+ * `tickOnce` receives them as ordinary arguments in `SchedulerDeps`.
  */
 
-import { Cron, Effect, Schedule, Schema, type ManagedRuntime } from "effect";
+import { Clock, Cron, Effect, Schedule, Schema } from "effect";
 import type { Database } from "bun:sqlite";
 import type { FactoryConfig } from "../config";
-import { DedupeKeyError, dedupeRegistry, type DedupeRegistry } from "../lib/dedupe";
+import { DedupeKeyError, DedupeRegistry, type DedupeRegistryShape } from "../lib/dedupe";
 import type { WorkflowDefinition } from "../workflow";
 import {
   ConcurrencyLimitError,
@@ -37,7 +43,7 @@ import {
   type WorkspaceSpec,
 } from "./runs";
 import { RunCancelledSignal, type RunRepo } from "../runtime/run";
-import type { AgentRuntime } from "../runtime/agent-runtime";
+import type { DaemonRuntime } from "./daemon-runtime";
 
 export class SchedulerError extends Schema.TaggedError<SchedulerError>()("SchedulerError", {
   cause: Schema.Defect(),
@@ -95,10 +101,10 @@ export interface SchedulerDeps {
   readonly schedules: ReadonlyArray<RuntimeSchedule>;
   /** Starts the scheduled run; the daemon wires it to `startTrackedRun`. */
   readonly fire: (schedule: RuntimeSchedule) => Promise<string>;
-  /** Injectable for tests; defaults to the daemon's shared registry. */
-  readonly registry?: DedupeRegistry;
-  /** Injectable for tests; defaults to `Date.now`. */
-  readonly now?: () => number;
+  /** Issue #38: the daemon's own dedupe registry — where schedule keys are held. */
+  readonly dedupeRegistry: DedupeRegistryShape;
+  /** Issue #38: the wall clock windows are judged against; tests pass a `TestClock`. */
+  readonly clock: Clock.Clock;
 }
 
 export interface SchedulerState {
@@ -114,7 +120,7 @@ export interface SchedulerState {
  * once per session.
  */
 export function createSchedulerState(deps: SchedulerDeps): SchedulerState {
-  const now = deps.now?.() ?? Date.now();
+  const now = deps.clock.currentTimeMillisUnsafe();
   const schedules = deps.schedules;
   return {
     lastTick: new Map(schedules.map((s) => [s.id, now])),
@@ -173,8 +179,8 @@ export async function tickOnce(
   deps: SchedulerDeps,
   state: SchedulerState,
 ): Promise<Array<TickResult>> {
-  const now = deps.now?.() ?? Date.now();
-  const registry = deps.registry ?? dedupeRegistry;
+  const now = deps.clock.currentTimeMillisUnsafe();
+  const registry = deps.dedupeRegistry;
   const results: Array<TickResult> = [];
 
   for (const schedule of deps.schedules) {
@@ -217,8 +223,31 @@ export async function tickOnce(
   return results;
 }
 
-/** The daemon's scheduler loop — `Effect.repeat` around the plain `tickOnce`. */
+/**
+ * The daemon's scheduler loop — `Effect.repeat` around the plain `tickOnce`.
+ * The dedupe registry and the clock come from the context it runs in (#38):
+ * forked on the daemon runtime, that is the daemon's own registry and
+ * Effect's wall clock. The session state (`lastTick` = now) is taken when the
+ * loop starts.
+ */
 export function runSchedulerLoop(
+  schedules: ReadonlyArray<RuntimeSchedule>,
+  fire: SchedulerDeps["fire"],
+  intervalMs: number,
+): Effect.Effect<unknown, never, DedupeRegistry> {
+  return Effect.gen(function* () {
+    const deps: SchedulerDeps = {
+      schedules,
+      fire,
+      dedupeRegistry: yield* DedupeRegistry,
+      clock: yield* Clock.Clock,
+    };
+    const state = createSchedulerState(deps);
+    return yield* schedulerTicks(deps, state, intervalMs);
+  });
+}
+
+function schedulerTicks(
   deps: SchedulerDeps,
   state: SchedulerState,
   intervalMs: number,
@@ -252,7 +281,7 @@ export function runSchedulerLoop(
  */
 export function makeScheduleFire(options: {
   readonly db: Database;
-  readonly runtime: ManagedRuntime.ManagedRuntime<AgentRuntime, never>;
+  readonly runtime: DaemonRuntime;
   readonly maxConcurrentRuns: number;
   readonly workspace: WorkspaceSpec;
   readonly repo: RunRepo;

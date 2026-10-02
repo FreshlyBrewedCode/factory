@@ -11,9 +11,28 @@
  * workspace. A reserved slot is released if allocation/startup fails, and a
  * `cancel` that arrives while a run is still reserving is deferred into run
  * start rather than dropped.
+ *
+ * Shutdown cancels what the registry holds: `RunRegistryShape.shutdown`
+ * refuses further starts, cancels every running handle, marks every reserved
+ * slot cancelled (so the run is cancelled the moment it starts, exactly like
+ * a deferred API cancel), and waits — bounded — for all of them to settle.
+ * Settled means each run persisted its `RunCancelled` and its `ctx.exec`
+ * children were killed, rather than being orphaned by process exit and read
+ * back as "interrupted" after a restart. `DaemonHandle.stop` runs it while
+ * the daemon runtime is still live; the registry layer's finalizer runs it
+ * again as a safety net when the runtime is disposed without `stop`.
+ *
+ * #38 (ADR 0009 §5): the registry is a `Context.Service` (`RunRegistry`)
+ * whose layer builds a fresh map per daemon runtime, alongside the pubsub,
+ * dedupe registry and refresh gates. Nothing here holds module-level state:
+ * `startTrackedRun` resolves the services from the daemon runtime it is
+ * handed (`server/daemon-runtime.ts`), so two daemons can coexist in one
+ * process without sharing state. Resolution happens up front, synchronously,
+ * so the check-then-set below is still one uninterrupted stretch of plain
+ * code over plain maps.
  */
 
-import { Schema, type ManagedRuntime } from "effect";
+import { Context, Effect, Layer, Schema } from "effect";
 import type { Database } from "bun:sqlite";
 import { rm } from "node:fs/promises";
 import { admitRun } from "./admission";
@@ -21,17 +40,15 @@ import { appendEvent, getRunEvents, listRuns } from "../persistence/store";
 import type { RunRepo } from "../runtime/run";
 import { startRun, type RunHandle } from "../runtime/run";
 import type { GitIdentity } from "../lib/clone";
-import { allocateWorkspace } from "../lib/workspace";
-import { dedupeRegistry, type DedupeRegistry } from "../lib/dedupe";
-import type { AgentRuntime } from "../runtime/agent-runtime";
+import { allocateWorkspace, RefreshGates } from "../lib/workspace";
+import { DedupeRegistry } from "../lib/dedupe";
 import type { DispatchChildFn, WorkflowDefinition, WorkspaceKind } from "../workflow";
-import { publish } from "./pubsub";
+import { serviceOf, type DaemonRuntime } from "./daemon-runtime";
+import { RunPubSub } from "./pubsub";
 
 interface ReservedSlot {
   cancelled: boolean;
 }
-
-const active = new Map<string, RunHandle<unknown> | ReservedSlot>();
 
 /**
  * Issue #14: how deep a parent → child → grandchild chain may nest — the cap
@@ -49,6 +66,30 @@ export class DispatchCapError extends Schema.TaggedError<DispatchCapError>()("Di
 function isReserved(entry: RunHandle<unknown> | ReservedSlot | undefined): boolean {
   return entry !== undefined && !("result" in entry) && "cancelled" in entry;
 }
+
+/**
+ * A start refused because the daemon is shutting down — its registry stopped
+ * admitting runs. HTTP maps it to 503; a `ctx.dispatch` surfaces it to the
+ * parent, which is itself being cancelled.
+ */
+export class DaemonShuttingDownError extends Schema.TaggedError<DaemonShuttingDownError>()(
+  "DaemonShuttingDownError",
+  { message: Schema.String },
+) {
+  // Same `.stack` header fix as `ConcurrencyLimitError` below.
+  static {
+    this.prototype.name = "DaemonShuttingDownError";
+  }
+
+  static of(): DaemonShuttingDownError {
+    return new DaemonShuttingDownError({
+      message: "the daemon is shutting down and no longer starts runs",
+    });
+  }
+}
+
+/** How long shutdown waits for cancelled runs to settle before giving up on them. */
+export const DEFAULT_SHUTDOWN_TIMEOUT_MS = 5_000;
 
 export class ConcurrencyLimitError extends Schema.TaggedError<ConcurrencyLimitError>()(
   "ConcurrencyLimitError",
@@ -72,39 +113,158 @@ export class ConcurrencyLimitError extends Schema.TaggedError<ConcurrencyLimitEr
   }
 }
 
-export function isActive(runId: string): boolean {
-  return active.has(runId);
+export interface RunRegistryShape {
+  isActive(runId: string): boolean;
+  activeRunIds(): ReadonlyArray<string>;
+  getActiveHandle(runId: string): RunHandle<unknown> | undefined;
+  /**
+   * Cancellation for a run this registry holds — whether it is already
+   * running (returns its handle), still reserving/allocation-bound (marks the
+   * slot so the run is cancelled the moment it starts), or unknown
+   * (`undefined`).
+   */
+  cancelRegisteredRun(
+    runId: string,
+  ):
+    | { readonly kind: "handle"; readonly handle: RunHandle<unknown> }
+    | { readonly kind: "reserved" }
+    | undefined;
+  reserve(runId: string): void;
+  /** True once `shutdown` has begun: starts are refused from then on. */
+  readonly closed: boolean;
+  /**
+   * Close admission, cancel every run held — running handles directly,
+   * reserved slots by marking them for cancel-on-start — and resolve once the
+   * registry is empty and every cancelled run has `settled` (its agent
+   * processes torn down), or `timeoutMs` has passed (runs still pending then
+   * are logged). Idempotent: every call returns the first call's promise.
+   */
+  shutdown(timeoutMs: number): Promise<void>;
+  /**
+   * After a timed-out `shutdown`: wait up to `timeoutMs` more for the runs it
+   * cancelled to settle — e.g. once disposing the runtime has interrupted
+   * what was still holding them — so their final `RunCancelled` lands before
+   * the process exits. Resolves at once when nothing is pending.
+   */
+  awaitCancelled(timeoutMs: number): Promise<void>;
+  setHandle(runId: string, handle: RunHandle<unknown>): void;
+  delete(runId: string): void;
+  get(runId: string): RunHandle<unknown> | ReservedSlot | undefined;
+  size: number;
 }
 
-export function activeRunIds(): ReadonlyArray<string> {
-  return [...active.keys()];
-}
-
-export function getActiveHandle(runId: string): RunHandle<unknown> | undefined {
-  const entry = active.get(runId);
-  if (entry === undefined || isReserved(entry)) return undefined;
-  return entry as RunHandle<unknown>;
+export function createRunRegistry(): RunRegistryShape {
+  const active = new Map<string, RunHandle<unknown> | ReservedSlot>();
+  let closed = false;
+  let shutdownPromise: Promise<void> | undefined;
+  const onEmpty: Array<() => void> = [];
+  // The runs shutdown cancelled (or that started after it began), so it can
+  // wait for their `settled`, not merely for the registry to empty.
+  const cancelled: Array<RunHandle<unknown>> = [];
+  const allSettled = (): Promise<void> =>
+    new Promise<void>((resolve) => {
+      onEmpty.push(resolve);
+      notifyIfEmpty();
+    })
+      .then(() => Promise.allSettled(cancelled.map((handle) => handle.settled)))
+      .then(() => undefined);
+  const within = async (promise: Promise<void>, timeoutMs: number): Promise<boolean> => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timedOut = new Promise<false>((resolve) => {
+      timer = setTimeout(() => resolve(false), timeoutMs);
+    });
+    const outcome = await Promise.race([promise.then(() => true as const), timedOut]);
+    clearTimeout(timer);
+    return outcome;
+  };
+  const notifyIfEmpty = (): void => {
+    if (active.size === 0) for (const resolve of onEmpty.splice(0)) resolve();
+  };
+  return {
+    isActive: (runId) => active.has(runId),
+    activeRunIds: () => [...active.keys()],
+    getActiveHandle(runId) {
+      const entry = active.get(runId);
+      if (entry === undefined || isReserved(entry)) return undefined;
+      return entry as RunHandle<unknown>;
+    },
+    cancelRegisteredRun(runId) {
+      const entry = active.get(runId);
+      if (entry === undefined) return undefined;
+      if (isReserved(entry)) {
+        (entry as ReservedSlot).cancelled = true;
+        return { kind: "reserved" };
+      }
+      return { kind: "handle", handle: entry as RunHandle<unknown> };
+    },
+    reserve(runId) {
+      active.set(runId, { cancelled: false });
+    },
+    setHandle(runId, handle) {
+      active.set(runId, handle);
+      if (closed) cancelled.push(handle);
+    },
+    delete(runId) {
+      active.delete(runId);
+      notifyIfEmpty();
+    },
+    get closed() {
+      return closed;
+    },
+    shutdown(timeoutMs) {
+      if (shutdownPromise !== undefined) return shutdownPromise;
+      closed = true;
+      for (const entry of active.values()) {
+        if (isReserved(entry)) {
+          (entry as ReservedSlot).cancelled = true;
+        } else {
+          const handle = entry as RunHandle<unknown>;
+          cancelled.push(handle);
+          void handle.cancel();
+        }
+      }
+      shutdownPromise = within(allSettled(), timeoutMs).then((settled) => {
+        if (!settled) {
+          console.error(
+            `[daemon] shutdown: run(s) did not settle within ${timeoutMs}ms: ` +
+              `${[...active.keys()].join(", ") || "(agent teardown pending)"}`,
+          );
+        }
+      });
+      return shutdownPromise;
+    },
+    async awaitCancelled(timeoutMs) {
+      await within(allSettled(), timeoutMs);
+    },
+    get(runId) {
+      return active.get(runId);
+    },
+    get size() {
+      return active.size;
+    },
+  };
 }
 
 /**
- * Cancellation for a run this process holds — whether it is already running
- * (returns its handle), still reserving/allocation-bound (marks the slot so
- * the run is cancelled the moment it starts), or unknown (`undefined`).
+ * The active-run registry as a daemon service (#38, ADR 0009 §5). Resolve it
+ * from the daemon runtime's context; provide it with `RunRegistryLayer`.
  */
-export function cancelRegisteredRun(runId: string):
-  | { readonly kind: "handle"; readonly handle: RunHandle<unknown> }
-  | {
-      readonly kind: "reserved";
-    }
-  | undefined {
-  const entry = active.get(runId);
-  if (entry === undefined) return undefined;
-  if (isReserved(entry)) {
-    (entry as ReservedSlot).cancelled = true;
-    return { kind: "reserved" };
-  }
-  return { kind: "handle", handle: entry as RunHandle<unknown> };
-}
+export class RunRegistry extends Context.Service<RunRegistry, RunRegistryShape>()("RunRegistry") {}
+
+/**
+ * A fresh, empty registry per layer build — i.e. per daemon runtime. Its
+ * finalizer shuts the registry down, so disposing a daemon runtime never
+ * orphans a run. It is the safety net, not the main path: by the time it
+ * runs the runtime is already disposed, so a reserved run that starts during
+ * it cannot resolve its adapter (`DaemonHandle.stop` shuts the registry down
+ * first, while the runtime is live, and this is then a no-op).
+ */
+export const RunRegistryLayer: Layer.Layer<RunRegistry> = Layer.effect(
+  RunRegistry,
+  Effect.acquireRelease(Effect.sync(createRunRegistry), (registry) =>
+    Effect.promise(() => registry.shutdown(DEFAULT_SHUTDOWN_TIMEOUT_MS)),
+  ),
+);
 
 export interface WorkspaceSpec {
   readonly workspaceRoot: string;
@@ -127,8 +287,6 @@ export interface StartTrackedRunOptions {
    * start requests cannot both slip past it. Absent, no limit applies.
    */
   readonly maxConcurrentRuns?: number;
-  /** Injectable for tests: holds the reserved-but-not-started window open. */
-  readonly beforeStart?: () => Promise<void>;
   /**
    * Issue #14: the environment a child run of this run starts with, so
    * `ctx.dispatch` can allocate a workspace, admission-limit and repo for it.
@@ -156,11 +314,6 @@ export interface StartTrackedRunOptions {
    * re-asserted here. Release still happens here, keyed to this run id.
    */
   readonly dedupeKeyClaimed?: boolean;
-  /**
-   * Issue #15: injectable holder registry, for tests. Absent, the daemon's
-   * shared process-wide registry (`lib/dedupe.ts`) is used.
-   */
-  readonly dedupeRegistry?: DedupeRegistry;
   /**
    * Issue #16: the schedule that started this run, when any did - passed
    * through to `RunStarted.scheduleId`.
@@ -194,8 +347,6 @@ export interface DispatchEnv {
   /** Issue #14: dispatch depth / per-run child caps, over the defaults. */
   readonly maxDispatchDepth?: number;
   readonly maxChildrenPerRun?: number;
-  /** Issue #15: injectable holder registry, over the daemon's shared one. */
-  readonly dedupeRegistry?: DedupeRegistry;
 }
 
 /**
@@ -234,7 +385,7 @@ function dispatchDepth(db: Database, runId: string): number {
  * parent's.
  */
 async function dispatchChildRun(
-  runtime: ManagedRuntime.ManagedRuntime<AgentRuntime, never>,
+  runtime: DaemonRuntime,
   db: Database,
   env: DispatchEnv,
   parentRunId: string,
@@ -244,11 +395,13 @@ async function dispatchChildRun(
 ): Promise<string> {
   const maxDepth = env.maxDispatchDepth ?? DEFAULT_MAX_DISPATCH_DEPTH;
   const maxChildren = env.maxChildrenPerRun ?? DEFAULT_MAX_CHILDREN_PER_RUN;
-  const registry = env.dedupeRegistry ?? dedupeRegistry;
+  const registry = serviceOf(runtime, RunRegistry);
+  const dedupeRegistry = serviceOf(runtime, DedupeRegistry);
 
+  if (registry.closed) throw DaemonShuttingDownError.of();
   if (
     env.maxConcurrentRuns !== undefined &&
-    !admitRun(env.maxConcurrentRuns, activeRunIds().length)
+    !admitRun(env.maxConcurrentRuns, registry.activeRunIds().length)
   ) {
     throw ConcurrencyLimitError.of({ maxConcurrentRuns: env.maxConcurrentRuns });
   }
@@ -272,7 +425,7 @@ async function dispatchChildRun(
   // and *before* the fire-and-forget start, so a collision throws into the
   // parent here instead of being swallowed by the un-awaited start's catch.
   const childRunId = `run-${crypto.randomUUID()}`;
-  if (opts?.dedupeKey !== undefined) registry.claim(opts.dedupeKey, childRunId);
+  if (opts?.dedupeKey !== undefined) dedupeRegistry.claim(opts.dedupeKey, childRunId);
 
   void (async () => {
     await startTrackedRun(runtime, db, child, {
@@ -285,10 +438,9 @@ async function dispatchChildRun(
       dispatchEnv: env,
       ...(opts?.dedupeKey !== undefined ? { dedupeKey: opts.dedupeKey } : {}),
       ...(opts?.dedupeKey !== undefined ? { dedupeKeyClaimed: true } : {}),
-      ...(env.dedupeRegistry !== undefined ? { dedupeRegistry: env.dedupeRegistry } : {}),
     }).catch((err: unknown) => {
       if (opts?.dedupeKey !== undefined) {
-        (env.dedupeRegistry ?? dedupeRegistry).release(opts.dedupeKey, childRunId);
+        dedupeRegistry.release(opts.dedupeKey, childRunId);
       }
       console.error(
         `nested run start failed (parent ${parentRunId}, child ${childRunId}):` +
@@ -304,9 +456,16 @@ function countDispatchedChildren(db: Database, runId: string): number {
   return getRunEvents(db, runId).filter((event) => event.payload._tag === "RunDispatched").length;
 }
 
-/** Starts a run, persists+publishes every event, and tracks it until terminal. */
+/**
+ * Starts a run, persists+publishes every event, and tracks it until terminal.
+ *
+ * `runtime` is the daemon's composition root (#36/#38): the run's agent steps
+ * resolve their adapter from it, and this function resolves the registry,
+ * pubsub, dedupe registry and refresh gates from it — synchronously, before
+ * the admission check, so resolution never opens a gap inside it.
+ */
 export async function startTrackedRun(
-  runtime: ManagedRuntime.ManagedRuntime<AgentRuntime, never>,
+  runtime: DaemonRuntime,
   db: Database,
   workflow: WorkflowDefinition<any, any>,
   options: StartTrackedRunOptions,
@@ -317,30 +476,41 @@ export async function startTrackedRun(
   // unrelated runs — one run's SSE watcher can then see the other's terminal event and close
   // its own db while its real run is still writing to it.
   const runId = options.runId ?? `run-${crypto.randomUUID()}`;
+  const registry = serviceOf(runtime, RunRegistry);
+  const dedupeRegistry = serviceOf(runtime, DedupeRegistry);
+  const pubsub = serviceOf(runtime, RunPubSub);
+  const refreshGates = serviceOf(runtime, RefreshGates);
 
-  const existing = active.get(runId);
-  if (existing !== undefined && !isReserved(existing)) {
+  // Shutdown closed admission: nothing new starts, so nothing escapes the
+  // cancel-and-wait.
+  if (registry.closed) throw DaemonShuttingDownError.of();
+
+  // Running or still reserving alike: a run id is started once. (A reserved
+  // entry here can only be a concurrent start with the same explicit runId,
+  // which must not slip past admission and start a duplicate.)
+  if (registry.get(runId) !== undefined) {
     throw new Error(`run ${runId} is already active`);
   }
 
+  // D29 admission is decided before the dedupe claim, so a refused start
+  // throws having claimed nothing — otherwise its key would stay held by a
+  // run that never started (and a `"skip"` schedule would skip forever).
+  const limit = options.maxConcurrentRuns;
+  if (limit !== undefined && !admitRun(limit, registry.size)) {
+    throw ConcurrencyLimitError.of({ maxConcurrentRuns: limit });
+  }
   // Issue #15: claim the dedupe key synchronously — check-then-claim with no
   // `await` in between, the same atomicity the registry slot reservation has —
   // so two near-simultaneous starts on the same key cannot both slip past. A
   // collision throws before anything is started, leaving no trace.
-  const registry = options.dedupeRegistry ?? dedupeRegistry;
   if (options.dedupeKey !== undefined && options.dedupeKeyClaimed !== true) {
-    registry.claim(options.dedupeKey, runId);
+    dedupeRegistry.claim(options.dedupeKey, runId);
   }
-  if (existing === undefined && options.maxConcurrentRuns !== undefined) {
-    if (!admitRun(options.maxConcurrentRuns, active.size)) {
-      throw ConcurrencyLimitError.of({ maxConcurrentRuns: options.maxConcurrentRuns });
-    }
-    active.set(runId, { cancelled: false });
-  }
+  // Every run reserves — not only limited ones — so shutdown sees runs that
+  // are still allocating whether or not an admission limit applies.
+  registry.reserve(runId);
 
   try {
-    if (options.beforeStart !== undefined) await options.beforeStart();
-
     // Issue #13: a scratch workspace takes its kind from the workflow and
     // never evicts clone workspaces — leftover scratch dirs (kept failures)
     // are excluded from retention via the run log's recorded kinds.
@@ -363,7 +533,8 @@ export async function startTrackedRun(
             ...options.workspace,
             kind,
             ...(scratchEntries !== undefined ? { scratchEntries } : {}),
-            protectedEntries: [runId, ...activeRunIds()],
+            protectedEntries: [runId, ...registry.activeRunIds()],
+            refreshGates,
           }));
 
     if (dir === undefined) throw new Error("startTrackedRun needs `dir` or `workspace`");
@@ -396,27 +567,27 @@ export async function startTrackedRun(
       input: options.input,
       onEvent: (event) => {
         appendEvent(db, event);
-        publish(runId, event);
+        pubsub.publish(runId, event);
       },
     });
 
     // A cancel that arrived while this run was only a reserved slot is
     // deferred into run start (L1): the run starts, is cancelled immediately,
     // and ends as a clean RunCancelled instead of orphaning the slot.
-    const beforeStartEntry = active.get(runId);
+    const beforeStartEntry = registry.get(runId);
     const reservedSlot = isReserved(beforeStartEntry)
       ? (beforeStartEntry as ReservedSlot)
       : undefined;
     const cancelRequested = reservedSlot?.cancelled === true;
-    active.set(runId, handle);
+    registry.setHandle(runId, handle);
 
     void handle.result.finally(() => {
-      if (active.get(runId) === handle) active.delete(runId);
+      if (registry.get(runId) === handle) registry.delete(runId);
       // Issue #15: any terminal state — completed, failed, cancelled —
       // releases the run's key. (An interrupted run — process death — is
-      // covered by the registry being per-process: the new process holds
+      // covered by the registry being per-daemon: a new daemon holds
       // nothing.)
-      if (options.dedupeKey !== undefined) registry.release(options.dedupeKey, runId);
+      if (options.dedupeKey !== undefined) dedupeRegistry.release(options.dedupeKey, runId);
     });
 
     // Issue #13: a scratch dir is reaped when the run succeeds — there is no
@@ -433,9 +604,9 @@ export async function startTrackedRun(
 
     return runId;
   } catch (err) {
-    if (options.dedupeKey !== undefined) registry.release(options.dedupeKey, runId);
-    const current = active.get(runId);
-    if (current === undefined || isReserved(current)) active.delete(runId);
+    if (options.dedupeKey !== undefined) dedupeRegistry.release(options.dedupeKey, runId);
+    const current = registry.get(runId);
+    if (current === undefined || isReserved(current)) registry.delete(runId);
     throw err;
   }
 }

@@ -10,6 +10,22 @@
  * scheduler; the adapter is resolved from that runtime's context inside
  * `runtime/agent-step.ts` instead of being threaded through every options
  * type. `DaemonHandle.stop` disposes it.
+ *
+ * #38: that runtime is the daemon runtime (`server/daemon-runtime.ts`): the
+ * agent runtime layer composed with the per-daemon state layers (run
+ * registry, pubsub, dedupe registry, refresh gates). Building it builds fresh
+ * state, so two daemons are two runtimes and coexist in one process without
+ * sharing anything. The scheduler loop is forked on it and resolves its
+ * dedupe registry and clock from its context.
+ *
+ * Shutdown order (`DaemonHandle.stop`, which `factory serve`'s SIGINT/SIGTERM
+ * handler calls): interrupt the scheduler so nothing new fires; shut the run
+ * registry down — refuse new starts, cancel every active run and reserved
+ * slot, and wait (bounded) for them to persist `RunCancelled` and kill their
+ * `ctx.exec` children; only then stop the HTTP server (so live SSE tails see
+ * the cancellations) and dispose the runtime; if the shutdown wait timed
+ * out, wait a further bounded moment for the cancelled runs to record their
+ * end, so the caller's `process.exit` does not cut off a `RunCancelled`.
  */
 
 import { mkdir } from "node:fs/promises";
@@ -19,15 +35,14 @@ type AnyFiber = Fiber.Fiber<unknown, unknown>;
 import type { FactoryConfig } from "../config";
 import { openStore } from "../persistence/store";
 import { serve } from "./http";
-import { type DispatchEnv, type WorkspaceSpec } from "./runs";
 import {
-  createSchedulerState,
-  makeScheduleFire,
-  runSchedulerLoop,
-  toRuntimeSchedules,
-  type SchedulerDeps,
-} from "./scheduler";
-import { makeAgentRuntime } from "../runtime/agent-runtime";
+  DEFAULT_SHUTDOWN_TIMEOUT_MS,
+  RunRegistry,
+  type DispatchEnv,
+  type WorkspaceSpec,
+} from "./runs";
+import { makeScheduleFire, runSchedulerLoop, toRuntimeSchedules } from "./scheduler";
+import { makeDaemonRuntime, serviceOf, type DaemonRuntime } from "./daemon-runtime";
 
 export interface DaemonOptions {
   readonly dbPath: string;
@@ -41,6 +56,11 @@ export interface DaemonOptions {
    * Absent, the legacy per-request `{dir, clone}` behaviour is kept.
    */
   readonly config?: FactoryConfig;
+  /**
+   * How long `stop()` waits for cancelled runs to settle before abandoning
+   * them, over `DEFAULT_SHUTDOWN_TIMEOUT_MS`.
+   */
+  readonly shutdownTimeoutMs?: number;
 }
 
 export interface DaemonHandle {
@@ -48,11 +68,22 @@ export interface DaemonHandle {
   /** Issue #16: the loop that fires the config's schedules, when it has any. */
   readonly schedulerFiber: AnyFiber | undefined;
   /**
-   * Shut the daemon down: interrupt the scheduler, stop the HTTP server, and
-   * dispose the agent runtime (issue #36).
+   * Issue #38: this daemon's runtime — its agent runtime plus its own
+   * registry, pubsub, dedupe registry and refresh gates, resolvable with
+   * `serviceOf`.
+   */
+  readonly runtime: DaemonRuntime;
+  /**
+   * Shut the daemon down: interrupt the scheduler, cancel every active run
+   * and wait (bounded) for them to settle, stop the HTTP server, and dispose
+   * the daemon runtime (issue #36). Idempotent: every call returns the first
+   * call's promise.
    */
   readonly stop: () => Promise<void>;
 }
+
+/** After disposal, how long `stop()` still waits for cancelled runs to record their end. */
+const SETTLE_AFTER_DISPOSE_MS = 2_000;
 
 /** Issue #16: how often the scheduler's due window check runs. */
 export const DEFAULT_SCHEDULER_INTERVAL_MS = 30_000;
@@ -61,7 +92,10 @@ export async function startDaemon(options: DaemonOptions): Promise<DaemonHandle>
   await mkdir(dirname(options.dbPath), { recursive: true });
   const db = openStore(options.dbPath);
 
-  const runtime = makeAgentRuntime(options.config?.agent.adapter);
+  const runtime = makeDaemonRuntime(options.config?.agent.adapter);
+  // Build the layers now: a failing (or, one day, asynchronous) layer
+  // surfaces at startup, and every later `serviceOf` reads the built context.
+  await runtime.context();
 
   const server = serve({
     db,
@@ -89,33 +123,37 @@ export async function startDaemon(options: DaemonOptions): Promise<DaemonHandle>
             maxDispatchDepth: config.maxDispatchDepth,
             maxChildrenPerRun: config.maxChildrenPerRun,
           };
-          const deps: SchedulerDeps = {
-            schedules: toRuntimeSchedules(config),
-            fire: makeScheduleFire({
-              db,
-              runtime,
-              maxConcurrentRuns,
-              workspace,
-              repo,
-              dispatchEnv,
-            }),
-          };
-          const state = createSchedulerState(deps);
-          return Effect.runFork(
+          const fire = makeScheduleFire({
+            db,
+            runtime,
+            maxConcurrentRuns,
+            workspace,
+            repo,
+            dispatchEnv,
+          });
+          return runtime.runFork(
             runSchedulerLoop(
-              deps,
-              state,
+              toRuntimeSchedules(config),
+              fire,
               options.schedulerIntervalMs ?? DEFAULT_SCHEDULER_INTERVAL_MS,
             ),
           );
         })()
       : undefined;
 
-  const stop = async (): Promise<void> => {
-    if (schedulerFiber !== undefined) await Effect.runPromise(Fiber.interrupt(schedulerFiber));
-    await server.stop(true);
-    await runtime.dispose();
-  };
+  let stopping: Promise<void> | undefined;
+  const stop = (): Promise<void> =>
+    (stopping ??= (async () => {
+      if (schedulerFiber !== undefined) await Effect.runPromise(Fiber.interrupt(schedulerFiber));
+      const registry = serviceOf(runtime, RunRegistry);
+      await registry.shutdown(options.shutdownTimeoutMs ?? DEFAULT_SHUTDOWN_TIMEOUT_MS);
+      await server.stop(true);
+      await runtime.dispose();
+      // If shutdown timed out, disposing interrupted whatever still held the
+      // runs; give them a short, bounded moment to persist `RunCancelled`
+      // before the caller (`factory serve`) exits the process.
+      await registry.awaitCancelled(SETTLE_AFTER_DISPOSE_MS);
+    })());
 
-  return { server, schedulerFiber, stop };
+  return { server, schedulerFiber, runtime, stop };
 }

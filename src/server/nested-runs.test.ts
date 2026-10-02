@@ -8,6 +8,8 @@
  * carries the message). A validated child is then started fire-and-forget
  * with the parent's run id recorded on its `RunStarted.parentId`, and the
  * parent never exposes an awaitable child (D-epic 19).
+ *
+ * #38: each test builds its own daemon runtime (`createTestDaemon`).
  */
 
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
@@ -18,9 +20,9 @@ import { describe, expect, test } from "bun:test";
 import { Schema } from "effect";
 import { getRunEvents, listRuns, openStore } from "../persistence/store";
 import { createSlowFakeAdapter } from "../replay/adapter";
-import { activeRunIds, isActive, startTrackedRun } from "./runs";
+import { startTrackedRun } from "./runs";
+import { createTestDaemon } from "./test-daemon";
 import { defineWorkflow } from "../workflow";
-import { makeAgentRuntime } from "../runtime/agent-runtime";
 
 const SLOW_ADAPTER = createSlowFakeAdapter(
   [
@@ -30,8 +32,6 @@ const SLOW_ADAPTER = createSlowFakeAdapter(
   ],
   25,
 );
-
-const runtime = makeAgentRuntime(SLOW_ADAPTER);
 
 // The child does a real ctx.exec so its outcome is observable in its log.
 // Scratch (issue #13): no mirror refresh, so no git fixture is needed.
@@ -82,6 +82,7 @@ describe("nested runs through the daemon (issue #14)", () => {
     const root = mkdtempSync(join(tmpdir(), "factory-nested-happy-"));
     const db = openStore(join(root, "factory.db"));
     mkdirSync(join(root, "workspaces"), { recursive: true });
+    const daemon = createTestDaemon(SLOW_ADAPTER);
 
     const parent = defineWorkflow("parent-wf", {
       input: Schema.Struct({}),
@@ -92,7 +93,7 @@ describe("nested runs through the daemon (issue #14)", () => {
       },
     });
 
-    const parentRunId = await startTrackedRun(runtime, db, parent, {
+    const parentRunId = await startTrackedRun(daemon.runtime, db, parent, {
       workspace: {
         workspaceRoot: join(root, "workspaces"),
         sshUrl: join(root, "seed-not-used"),
@@ -110,7 +111,9 @@ describe("nested runs through the daemon (issue #14)", () => {
       },
     });
 
-    await waitFor(() => !isActive(parentRunId) && activeRunIds().length === 0);
+    await waitFor(
+      () => !daemon.registry.isActive(parentRunId) && daemon.registry.activeRunIds().length === 0,
+    );
 
     const parentEvents = getRunEvents(db, parentRunId);
     const dispatched = parentEvents.find((e) => e.payload._tag === "RunDispatched");
@@ -145,8 +148,9 @@ describe("nested runs through the daemon (issue #14)", () => {
     const root = mkdtempSync(join(tmpdir(), "factory-nested-depth-"));
     const db = openStore(join(root, "factory.db"));
     mkdirSync(join(root, "workspaces"), { recursive: true });
+    const daemon = createTestDaemon(SLOW_ADAPTER);
 
-    await startTrackedRun(runtime, db, selfDispatching, {
+    await startTrackedRun(daemon.runtime, db, selfDispatching, {
       input: {},
       workspace: {
         workspaceRoot: join(root, "workspaces"),
@@ -166,7 +170,7 @@ describe("nested runs through the daemon (issue #14)", () => {
       },
     });
 
-    await waitFor(() => activeRunIds().length === 0);
+    await waitFor(() => daemon.registry.activeRunIds().length === 0);
 
     // The chain built to the cap, no farther: root + 5 children max.
     const selfRuns = listRuns(db).filter((run) => run.workflowId === "self-dispatch-wf");
@@ -196,8 +200,9 @@ describe("nested runs through the daemon (issue #14)", () => {
     const root = mkdtempSync(join(tmpdir(), "factory-nested-count-"));
     const db = openStore(join(root, "factory.db"));
     mkdirSync(join(root, "workspaces"), { recursive: true });
+    const daemon = createTestDaemon(SLOW_ADAPTER);
 
-    const parentRunId = await startTrackedRun(runtime, db, manyChildren, {
+    const parentRunId = await startTrackedRun(daemon.runtime, db, manyChildren, {
       input: {},
       workspace: {
         workspaceRoot: join(root, "workspaces"),
@@ -218,7 +223,7 @@ describe("nested runs through the daemon (issue #14)", () => {
       },
     });
 
-    await waitFor(() => activeRunIds().length === 0);
+    await waitFor(() => daemon.registry.activeRunIds().length === 0);
 
     expect(tagsOf(db, parentRunId).filter((tag) => tag === "RunDispatched").length).toBe(5);
     const parentEvents = getRunEvents(db, parentRunId);
@@ -237,6 +242,7 @@ describe("nested runs through the daemon (issue #14)", () => {
     const root = mkdtempSync(join(tmpdir(), "factory-nested-wip-"));
     const db = openStore(join(root, "factory.db"));
     mkdirSync(join(root, "workspaces"), { recursive: true });
+    const daemon = createTestDaemon(SLOW_ADAPTER);
 
     const parent = defineWorkflow("parent-wip-wf", {
       input: Schema.Struct({}),
@@ -247,7 +253,7 @@ describe("nested runs through the daemon (issue #14)", () => {
       },
     });
 
-    const parentRunId = await startTrackedRun(runtime, db, parent, {
+    const parentRunId = await startTrackedRun(daemon.runtime, db, parent, {
       input: {},
       workspace: {
         workspaceRoot: join(root, "workspaces"),
@@ -267,7 +273,7 @@ describe("nested runs through the daemon (issue #14)", () => {
       },
     });
 
-    await waitFor(() => !isActive(parentRunId));
+    await waitFor(() => !daemon.registry.isActive(parentRunId));
 
     const events = getRunEvents(db, parentRunId);
     expect(events.map((event) => event.payload._tag)).not.toContain("RunDispatched");

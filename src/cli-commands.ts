@@ -83,8 +83,12 @@ export const serveCommand = Command.make("serve", serveConfig, (config) =>
           : "scheduler: none (no schedules in config)",
       ),
     );
-    // The daemon's shutdown path: stop the scheduler and server and dispose
-    // the agent runtime before exiting, instead of dying with them live.
+    // The daemon's shutdown path: stop the scheduler, cancel every active run
+    // and wait (bounded) for each to record `RunCancelled` and kill its
+    // `ctx.exec` children, then stop the server and dispose the runtime —
+    // instead of dying with them live and leaving orphaned processes and
+    // "interrupted" runs behind. `once`: a second signal falls through to the
+    // default handler and kills the process outright.
     yield* Effect.sync(() => {
       const shutdown = (signal: NodeJS.Signals) => {
         void handle.stop().finally(() => process.exit(signal === "SIGINT" ? 130 : 143));

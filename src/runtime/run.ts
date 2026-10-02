@@ -111,7 +111,36 @@ export type RunOutcome<O> =
 
 export interface RunHandle<O> {
   readonly result: Promise<RunOutcome<O>>;
+  /**
+   * Resolves after `result`, once every agent step the run abandoned has
+   * finished tearing its adapter down — each bounded by
+   * `AGENT_TEARDOWN_GRACE_MS`.
+   * A cancelled run records `RunCancelled` without waiting for that; daemon
+   * shutdown waits for this so it does not exit under a live agent process.
+   */
+  readonly settled: Promise<void>;
   cancel(): Promise<void>;
+}
+
+/**
+ * How long a run's `settled` waits for one abandoned agent step's adapter
+ * teardown. Bounded because that teardown is third-party code that need not
+ * finish: measured live, `@tanstack/ai`'s chat engine can sit on an aborted
+ * opencode stream indefinitely, even though the abort itself already killed
+ * the opencode process (the local-process sandbox kills the process group on
+ * the spawn's abort signal). The grace covers a cooperative adapter's
+ * cleanup without letting an uncooperative one hold shutdown to its budget.
+ */
+export const AGENT_TEARDOWN_GRACE_MS = 1_000;
+
+function boundedTeardown(teardown: Promise<void>): Promise<void> {
+  return new Promise<void>((resolve) => {
+    const timer = setTimeout(resolve, AGENT_TEARDOWN_GRACE_MS);
+    void teardown.then(() => {
+      clearTimeout(timer);
+      resolve();
+    });
+  });
 }
 
 function makeIdCounter(prefix: string): () => string {
@@ -143,6 +172,18 @@ function resolveOutput<O>(
 }
 
 /**
+ * What `startRun` needs from a runtime: forking and running effects that
+ * require `AgentRuntime`. Any `ManagedRuntime` that provides at least the
+ * agent runtime satisfies it — the CLI's agent-only runtime and the daemon's
+ * runtime (#38), which provides more. (`ManagedRuntime` itself is invariant
+ * in its services, so naming the two methods is what lets both through.)
+ */
+export type AgentRunner = Pick<
+  ManagedRuntime.ManagedRuntime<AgentRuntime, never>,
+  "runFork" | "runPromise"
+>;
+
+/**
  * `runtime` is the composition root's `ManagedRuntime` (issue #36): agent
  * steps resolve their adapter from its `AgentRuntime` service and their
  * fibers are forked on it. `startRun` stays synchronous: nothing is resolved
@@ -150,7 +191,7 @@ function resolveOutput<O>(
  */
 export function startRun<I, O>(
   workflow: WorkflowDefinition<I, O>,
-  runtime: ManagedRuntime.ManagedRuntime<AgentRuntime, never>,
+  runtime: AgentRunner,
   options: StartRunOptions,
 ): RunHandle<O> {
   let seq = 0;
@@ -161,6 +202,7 @@ export function startRun<I, O>(
   const runController = new AbortController();
   let cancelled = false;
   let activeAgentFiber: Fiber.Fiber<unknown, unknown> | null = null;
+  const agentTeardowns: Array<Promise<void>> = [];
 
   runController.signal.addEventListener("abort", () => {
     cancelled = true;
@@ -245,6 +287,7 @@ export function startRun<I, O>(
     activeAgentFiber = fiber;
     const exit = await Effect.runPromise(Fiber.await(fiber));
     activeAgentFiber = null;
+    agentTeardowns.push(boundedTeardown(handle.teardown()));
     const durationMs = Date.now() - stepStartedAt;
 
     if (Exit.isFailure(exit)) {
@@ -526,6 +569,7 @@ export function startRun<I, O>(
 
   return {
     result: resultPromise,
+    settled: resultPromise.then(() => Promise.all(agentTeardowns)).then(() => undefined),
     cancel: async () => {
       runController.abort();
       await resultPromise;

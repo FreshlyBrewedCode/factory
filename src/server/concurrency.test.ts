@@ -19,9 +19,9 @@ import { describe, expect, test } from "bun:test";
 import { defineConfig } from "../config";
 import { getRunEvents, openStore } from "../persistence/store";
 import { createSlowFakeAdapter } from "../replay/adapter";
-import { makeAgentRuntime } from "../runtime/agent-runtime";
 import { admitRun } from "./admission";
 import { serve } from "./http";
+import { makeDaemonRuntime } from "./daemon-runtime";
 
 const TREE_WORKFLOW = `${import.meta.dir}/../../test/fixtures/tree-workflow.ts`;
 
@@ -73,7 +73,7 @@ describe("phase 5 P1: per-run working trees (D28) over the real server", () => {
     const db = openStore(join(root, "factory.db"));
     const server = serve({
       db,
-      runtime: makeAgentRuntime(
+      runtime: makeDaemonRuntime(
         createSlowFakeAdapter(
           [
             { type: "TEXT_MESSAGE_START" },
@@ -162,7 +162,7 @@ describe("phase 5 P1: per-run working trees (D28) over the real server", () => {
     const db = openStore(join(root, "factory.db"));
     const server = serve({
       db,
-      runtime: makeAgentRuntime(
+      runtime: makeDaemonRuntime(
         createSlowFakeAdapter(
           [
             { type: "TEXT_MESSAGE_START" },
@@ -224,7 +224,7 @@ describe("phase 5 P1: per-run working trees (D28) over the real server", () => {
     const db = openStore(join(root, "factory.db"));
     const server = serve({
       db,
-      runtime: makeAgentRuntime(
+      runtime: makeDaemonRuntime(
         createSlowFakeAdapter(
           [
             { type: "TEXT_MESSAGE_START" },

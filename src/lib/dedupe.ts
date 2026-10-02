@@ -16,9 +16,15 @@
  * again — a dead run must not hold a key forever. Release happens the moment
  * the holding run reaches any terminal state (including cancelled/failed);
  * see `startTrackedRun` in server/runs.ts.
+ *
+ * #38: "per-process" means per daemon. The registry is a `Context.Service`
+ * whose layer builds a fresh map each time a daemon runtime is built
+ * (`server/daemon-runtime.ts`), so two daemons in one process never share
+ * keys. `createDedupeRegistry` stays exported for unit tests of the plain
+ * map logic.
  */
 
-import { Schema } from "effect";
+import { Context, Layer, Schema } from "effect";
 
 export class DedupeKeyError extends Schema.TaggedError<DedupeKeyError>()("DedupeKeyError", {
   key: Schema.String,
@@ -44,7 +50,7 @@ export class DedupeKeyError extends Schema.TaggedError<DedupeKeyError>()("Dedupe
   }
 }
 
-export interface DedupeRegistry {
+export interface DedupeRegistryShape {
   /** The run id currently holding `key`, or `undefined`. */
   holderOf(key: string): string | undefined;
   /**
@@ -57,7 +63,7 @@ export interface DedupeRegistry {
   release(key: string, runId: string): void;
 }
 
-export function createDedupeRegistry(): DedupeRegistry {
+export function createDedupeRegistry(): DedupeRegistryShape {
   const held = new Map<string, string>();
   return {
     holderOf: (key) => held.get(key),
@@ -73,5 +79,16 @@ export function createDedupeRegistry(): DedupeRegistry {
   };
 }
 
-/** The daemon's shared registry — every run start and dispatch claim in this process goes through it. */
-export const dedupeRegistry: DedupeRegistry = createDedupeRegistry();
+/**
+ * The dedupe registry as a daemon service (#38, ADR 0009 §5). Resolve it from
+ * the daemon runtime's context; provide it with `DedupeRegistryLayer`.
+ */
+export class DedupeRegistry extends Context.Service<DedupeRegistry, DedupeRegistryShape>()(
+  "DedupeRegistry",
+) {}
+
+/** A fresh, empty registry per layer build — i.e. per daemon runtime. */
+export const DedupeRegistryLayer: Layer.Layer<DedupeRegistry> = Layer.sync(
+  DedupeRegistry,
+  createDedupeRegistry,
+);

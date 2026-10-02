@@ -19,6 +19,21 @@
  * wiring even though `Stream.fromAsyncIterable`'s implicit `.return()` on
  * scope closure was sufficient in the tested case — cheap, never harmful,
  * covers the untested non-cooperative-abort case.
+ *
+ * WHY THE ADAPTER STREAM IS WRAPPED (`abortableIterable`, #38 shutdown): the
+ * implicit `.return()` above is a scope finalizer, and an async generator's
+ * `return()` queues behind its pending `next()`. Interrupting a step that was
+ * waiting on the model therefore blocked until opencode's *next* chunk — and
+ * the `onInterrupt` abort, which runs after that finalizer, never got the
+ * chance to hurry it along. A cancel took tens of seconds, and a shutdown
+ * outlived its budget. The wrapper makes the stream end the moment the step
+ * is abandoned: `next()` races the abort signal, and `return()` aborts first
+ * (an early `return()` *is* the consumer giving up), fires the adapter's own
+ * `return()` without awaiting it, and resolves at once. The adapter's
+ * teardown still runs, in the background, and `AgentStepHandle.teardown`
+ * lets the caller wait for it. (For opencode the process itself dies on the
+ * abort: the local-process sandbox kills its process group on the spawn's
+ * abort signal, independently of the generator's `finally`.)
  */
 
 import { Effect, Schema, Stream } from "effect";
@@ -96,14 +111,84 @@ export interface AgentStepHandle {
   readonly effect: Effect.Effect<AgentStepOutcome, AgentStepChunkError, AgentRuntime>;
   readonly abortController: AbortController;
   readonly partial: AgentStepPartial;
+  /**
+   * Settles once the adapter has torn its stream down after the step was
+   * abandoned (e.g. the opencode process is gone) — at once when it never
+   * was. The step itself does not wait for this; shutdown does.
+   */
+  readonly teardown: () => Promise<void>;
+}
+
+/**
+ * Wrap an adapter's stream so abandoning it is immediate (see the module
+ * comment): `next()` resolves `done` as soon as `abortController` aborts, and
+ * `return()` aborts (unless the stream already finished), starts the inner
+ * `return()` without waiting for it, and resolves at once. `teardown()`
+ * settles when that inner `return()` does — i.e. when the adapter has
+ * actually cleaned up — or at once if the stream was never abandoned.
+ */
+export function abortableIterable<T>(
+  iterable: AsyncIterable<T>,
+  abortController: AbortController,
+): { readonly iterable: AsyncIterable<T>; readonly teardown: () => Promise<void> } {
+  let teardown: Promise<void> = Promise.resolve();
+  const done: IteratorReturnResult<undefined> = { done: true, value: undefined };
+  const wrapped: AsyncIterable<T> = {
+    [Symbol.asyncIterator](): AsyncIterator<T> {
+      const inner = iterable[Symbol.asyncIterator]();
+      const signal = abortController.signal;
+      const aborted = new Promise<IteratorResult<T>>((resolve) => {
+        if (signal.aborted) resolve(done);
+        else signal.addEventListener("abort", () => resolve(done), { once: true });
+      });
+      // `innerDone`: the adapter's own stream ended — nothing to tear down.
+      // `released`: we abandoned it, and its `return()` is already started.
+      let innerDone = false;
+      let released = false;
+      const release = (): void => {
+        if (innerDone || released) return;
+        released = true;
+        abortController.abort();
+        if (inner.return !== undefined) {
+          teardown = Promise.resolve(inner.return()).then(
+            () => undefined,
+            () => undefined,
+          );
+        }
+      };
+      return {
+        next: async () => {
+          if (innerDone || released || signal.aborted) {
+            release();
+            return done;
+          }
+          const result = await Promise.race([
+            inner.next().then((r) => {
+              if (r.done === true) innerDone = true;
+              return r;
+            }),
+            aborted,
+          ]);
+          if (result.done === true) release();
+          return result;
+        },
+        return: async () => {
+          release();
+          return done;
+        },
+      };
+    },
+  };
+  return { iterable: wrapped, teardown: () => teardown };
 }
 
 export function buildAgentStepEffect(options: AgentStepEffectOptions): AgentStepHandle {
   const abortController = new AbortController();
+  let teardown: () => Promise<void> = () => Promise.resolve();
 
   const rawStream = Stream.unwrap(
-    Effect.map(Effect.service(AgentRuntime), ({ adapter }) =>
-      Stream.fromAsyncIterable(
+    Effect.map(Effect.service(AgentRuntime), ({ adapter }) => {
+      const wrapped = abortableIterable(
         adapter.stream({
           threadId: options.threadId,
           dir: options.dir,
@@ -112,9 +197,14 @@ export function buildAgentStepEffect(options: AgentStepEffectOptions): AgentStep
           outputSchema: options.outputSchema,
           abortController,
         }),
+        abortController,
+      );
+      teardown = wrapped.teardown;
+      return Stream.fromAsyncIterable(
+        wrapped.iterable,
         (cause) => new AgentStepChunkError({ cause }),
-      ),
-    ),
+      );
+    }),
   );
 
   const partial: AgentStepPartial = {
@@ -198,5 +288,5 @@ export function buildAgentStepEffect(options: AgentStepEffectOptions): AgentStep
     durationMs: Date.now() - startedAt,
   }));
 
-  return { effect, abortController, partial };
+  return { effect, abortController, partial, teardown: () => teardown() };
 }

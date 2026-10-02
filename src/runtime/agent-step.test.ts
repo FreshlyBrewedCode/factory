@@ -2,7 +2,7 @@ import { Effect, ManagedRuntime } from "effect";
 import { describe, expect, test } from "bun:test";
 import type { AgentAdapterYield, AgentSignal } from "./agent-adapter";
 import { AgentRuntimeLayer } from "./agent-runtime";
-import { buildAgentStepEffect } from "./agent-step";
+import { abortableIterable, buildAgentStepEffect } from "./agent-step";
 
 function makeYield(chunk: unknown, signal?: AgentSignal): AgentAdapterYield {
   return signal !== undefined ? { chunk, signal } : { chunk };
@@ -167,5 +167,48 @@ describe("buildAgentStepEffect signal extraction", () => {
     await runtime.dispose();
     expect(streamed).toBe(1);
     expect(outcome.chunkCount).toBe(1);
+  });
+});
+
+describe("abortableIterable (#38: abandoning a step is immediate)", () => {
+  test("a stream that ends on its own is passed through and never aborted", async () => {
+    const controller = new AbortController();
+    async function* source() {
+      yield 1;
+      yield 2;
+    }
+    const { iterable, teardown } = abortableIterable(source(), controller);
+    const seen: Array<number> = [];
+    for await (const n of iterable) seen.push(n);
+    await teardown();
+    expect(seen).toEqual([1, 2]);
+    expect(controller.signal.aborted).toBe(false);
+  });
+
+  test("return() during a pending next() resolves at once, aborts, and tears down in the background", async () => {
+    const controller = new AbortController();
+    let finalized = false;
+    async function* source() {
+      try {
+        yield 1;
+        // Waiting on the model: only the abort lets this generator move on.
+        await new Promise<void>((resolve) =>
+          controller.signal.addEventListener("abort", () => setTimeout(resolve, 50)),
+        );
+      } finally {
+        finalized = true;
+      }
+    }
+    const { iterable, teardown } = abortableIterable(source(), controller);
+    const iterator = iterable[Symbol.asyncIterator]();
+    expect(await iterator.next()).toEqual({ done: false, value: 1 });
+    const pending = iterator.next();
+
+    expect(await iterator.return!()).toEqual({ done: true, value: undefined });
+    expect(controller.signal.aborted).toBe(true);
+    expect(await pending).toEqual({ done: true, value: undefined });
+    expect(finalized).toBe(false);
+    await teardown();
+    expect(finalized).toBe(true);
   });
 });
