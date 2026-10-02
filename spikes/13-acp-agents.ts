@@ -1,12 +1,18 @@
 /**
- * SPIKE (finding 13): run a hello-shaped workflow through factory's real
- * runtime (`startRun`, `AgentRuntime`, `agent-step.ts`) on the ACP adapter,
- * against opencode and Claude Code, and measure what the ADR needs to know:
- * model selection, usage, structured output, permission asks, cancel.
+ * SPIKE (finding 13), kept as the live check of the production ACP adapter
+ * (#63): run a hello-shaped workflow through factory's real runtime
+ * (`startRun`, `AgentRuntime`, `agent-step.ts`) on opencode or Claude Code,
+ * and measure model selection, usage, structured output, permission asks,
+ * cancel, and what the agent can see of the host's settings.
  *
  *   bun spikes/13-acp-agents.ts run <claude|opencode> <model>
  *   bun spikes/13-acp-agents.ts cancel <claude|opencode> <model> [afterMs]
  *   bun spikes/13-acp-agents.ts bad-model <claude|opencode>
+ *   bun spikes/13-acp-agents.ts isolation <claude|opencode> <model> [ignore|include]
+ *
+ * `isolation` asks the agent which skills and instructions it has and runs
+ * `gh auth status`, git's global config and `env` through its shell, with the
+ * host's agent settings ignored (default) or included.
  *
  * Writes `spikes/out/<mode>-<agent>-<ts>/{events,diagnostics}.ndjson`.
  */
@@ -15,19 +21,22 @@ import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { RunEvent } from "../src/events";
+import { acpAdapter, type AcpDiagnostic } from "../src/runtime/acp-adapter";
 import {
-  ACP_AGENTS,
-  acpAdapter,
+  ACP_AGENT_KINDS,
+  acpAgent,
+  agentEnv,
   type AcpAgentKind,
-  type AcpDiagnostic,
-} from "../src/runtime/acp-adapter";
+  type HostSettings,
+} from "../src/runtime/acp-agents";
 import { makeAgentRuntime } from "../src/runtime/agent-runtime";
 import { startRun } from "../src/runtime/run";
 import { defineWorkflow, Schema } from "../src/workflow";
 
 const [mode = "run", agentArg = "opencode", modelArg, afterArg] = process.argv.slice(2);
 const agent = agentArg as AcpAgentKind;
-if (!(agent in ACP_AGENTS)) throw new Error(`unknown agent ${agentArg}`);
+if (!ACP_AGENT_KINDS.includes(agent)) throw new Error(`unknown agent ${agentArg}`);
+const hostSettings: HostSettings = afterArg === "include" ? "include" : "ignore";
 const model = mode === "bad-model" ? "no-such-model" : modelArg;
 if (model === undefined) throw new Error("model required");
 
@@ -46,6 +55,21 @@ async function scratchRepo(): Promise<string> {
     "export function add(a: number, b: number): number {\n  return a + b;\n}\n",
   );
   await writeFile(join(dir, "README.md"), "# math\n\nTiny arithmetic helpers.\n");
+  if (mode === "isolation") {
+    // Project-level settings, which a run must keep seeing.
+    await writeFile(join(dir, "CLAUDE.md"), "Project codeword: PROJ-CLAUDE-7731\n");
+    await writeFile(join(dir, "AGENTS.md"), "Project codeword: PROJ-AGENTS-4410\n");
+    for (const [root, name] of [
+      [".claude", "project-claude-probe"],
+      [".agents", "project-agents-probe"],
+    ] as const) {
+      await mkdir(join(dir, root, "skills", name), { recursive: true });
+      await writeFile(
+        join(dir, root, "skills", name, "SKILL.md"),
+        `---\nname: ${name}\ndescription: Probe skill; use when asked about probes.\n---\n\nProbe.\n`,
+      );
+    }
+  }
   await sh(dir, "git", "init", "-q", "-b", "main");
   await sh(dir, "git", "add", ".");
   await sh(
@@ -104,6 +128,40 @@ Make the change. When you are done, stop — do not run git commands and do not 
   },
 });
 
+const Visible = Schema.Struct({
+  skills: Schema.Array(Schema.String),
+  codewords: Schema.Array(Schema.String),
+  xdgConfigHome: Schema.String,
+  ghAuth: Schema.String,
+  gitUser: Schema.String,
+  claudeVars: Schema.String,
+  parentSentinels: Schema.String,
+});
+
+const isolation = defineWorkflow("acp-isolation", {
+  input: Schema.Struct({ long: Schema.Boolean }),
+  output: Visible,
+  agent: { model },
+  run: async (ctx) => {
+    const seen = await ctx.agent(
+      "visible",
+      `Report what you can see. Do not guess and do not invent anything.
+
+1. skills: the name of every skill available to you, exactly as your skill tool or skill listing names them (all of them).
+2. codewords: every "codeword" value that appears in instructions you were given (CLAUDE.md, AGENTS.md or similar), verbatim. Do not search files for them; only what is already in your context.
+3. Run these shell commands, each separately, and report their output trimmed:
+   - xdgConfigHome: \`echo "XDG=$XDG_CONFIG_HOME"\`
+   - ghAuth: \`gh auth status 2>&1 | head -2\`
+   - gitUser: \`git config --global --list --show-origin | head -1\`
+   - claudeVars: \`env | grep -o '^CLAUDE[A-Z_]*' | sort | tr '\\n' ' '\`
+   - parentSentinels: \`env | grep -c factory-parent-sentinel || true\``,
+      { output: Visible },
+    );
+    if (seen.output === undefined) throw new Error("no structured output");
+    return seen.output;
+  },
+});
+
 const stamp = new Date().toISOString().replace(/[:.]/g, "-");
 const out = join(import.meta.dir, "out", `${mode}-${agent}-${stamp}`);
 await mkdir(out, { recursive: true });
@@ -112,19 +170,28 @@ const diagnostics: Array<AcpDiagnostic & { step: number }> = [];
 const pids: number[] = [];
 let step = -1;
 
-const adapter = acpAdapter(ACP_AGENTS[agent], (event) => {
-  if (event.kind === "spawned") {
-    step += 1;
-    pids.push(event.pid);
-  }
-  diagnostics.push({ ...event, step });
+const definition = acpAgent(agent, { hostSettings });
+const leaked = Object.keys(agentEnv(definition)).filter(
+  (k) => k === "CLAUDECODE" || k.startsWith("CLAUDE_"),
+);
+console.log(
+  `parent CLAUDE* vars: ${Object.keys(process.env).filter((k) => k.startsWith("CLAUDE")).length}, passed to the agent: [${leaked.join(", ")}]`,
+);
+const adapter = acpAdapter(definition, {
+  onDiagnostic: (event) => {
+    if (event.kind === "spawned") {
+      step += 1;
+      pids.push(event.pid);
+    }
+    diagnostics.push({ ...event, step });
+  },
 });
 
 const dir = await scratchRepo();
 console.log(`${mode} ${agent} model=${model} dir=${dir}`);
 const runtime = makeAgentRuntime(adapter);
 const t0 = Date.now();
-const handle = startRun(hello, runtime, {
+const handle = startRun(mode === "isolation" ? isolation : hello, runtime, {
   runId: `spike-${stamp}`,
   dir,
   input: { long: mode === "cancel" },

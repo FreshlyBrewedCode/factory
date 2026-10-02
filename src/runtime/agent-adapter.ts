@@ -27,11 +27,25 @@ export interface AgentAdapterOptions {
  * - `sessionId` → `AgentStepFinished.sessionId`
  * - `structuredOutput` → `AgentStepFinished.output` (via `resolveOutput`)
  * - `runError` → `AgentStepFinished.error`
+ * - `usage` → `AgentStepFinished.context` / `.cost` (ADR 0013 §5; recorded
+ *   from #65 on — until then the runtime reads past it)
  */
 export type AgentSignal =
   | { readonly _tag: "sessionId"; readonly value: string }
   | { readonly _tag: "structuredOutput"; readonly value: unknown }
-  | { readonly _tag: "runError"; readonly value: string };
+  | { readonly _tag: "runError"; readonly value: string }
+  | { readonly _tag: "usage"; readonly value: AgentUsage };
+
+/**
+ * What an agent reports about its context window and spend (ACP
+ * `usage_update`), as the agent measured it. The last one of a step stands.
+ */
+export interface AgentUsage {
+  /** Tokens in context now, and the window size. */
+  readonly context: { readonly used: number; readonly size: number };
+  /** What the session has cost so far; absent when the agent does not say. */
+  readonly cost?: { readonly amount: number; readonly currency: string };
+}
 
 /**
  * One item yielded by an adapter: the opaque AG-UI chunk (unchanged) plus
