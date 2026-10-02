@@ -5,6 +5,7 @@ import { describe, expect, test } from "bun:test";
 import { Schema } from "effect";
 import { defineWorkflow, type WorkflowDefinition } from "../workflow";
 import { createSlowFakeAdapter } from "../replay/adapter";
+import type { AgentAdapter } from "../runtime/agent-adapter";
 import { getRunEvents, openStore } from "../persistence/store";
 import { defineConfig, loadFactoryConfig } from "../config";
 import registryWorkflow from "../../test/fixtures/registry-workflow";
@@ -1282,6 +1283,64 @@ describe("POST /api/schedules/:id/run (issue #17)", () => {
 
       await waitForTerminal(db, firstRunId, 10_000);
       await waitForTerminal(db, secondRunId, 10_000);
+    } finally {
+      await server.stop(true);
+      db.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+/**
+ * #37 / #24: the legacy `{dir, clone}` POST resets a clone on `dir`, so the
+ * adapter must prepare that dir; a bare `dir` is caller-managed and is not.
+ */
+describe("adapter.prepareWorkspace through the legacy POST /api/runs (#37)", () => {
+  function trackingAdapter(): AgentAdapter & { readonly prepared: Array<string> } {
+    const prepared: Array<string> = [];
+    const inner = createSlowFakeAdapter([], 1);
+    return {
+      prepared,
+      async prepareWorkspace(dir: string): Promise<void> {
+        prepared.push(dir);
+      },
+      stream: inner.stream.bind(inner),
+    };
+  }
+
+  test("a dir + clone POST prepares body.dir; a bare dir POST prepares nothing", async () => {
+    const root = mkdtempSync(join(tmpdir(), "factory-http-prepare-test-"));
+    const db = openStore(join(root, "factory.db"));
+    const seed = join(root, "seed");
+    await Bun.$`git init -b main -q ${seed}`.quiet();
+    const adapter = trackingAdapter();
+    const server = serve({ db, adapter, port: 0 });
+    const base = `http://localhost:${server.port}`;
+
+    try {
+      const cloneDir = join(root, "clone-run");
+      const cloneRes = await fetch(`${base}/api/runs`, {
+        method: "POST",
+        body: JSON.stringify({
+          workflowPath: ECHO_WORKFLOW,
+          input: {},
+          dir: cloneDir,
+          clone: { sshUrl: seed, identity: { name: "Test Bot", email: "test@factory.local" } },
+        }),
+      });
+      expect(cloneRes.status).toBe(201);
+      const { runId: cloneRunId } = (await cloneRes.json()) as { runId: string };
+      await waitForTerminal(db, cloneRunId, 10_000);
+      expect(adapter.prepared).toEqual([cloneDir]);
+
+      const bareRes = await fetch(`${base}/api/runs`, {
+        method: "POST",
+        body: JSON.stringify({ workflowPath: ECHO_WORKFLOW, input: {}, dir: root }),
+      });
+      expect(bareRes.status).toBe(201);
+      const { runId: bareRunId } = (await bareRes.json()) as { runId: string };
+      await waitForTerminal(db, bareRunId, 10_000);
+      expect(adapter.prepared).toEqual([cloneDir]);
     } finally {
       await server.stop(true);
       db.close();
