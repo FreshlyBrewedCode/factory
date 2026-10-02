@@ -44,6 +44,12 @@ export interface AgentAdapterYield {
   readonly signal?: AgentSignal;
 }
 
+/**
+ * Adapters own all chunk interpretation, including errors: the runtime no
+ * longer detects `RUN_ERROR` chunks itself, so an adapter must emit a
+ * `runError` signal for every chunk that reports a run failure, or the step
+ * will finish without `AgentStepFinished.error`.
+ */
 export interface AgentAdapter {
   stream(options: AgentAdapterOptions): AsyncIterable<AgentAdapterYield>;
 }
