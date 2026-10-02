@@ -419,3 +419,56 @@ describe("AgentStepStarted.agent (ADR 0013 §2)", () => {
     expect(event.payload._tag === "AgentStepStarted" && "agent" in event.payload).toBe(false);
   });
 });
+
+describe("AgentStepFinished.context / .cost (ADR 0013 §5)", () => {
+  const finished = (extra: Record<string, unknown>) => ({
+    runId: "r",
+    seq: 1,
+    ts: 0,
+    payload: {
+      _tag: "AgentStepFinished",
+      stepId: "step-0",
+      name: "implement",
+      outcome: "completed",
+      chunkCount: 3,
+      durationMs: 10,
+      finalText: "done",
+      ...extra,
+    },
+  });
+  const encode = SchemaParser.encodeUnknownSync(RunEvent);
+
+  test("round-trips context and cost beside usage", () => {
+    const raw = finished({
+      usage: { inputTokens: 1, outputTokens: 2, cachedInputTokens: 3, reasoningTokens: 0 },
+      context: { used: 15_305, size: 200_000 },
+      cost: { amount: 0.0391796, currency: "USD" },
+    });
+    const event = decodeRunEvent(raw);
+    expect(event.payload).toMatchObject({
+      context: { used: 15_305, size: 200_000 },
+      cost: { amount: 0.0391796, currency: "USD" },
+    });
+    expect(encode(event) as unknown).toEqual(raw);
+  });
+
+  test("a log written before the fields existed has neither, and still decodes", () => {
+    const event = decodeRunEvent(
+      finished({
+        usage: {
+          inputTokens: 260,
+          outputTokens: 288,
+          cachedInputTokens: 14208,
+          reasoningTokens: 0,
+        },
+      }),
+    );
+    expect("context" in event.payload).toBe(false);
+    expect("cost" in event.payload).toBe(false);
+  });
+
+  test("rejects a context that is not a token count", () => {
+    expect(() => decodeRunEvent(finished({ context: { used: 1.5, size: 10 } }))).toThrow();
+    expect(() => decodeRunEvent(finished({ cost: { amount: 0.1 } }))).toThrow();
+  });
+});

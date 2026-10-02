@@ -169,6 +169,27 @@ describe("acpAdapter", () => {
     });
   });
 
+  test("carries each tool call title the translator drops as an acp.tool-call chunk", async () => {
+    const c = await collect("tools");
+    const chunks = c.yields.map((y) => y.chunk as { type: string; name?: string; value?: unknown });
+    const tools = chunks.filter((ch) => ch.type === "CUSTOM" && ch.name === "acp.tool-call");
+    expect(tools.map((ch) => ch.value)).toEqual([
+      { toolCallId: "t1", title: "Edit" },
+      { toolCallId: "t1", title: "Edit math.ts", input: { file_path: "math.ts" } },
+    ]);
+    // The translator keeps the first, generic title only.
+    const end = chunks.find((ch) => ch.type === "TOOL_CALL_END") as { input?: unknown };
+    expect(end.input).toEqual({ title: "Edit" });
+    // Each info chunk follows the call's TOOL_CALL_START, and carries no signal.
+    expect(chunks.indexOf(tools[0]!)).toBeGreaterThan(
+      chunks.findIndex((ch) => ch.type === "TOOL_CALL_START"),
+    );
+    expect(c.yields.filter((y) => tools.includes(y.chunk as never)).map((y) => y.signal)).toEqual([
+      undefined,
+      undefined,
+    ]);
+  });
+
   test("parses structured output from the last message and yields it before RUN_FINISHED", async () => {
     const c = await collect("json", { outputSchema: { type: "object" } });
     expect(signals(c, "structuredOutput")).toEqual([

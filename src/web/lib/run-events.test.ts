@@ -1,6 +1,14 @@
 import { describe, expect, test } from "bun:test";
 import { agentStepContextTokens, type RunEvent, type RunEventPayload } from "../../events";
-import { deriveRunMeta, deriveSteps, summarizeEvent } from "./run-events";
+import { ACP_CHUNK } from "../../runtime/acp-adapter";
+import {
+  ACP_USAGE_CHUNK,
+  deriveRunMeta,
+  deriveSteps,
+  runCost,
+  summarizeEvent,
+  type AgentStepView,
+} from "./run-events";
 
 function event(seq: number, payload: RunEventPayload): RunEvent {
   return { runId: "run-test", seq, ts: 1_000 + seq, payload };
@@ -473,5 +481,180 @@ describe("dedupe keys (issue #15)", () => {
         }),
       ),
     ).toContain("issue:41");
+  });
+});
+
+describe("context and cost per agent step (ADR 0013 §5)", () => {
+  const started = (seq: number, stepId: string): RunEvent =>
+    event(seq, {
+      _tag: "AgentStepStarted",
+      stepId,
+      name: stepId,
+      agent: "claude",
+      model: "sonnet",
+      prompt: "p",
+      structured: false,
+    });
+  const usage = (
+    seq: number,
+    stepId: string,
+    used: number,
+    size: number,
+    cost?: { amount: number; currency: string },
+  ): RunEvent =>
+    event(seq, {
+      _tag: "AgentChunk",
+      stepId,
+      chunkType: "CUSTOM",
+      chunk: {
+        type: "CUSTOM",
+        name: "acp.usage",
+        value: { context: { used, size }, ...(cost !== undefined && { cost }) },
+      },
+    });
+  const finished = (seq: number, stepId: string, extra: Record<string, unknown> = {}): RunEvent =>
+    event(seq, {
+      _tag: "AgentStepFinished",
+      stepId,
+      name: stepId,
+      outcome: "completed",
+      chunkCount: 3,
+      durationMs: 10,
+      finalText: "",
+      ...extra,
+    } as RunEventPayload);
+  const agent = (steps: ReturnType<typeof deriveSteps>, i = 0) => steps[i] as AgentStepView;
+
+  test("the chunk name is the one the adapter emits", () => {
+    expect(ACP_USAGE_CHUNK).toBe(ACP_CHUNK.usage);
+  });
+
+  test("a running step's context follows its latest acp.usage chunk", () => {
+    const first = [STARTED, started(1, "s"), usage(2, "s", 14_874, 200_000)];
+    expect(agent(deriveSteps(first)).context).toEqual({
+      used: 14_874,
+      size: 200_000,
+      source: "reported",
+    });
+    const later = [...first, usage(3, "s", 15_305, 200_000)];
+    const step = agent(deriveSteps(later));
+    expect(step.status).toBe("running");
+    expect(step.context?.used).toBe(15_305);
+    expect(step.cost).toBeUndefined();
+    expect(step.chunkCount).toBe(2);
+  });
+
+  test("a usage chunk without cost keeps the cost an earlier one reported", () => {
+    const steps = deriveSteps([
+      STARTED,
+      started(1, "s"),
+      usage(2, "s", 100, 1000, { amount: 0.02, currency: "USD" }),
+      usage(3, "s", 200, 1000),
+    ]);
+    expect(agent(steps).cost).toEqual({ amount: 0.02, currency: "USD" });
+  });
+
+  test("the recorded fields win once the step finishes", () => {
+    const steps = deriveSteps([
+      STARTED,
+      started(1, "s"),
+      usage(2, "s", 100, 1000),
+      finished(3, "s", {
+        context: { used: 15_305, size: 200_000 },
+        cost: { amount: 0.0391796, currency: "USD" },
+        usage: { inputTokens: 3, outputTokens: 2, cachedInputTokens: 36_386, reasoningTokens: 0 },
+      }),
+    ]);
+    expect(agent(steps).context).toEqual({ used: 15_305, size: 200_000, source: "reported" });
+    expect(agent(steps).cost).toEqual({ amount: 0.0391796, currency: "USD" });
+  });
+
+  test("a step finished without the fields keeps what its chunks reported", () => {
+    // A log written by the ACP adapter before AgentStepFinished had the fields.
+    const steps = deriveSteps([
+      STARTED,
+      started(1, "s"),
+      usage(2, "s", 15_270, 1_000_000, { amount: 0.0275702, currency: "USD" }),
+      finished(3, "s", {
+        usage: { inputTokens: 3, outputTokens: 2, cachedInputTokens: 36_386, reasoningTokens: 0 },
+      }),
+    ]);
+    expect(agent(steps).context).toEqual({ used: 15_270, size: 1_000_000, source: "reported" });
+    expect(agent(steps).cost).toEqual({ amount: 0.0275702, currency: "USD" });
+  });
+
+  test("an old log falls back to agentStepContextTokens, with no window and no cost", () => {
+    const usageFields = {
+      inputTokens: 260,
+      outputTokens: 288,
+      cachedInputTokens: 14_208,
+      reasoningTokens: 927,
+    };
+    const steps = deriveSteps([STARTED, started(1, "s"), finished(2, "s", { usage: usageFields })]);
+    expect(agent(steps).context).toEqual({
+      used: agentStepContextTokens(usageFields),
+      size: undefined,
+      source: "derived",
+    });
+    expect(agent(steps).cost).toBeUndefined();
+  });
+
+  test("a cancelled step keeps its context and cost", () => {
+    const steps = deriveSteps([
+      STARTED,
+      started(1, "s"),
+      finished(2, "s", {
+        outcome: "cancelled",
+        context: { used: 9000, size: 200_000 },
+        cost: { amount: 0.01, currency: "USD" },
+      }),
+    ]);
+    expect(agent(steps).status).toBe("cancelled");
+    expect(agent(steps).context?.used).toBe(9000);
+    expect(agent(steps).cost?.amount).toBe(0.01);
+  });
+
+  test("usage chunks for one step never touch another", () => {
+    const steps = deriveSteps([
+      STARTED,
+      started(1, "a"),
+      started(2, "b"),
+      usage(3, "b", 500, 1000),
+    ]);
+    expect(agent(steps, 0).context).toBeUndefined();
+    expect(agent(steps, 1).context?.used).toBe(500);
+  });
+
+  test("runCost sums step costs per currency, running steps included", () => {
+    const steps = deriveSteps([
+      STARTED,
+      started(1, "a"),
+      finished(2, "a", { cost: { amount: 0.039, currency: "USD" } }),
+      started(3, "b"),
+      finished(4, "b", { cost: { amount: 0, currency: "USD" } }),
+      started(5, "c"),
+      usage(6, "c", 10, 100, { amount: 0.028, currency: "USD" }),
+      started(7, "d"),
+      finished(8, "d"),
+    ]);
+    const [total, ...rest] = runCost(steps);
+    expect(rest).toEqual([]);
+    expect(total?.currency).toBe("USD");
+    expect(total?.amount).toBeCloseTo(0.067, 10);
+  });
+
+  test("runCost is empty when no step reported a cost, and keeps currencies apart", () => {
+    expect(runCost(deriveSteps([STARTED, started(1, "a"), finished(2, "a")]))).toEqual([]);
+    const mixed = deriveSteps([
+      STARTED,
+      started(1, "a"),
+      finished(2, "a", { cost: { amount: 1, currency: "USD" } }),
+      started(3, "b"),
+      finished(4, "b", { cost: { amount: 2, currency: "EUR" } }),
+    ]);
+    expect(runCost(mixed)).toEqual([
+      { amount: 1, currency: "USD" },
+      { amount: 2, currency: "EUR" },
+    ]);
   });
 });

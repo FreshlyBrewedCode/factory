@@ -14,7 +14,7 @@
  */
 
 import { Cause, Effect, Exit, Fiber, Schema, SchemaParser, type ManagedRuntime } from "effect";
-import type { RunEvent, RunEventPayload } from "../events";
+import type { AgentStepContext, AgentStepCost, RunEvent, RunEventPayload } from "../events";
 import { hostExec, type ExecResult } from "../lib/exec";
 import { writeBack as writeBackLib, type WriteBackResult } from "../lib/writeback";
 import type {
@@ -139,6 +139,17 @@ function boundedTeardown(teardown: Promise<void>): Promise<void> {
       resolve();
     });
   });
+}
+
+/** `AgentStepFinished.context` / `.cost` (ADR 0013 §5), each only when the agent reported it. */
+function measured(step: {
+  readonly context: AgentStepContext | undefined;
+  readonly cost: AgentStepCost | undefined;
+}): { context?: AgentStepContext; cost?: AgentStepCost } {
+  return {
+    ...(step.context !== undefined ? { context: step.context } : {}),
+    ...(step.cost !== undefined ? { cost: step.cost } : {}),
+  };
 }
 
 function makeIdCounter(prefix: string): () => string {
@@ -315,6 +326,7 @@ export function startRun<I, O>(
             ? { sessionId: handle.partial.sessionId }
             : {}),
           ...(handle.partial.usage !== undefined ? { usage: handle.partial.usage } : {}),
+          ...measured(handle.partial),
         });
         throw RunCancelledSignal.of();
       }
@@ -330,6 +342,7 @@ export function startRun<I, O>(
         finalText: handle.partial.finalText,
         ...(handle.partial.sessionId !== undefined ? { sessionId: handle.partial.sessionId } : {}),
         ...(handle.partial.usage !== undefined ? { usage: handle.partial.usage } : {}),
+        ...measured(handle.partial),
         error: message,
       });
       throw new Error(`agent step "${name}" failed: ${message}`);
@@ -350,6 +363,7 @@ export function startRun<I, O>(
       ...(output !== undefined ? { output: output as never } : {}),
       ...(result.sessionId !== undefined ? { sessionId: result.sessionId } : {}),
       ...(result.usage !== undefined ? { usage: result.usage } : {}),
+      ...measured(result),
       ...(result.runError !== undefined ? { error: result.runError } : {}),
     });
 

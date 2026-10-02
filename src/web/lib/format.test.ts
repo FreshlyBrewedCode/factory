@@ -5,6 +5,8 @@ import {
   formatClock,
   formatDuration,
   formatInZone,
+  formatContext,
+  formatCost,
   formatTokenCount,
   shortRunId,
 } from "./format";
@@ -87,5 +89,29 @@ describe("formatAhead (issue #17)", () => {
     expect(formatAhead(now + 90_000, now)).toBe("in 1m");
     expect(formatAhead(now + 3 * 3_600_000 + 60_000, now)).toBe("in 3h 1m");
     expect(formatAhead(now + 27 * 3_600_000, now)).toBe("in 1d 3h");
+  });
+});
+
+describe("formatCost", () => {
+  test("dollars with digits enough for the amount", () => {
+    expect(formatCost({ amount: 0.0391796, currency: "USD" })).toBe("$0.039");
+    expect(formatCost({ amount: 1.2449, currency: "USD" })).toBe("$1.24");
+    expect(formatCost({ amount: 0.00041, currency: "USD" })).toBe("$0.0004");
+  });
+
+  test("a free model's zero, and other currencies by code", () => {
+    expect(formatCost({ amount: 0, currency: "USD" })).toBe("$0");
+    expect(formatCost({ amount: 0.25, currency: "EUR" })).toBe("0.250 EUR");
+  });
+});
+
+describe("formatContext", () => {
+  test("used against the window, with the share", () => {
+    expect(formatContext({ used: 15_305, size: 200_000 })).toBe("15.3k / 200k · 8%");
+    expect(formatContext({ used: 14_874, size: 1_000_000 })).toBe("14.9k / 1m · 1%");
+  });
+
+  test("without a window, the figure alone", () => {
+    expect(formatContext({ used: 14_756, size: undefined })).toBe("14.8k");
   });
 });

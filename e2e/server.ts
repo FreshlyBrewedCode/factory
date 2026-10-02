@@ -245,7 +245,107 @@ async function seedCorpusRuns(root: string, db: ReturnType<typeof openStore>): P
     payload: { _tag: "RunFinished", durationMs: 5 },
   });
 
+  seedAcpRun(db, workDir, ts);
+
   return remoteDir;
+}
+
+/**
+ * Issue #65: an agent step as the ACP adapter records it, shaped after the
+ * recorded finding-13 Claude run — `acp.usage` chunks while it runs, a tool
+ * call whose descriptive title arrives in an `acp.tool-call` chunk, and
+ * `AgentStepFinished.context` / `.cost`. A second step is cancelled
+ * mid-turn and keeps what it reported.
+ */
+function seedAcpRun(db: ReturnType<typeof openStore>, dir: string, ts: number): void {
+  const runId = "run-static-acp";
+  let seq = 0;
+  const append = (payload: Parameters<typeof appendEvent>[1]["payload"]) =>
+    appendEvent(db, { runId, seq: seq++, ts: ts + seq, payload });
+  const chunk = (stepId: string, value: Record<string, unknown>) =>
+    append({ _tag: "AgentChunk", stepId, chunkType: String(value.type), chunk: value as never });
+  const usage = (stepId: string, used: number, cost?: number) =>
+    chunk(stepId, {
+      type: "CUSTOM",
+      name: "acp.usage",
+      value: {
+        context: { used, size: 200_000 },
+        ...(cost !== undefined && { cost: { amount: cost, currency: "USD" } }),
+      },
+    });
+
+  append({ _tag: "RunStarted", workflowId: "acp-hello", dir, input: {} });
+  append({
+    _tag: "AgentStepStarted",
+    stepId: "step-0",
+    name: "implement",
+    agent: "claude",
+    model: "haiku",
+    prompt: "add multiply to math.ts",
+    structured: false,
+  });
+  chunk("step-0", { type: "RUN_STARTED", runId: "r0", threadId: "t" });
+  usage("step-0", 14_874);
+  chunk("step-0", { type: "TOOL_CALL_START", toolCallId: "toolu_1", toolCallName: "edit" });
+  chunk("step-0", {
+    type: "TOOL_CALL_ARGS",
+    toolCallId: "toolu_1",
+    delta: '{"title":"Edit"}',
+    args: '{"title":"Edit"}',
+  });
+  chunk("step-0", {
+    type: "TOOL_CALL_END",
+    toolCallId: "toolu_1",
+    toolCallName: "edit",
+    input: { title: "Edit" },
+  });
+  chunk("step-0", {
+    type: "CUSTOM",
+    name: "acp.tool-call",
+    value: { toolCallId: "toolu_1", title: "Edit math.ts", input: { file_path: "math.ts" } },
+  });
+  chunk("step-0", {
+    type: "TOOL_CALL_RESULT",
+    toolCallId: "toolu_1",
+    messageId: "m1",
+    content: "The file math.ts has been updated.",
+  });
+  usage("step-0", 15_305, 0.0391796);
+  chunk("step-0", { type: "RUN_FINISHED", runId: "r0", threadId: "t", finishReason: "stop" });
+  append({
+    _tag: "AgentStepFinished",
+    stepId: "step-0",
+    name: "implement",
+    outcome: "completed",
+    chunkCount: 8,
+    durationMs: 7_800,
+    finalText: "Added multiply.",
+    usage: { inputTokens: 3, outputTokens: 120, cachedInputTokens: 36_386, reasoningTokens: 0 },
+    context: { used: 15_305, size: 200_000 },
+    cost: { amount: 0.0391796, currency: "USD" },
+  });
+  append({
+    _tag: "AgentStepStarted",
+    stepId: "step-1",
+    name: "review",
+    agent: "claude",
+    model: "haiku",
+    prompt: "review the change",
+    structured: false,
+  });
+  usage("step-1", 9_120);
+  append({
+    _tag: "AgentStepFinished",
+    stepId: "step-1",
+    name: "review",
+    outcome: "cancelled",
+    chunkCount: 1,
+    durationMs: 1_200,
+    finalText: "",
+    context: { used: 9_120, size: 200_000 },
+    cost: { amount: 0.0275702, currency: "USD" },
+  });
+  append({ _tag: "RunCancelled", durationMs: 9_100 });
 }
 
 async function main(): Promise<void> {

@@ -37,8 +37,8 @@ export interface AgentAdapterOptions {
  * - `sessionId` → `AgentStepFinished.sessionId`
  * - `structuredOutput` → `AgentStepFinished.output` (via `resolveOutput`)
  * - `runError` → `AgentStepFinished.error`
- * - `usage` → `AgentStepFinished.context` / `.cost` (ADR 0013 §5; recorded
- *   from #65 on — until then the runtime reads past it)
+ * - `usage` → `AgentStepFinished.context` / `.cost` (ADR 0013 §5): the
+ *   last one's context, and the latest cost any of them carried
  */
 export type AgentSignal =
   | { readonly _tag: "sessionId"; readonly value: string }

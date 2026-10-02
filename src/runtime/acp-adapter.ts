@@ -21,6 +21,12 @@
  *   `allow_once` — #24's policy, without writing a file into the tree.
  * - **Usage** (§5): each ACP `usage_update` becomes a `CUSTOM` `acp.usage`
  *   chunk carrying a `usage` signal, in stream order.
+ * - **Tool titles**: each ACP `tool_call` / `tool_call_update` that carries a
+ *   `title` is followed by a `CUSTOM` `acp.tool-call` chunk (`ToolCallInfo`),
+ *   because `translateAcpStream` keeps only the first title, and that one is
+ *   generic (`Edit`, `Read File` on Claude; the tool name on opencode). The
+ *   descriptive one (`Edit math.ts`, `git status`) and the real input come in
+ *   later updates the translator drops. No signal: it is for the transcript.
  * - **Cancel** (§6): ACP `session/cancel`, then a kill after a grace period;
  *   always a kill in `finally`.
  * - **Exit mid-turn**: the step fails with the agent's exit code and the tail
@@ -62,6 +68,7 @@ export const ACP_CHUNK = {
   content: "acp.message-content",
   plan: "acp.plan",
   usage: "acp.usage",
+  toolCall: "acp.tool-call",
   structuredOutput: "structured-output.complete",
 } as const;
 
@@ -168,8 +175,38 @@ export function usageOf(update: {
   };
 }
 
-/** What the adapter's own queue carries: ACP events, plus usage, which AG-UI has no event for. */
-type Incoming = AcpStreamEvent | { readonly kind: "usage"; readonly usage: AgentUsage };
+/**
+ * The value of an `acp.tool-call` chunk: the latest title an ACP tool call
+ * update carried, and its input when the update had a non-empty one.
+ */
+export interface ToolCallInfo {
+  readonly toolCallId: string;
+  readonly title: string;
+  readonly input?: unknown;
+}
+
+/** The `ToolCallInfo` a `tool_call` / `tool_call_update` carries, if it has a title. */
+export function toolCallInfoOf(update: SessionUpdate): ToolCallInfo | undefined {
+  if (update.sessionUpdate !== "tool_call" && update.sessionUpdate !== "tool_call_update") {
+    return undefined;
+  }
+  if (typeof update.title !== "string" || update.title === "") return undefined;
+  const input = update.rawInput;
+  const hasInput =
+    input !== undefined &&
+    input !== null &&
+    !(typeof input === "object" && Object.keys(input).length === 0);
+  return { toolCallId: update.toolCallId, title: update.title, ...(hasInput && { input }) };
+}
+
+/**
+ * What the adapter's own queue carries: ACP events, plus usage and tool
+ * titles, which AG-UI has no event for.
+ */
+type Incoming =
+  | AcpStreamEvent
+  | { readonly kind: "usage"; readonly usage: AgentUsage }
+  | { readonly kind: "tool"; readonly tool: ToolCallInfo };
 
 /**
  * Drive `translateAcpStream` one input event at a time, so the adapter can
@@ -297,6 +334,9 @@ export function acpAdapter(
               return;
             }
             incoming.push({ kind: "update", update: update as AcpSessionUpdate });
+            // After the update, so the call's TOOL_CALL_START comes first.
+            const tool = toolCallInfoOf(update);
+            if (tool) incoming.push({ kind: "tool", tool });
             const plan = todoPlan(update);
             if (plan) incoming.push({ kind: "update", update: plan as AcpSessionUpdate });
           },
@@ -481,6 +521,18 @@ export function acpAdapter(
                   timestamp: Date.now(),
                 },
                 signal: { _tag: "usage", value: event.usage },
+              };
+              continue;
+            }
+            if (event.kind === "tool") {
+              yield {
+                chunk: {
+                  type: "CUSTOM",
+                  name: ACP_CHUNK.toolCall,
+                  value: event.tool,
+                  model: options.model,
+                  timestamp: Date.now(),
+                },
               };
               continue;
             }

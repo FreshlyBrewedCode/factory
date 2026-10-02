@@ -70,6 +70,93 @@ describe("startRun cancellation", () => {
     expect(runFailed).toBeUndefined();
   });
 
+  test("a cancelled step keeps the context and cost its agent reported (ADR 0013 §5)", async () => {
+    const events: Array<RunEvent> = [];
+    const usage = {
+      context: { used: 15_305, size: 200_000 },
+      cost: { amount: 0.039, currency: "USD" },
+    };
+    const workflow = defineWorkflow("cancel-usage", {
+      input: Schema.Struct({}),
+      run: async (ctx) => {
+        await ctx.agent("slow-step", "irrelevant");
+        return {};
+      },
+    });
+    const chunks = [
+      { type: "CUSTOM", name: "acp.usage", value: usage },
+      ...SLOW_CHUNKS,
+      ...SLOW_CHUNKS,
+      ...SLOW_CHUNKS,
+    ];
+    const handle = startRun(
+      workflow,
+      makeAgentRuntime(
+        fakeAgents(
+          createSlowFakeAdapter(chunks, 15, [
+            { index: 0, signal: { _tag: "usage", value: usage } },
+          ]),
+        ),
+      ),
+      { runId: "run-cancel-usage", dir: "/tmp", input: {}, onEvent: (e) => events.push(e) },
+    );
+
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    await handle.cancel();
+    expect((await handle.result).outcome).toBe("cancelled");
+
+    const finished = events.find((e) => e.payload._tag === "AgentStepFinished");
+    expect(finished?.payload).toMatchObject({
+      outcome: "cancelled",
+      context: { used: 15_305, size: 200_000 },
+      cost: { amount: 0.039, currency: "USD" },
+    });
+  });
+
+  test("a completed step records context and cost, and omits them when none came", async () => {
+    const events: Array<RunEvent> = [];
+    const usage = {
+      context: { used: 1200, size: 200_000 },
+      cost: { amount: 0.25, currency: "USD" },
+    };
+    const workflow = defineWorkflow("usage-fields", {
+      input: Schema.Struct({}),
+      run: async (ctx) => {
+        await ctx.agent("measured", "irrelevant");
+        await ctx.agent("unmeasured", "irrelevant");
+        return {};
+      },
+    });
+    let call = 0;
+    const adapter: AgentAdapter = {
+      async prepareWorkspace() {},
+      async *stream() {
+        call += 1;
+        if (call === 1) {
+          yield {
+            chunk: { type: "CUSTOM", name: "acp.usage", value: usage },
+            signal: { _tag: "usage", value: usage },
+          };
+        }
+        yield { chunk: { type: "RUN_FINISHED" } };
+      },
+    };
+    const handle = startRun(workflow, makeAgentRuntime(fakeAgents(adapter)), {
+      runId: "run-usage-fields",
+      dir: "/tmp",
+      input: {},
+      onEvent: (e) => events.push(e),
+    });
+    expect((await handle.result).outcome).toBe("completed");
+
+    const finished = events.flatMap((e) =>
+      e.payload._tag === "AgentStepFinished" ? [e.payload] : [],
+    );
+    expect(finished[0]).toMatchObject({ context: usage.context, cost: usage.cost });
+    expect("context" in finished[1]!).toBe(false);
+    expect("cost" in finished[1]!).toBe(false);
+  });
+
   test("an uninterrupted run completes normally through the same adapter", async () => {
     const workflow = defineWorkflow("no-cancel-test", {
       input: Schema.Struct({}),

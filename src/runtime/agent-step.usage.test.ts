@@ -15,7 +15,7 @@
 import { describe, expect, test } from "bun:test";
 import { Effect } from "effect";
 import { agentStepContextTokens } from "../events";
-import type { AgentAdapter, AgentAdapterYield } from "./agent-adapter";
+import type { AgentAdapter, AgentAdapterYield, AgentUsage } from "./agent-adapter";
 import { AgentRuntimeLayer } from "./agent-runtime";
 import { fakeAgents, loadCorpusBlocks } from "../replay/adapter";
 import { buildAgentStepEffect } from "./agent-step";
@@ -23,12 +23,14 @@ import { buildAgentStepEffect } from "./agent-step";
 const CORPUS = "test/corpus/run-1789308170212.ndjson";
 
 async function runBlock(chunks: ReadonlyArray<unknown>) {
+  return await runYields(chunks.map((chunk) => ({ chunk })));
+}
+
+async function runYields(yields: ReadonlyArray<AgentAdapterYield>) {
   const adapter: AgentAdapter = {
     async prepareWorkspace(_dir: string): Promise<void> {},
     async *stream(): AsyncGenerator<AgentAdapterYield> {
-      for (const chunk of chunks) {
-        yield { chunk };
-      }
+      yield* yields;
     },
   };
   const handle = buildAgentStepEffect({
@@ -107,5 +109,50 @@ describe("agent step usage", () => {
     ]);
 
     expect(outcome.usage).toBeUndefined();
+  });
+});
+
+const usageYield = (value: AgentUsage): AgentAdapterYield => ({
+  chunk: { type: "CUSTOM", name: "acp.usage", value },
+  signal: { _tag: "usage", value },
+});
+
+describe("agent step context and cost (ADR 0013 §5)", () => {
+  test("the last usage signal's context wins", async () => {
+    const outcome = await runYields([
+      { chunk: { type: "RUN_STARTED" } },
+      usageYield({ context: { used: 14_874, size: 1_000_000 } }),
+      usageYield({ context: { used: 15_305, size: 200_000 } }),
+      { chunk: { type: "RUN_FINISHED" } },
+    ]);
+    expect(outcome.context).toEqual({ used: 15_305, size: 200_000 });
+    expect(outcome.cost).toBeUndefined();
+  });
+
+  test("cost is the latest one reported; an update without one keeps it", async () => {
+    const outcome = await runYields([
+      usageYield({ context: { used: 100, size: 1000 }, cost: { amount: 0.01, currency: "USD" } }),
+      usageYield({ context: { used: 200, size: 1000 }, cost: { amount: 0.04, currency: "USD" } }),
+      usageYield({ context: { used: 300, size: 1000 } }),
+    ]);
+    expect(outcome.context).toEqual({ used: 300, size: 1000 });
+    expect(outcome.cost).toEqual({ amount: 0.04, currency: "USD" });
+  });
+
+  test("a free model's 0 USD is recorded as reported", async () => {
+    const outcome = await runYields([
+      usageYield({
+        context: { used: 14_010, size: 200_000 },
+        cost: { amount: 0, currency: "USD" },
+      }),
+    ]);
+    expect(outcome.cost).toEqual({ amount: 0, currency: "USD" });
+  });
+
+  test("a step whose agent never reports usage has neither", async () => {
+    const blocks = loadCorpusBlocks(CORPUS);
+    const outcome = await runBlock(blocks.find((b) => b.step === "fix")!.chunks);
+    expect(outcome.context).toBeUndefined();
+    expect(outcome.cost).toBeUndefined();
   });
 });
