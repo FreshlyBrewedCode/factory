@@ -27,15 +27,16 @@
 import { Cron, Effect, Schedule, Schema } from "effect";
 import type { Database } from "bun:sqlite";
 import type { FactoryConfig } from "../config";
-import { dedupeRegistry, type DedupeRegistry } from "../lib/dedupe";
+import { DedupeKeyError, dedupeRegistry, type DedupeRegistry } from "../lib/dedupe";
 import type { WorkflowDefinition } from "../workflow";
 import {
-  startTrackedRun,
   ConcurrencyLimitError,
+  DispatchCapError,
+  startTrackedRun,
   type DispatchEnv,
   type WorkspaceSpec,
 } from "./runs";
-import type { RunRepo } from "../runtime/run";
+import { RunCancelledSignal, type RunRepo } from "../runtime/run";
 import type { AgentAdapter } from "../runtime/agent-adapter";
 
 export class SchedulerError extends Schema.TaggedError<SchedulerError>()("SchedulerError", {
@@ -128,6 +129,45 @@ export type TickResult =
   | { readonly scheduleId: string; readonly action: "skipped-concurrency" }
   | { readonly scheduleId: string; readonly action: "fire-failed" };
 
+/** The union `deps.fire` is known to throw — the tags a fire failure is classified against. */
+type ScheduleFireError =
+  | ConcurrencyLimitError
+  | DedupeKeyError
+  | DispatchCapError
+  | RunCancelledSignal;
+
+/** `instanceof`, not an `as` cast, so `err._tag` below is a real literal type. */
+function isScheduleFireError(err: unknown): err is ScheduleFireError {
+  return (
+    err instanceof ConcurrencyLimitError ||
+    err instanceof DedupeKeyError ||
+    err instanceof DispatchCapError ||
+    err instanceof RunCancelledSignal
+  );
+}
+
+/**
+ * Issue #34: the skip-vs-fail split, exhaustive over the known domain-error
+ * tags and compiler-checked (the `default` arm's `satisfies never` fails to
+ * typecheck if a tag is ever added to `ScheduleFireError` without a case
+ * here). Anything outside that union — a non-`Error` throw, or a future
+ * error type nobody taught this switch about — still lands in `fire-failed`
+ * rather than vanishing: the whole point of the fix.
+ */
+function classifyFireFailure(err: unknown): "skipped-concurrency" | "fire-failed" {
+  if (!isScheduleFireError(err)) return "fire-failed";
+  switch (err._tag) {
+    case "ConcurrencyLimitError":
+      return "skipped-concurrency";
+    case "DedupeKeyError":
+    case "DispatchCapError":
+    case "RunCancelledSignal":
+      return "fire-failed";
+    default:
+      return err satisfies never;
+  }
+}
+
 /** One scheduler pass over every schedule, in config order. */
 export async function tickOnce(
   deps: SchedulerDeps,
@@ -166,12 +206,11 @@ export async function tickOnce(
       const runId = await deps.fire(schedule);
       results.push({ scheduleId: schedule.id, action: "fired", runId });
     } catch (err) {
-      if (err instanceof ConcurrencyLimitError) {
-        results.push({ scheduleId: schedule.id, action: "skipped-concurrency" });
-      } else {
+      const action = classifyFireFailure(err);
+      if (action === "fire-failed") {
         console.error(`[scheduler] schedule "${schedule.id}" fire failed:`, err);
-        results.push({ scheduleId: schedule.id, action: "fire-failed" });
       }
+      results.push({ scheduleId: schedule.id, action });
     }
   }
 

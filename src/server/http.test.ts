@@ -609,6 +609,9 @@ describe("POST /api/runs {workflowId, input} (D31)", () => {
         body: JSON.stringify({ workflowId: "registry-test", input: { issueNumber: 2 } }),
       });
       expect(second.status).toBe(409);
+      expect(((await second.json()) as { error: string }).error).toBe(
+        "concurrency limit reached (max 1 concurrent runs)",
+      );
 
       await waitForTerminal(db, runId, 10_000);
 

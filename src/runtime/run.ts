@@ -32,10 +32,12 @@ import { DedupeKeyError } from "../lib/dedupe";
 import type { AgentAdapter } from "./agent-adapter";
 import { buildAgentStepEffect } from "./agent-step";
 
-export class RunCancelledSignal extends Error {
-  constructor() {
-    super("run cancelled");
-    this.name = "RunCancelledSignal";
+export class RunCancelledSignal extends Schema.TaggedError<RunCancelledSignal>()(
+  "RunCancelledSignal",
+  { message: Schema.String },
+) {
+  static of(): RunCancelledSignal {
+    return new RunCancelledSignal({ message: "run cancelled" });
   }
 }
 
@@ -161,7 +163,7 @@ export function startRun<I, O>(
   const workspaceKind = options.workspaceKind ?? "clone";
 
   const execImpl = async (argv: ReadonlyArray<string>): Promise<ExecResult> => {
-    if (cancelled) throw new RunCancelledSignal();
+    if (cancelled) throw RunCancelledSignal.of();
 
     const execId = nextExecId();
     emit({ _tag: "ExecStarted", execId, command: [...argv], cwd: options.dir });
@@ -180,7 +182,7 @@ export function startRun<I, O>(
       durationMs,
     });
 
-    if (cancelled) throw new RunCancelledSignal();
+    if (cancelled) throw RunCancelledSignal.of();
     return result;
   };
 
@@ -189,7 +191,7 @@ export function startRun<I, O>(
     prompt: string,
     opts?: AgentCallOptions,
   ): Promise<AgentResult<O2>> => {
-    if (cancelled) throw new RunCancelledSignal();
+    if (cancelled) throw RunCancelledSignal.of();
 
     const stepId = nextStepId();
     // Precedence (issue #16): per-call option > the starting schedule's
@@ -250,7 +252,7 @@ export function startRun<I, O>(
             : {}),
           ...(handle.partial.usage !== undefined ? { usage: handle.partial.usage } : {}),
         });
-        throw new RunCancelledSignal();
+        throw RunCancelledSignal.of();
       }
 
       const message = Cause.pretty(cause);

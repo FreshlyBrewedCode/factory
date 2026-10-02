@@ -20,6 +20,7 @@ import { createSlowFakeAdapter } from "../replay/adapter";
 import { defineWorkflow, Schema } from "../workflow";
 import {
   ConcurrencyLimitError,
+  DispatchCapError,
   activeRunIds,
   cancelRegisteredRun,
   getActiveHandle,
@@ -70,6 +71,28 @@ async function waitFor(predicate: () => boolean, timeoutMs = 5_000): Promise<voi
   }
   throw new Error("condition not met within timeout");
 }
+
+describe("domain errors as TaggedError (#34)", () => {
+  test("ConcurrencyLimitError carries _tag and maxConcurrentRuns", () => {
+    const err = ConcurrencyLimitError.of({ maxConcurrentRuns: 5 });
+    expect(err._tag).toBe("ConcurrencyLimitError");
+    expect(err.maxConcurrentRuns).toBe(5);
+    expect(err instanceof Error).toBe(true);
+  });
+
+  test("DispatchCapError carries _tag and message", () => {
+    const err = new DispatchCapError({ message: "depth exceeded" });
+    expect(err._tag).toBe("DispatchCapError");
+    expect(err.message).toContain("depth exceeded");
+    expect(err instanceof Error).toBe(true);
+  });
+
+  test("ConcurrencyLimitError constructs its message, so the stack header names it", () => {
+    const err = ConcurrencyLimitError.of({ maxConcurrentRuns: 5 });
+    expect(err.message).toBe("concurrency limit reached (max 5 concurrent runs)");
+    expect(err.stack?.split("\n")[0]).toBe(`ConcurrencyLimitError: ${err.message}`);
+  });
+});
 
 describe("startTrackedRun admission (M1: the slot is reserved before any await)", () => {
   test("a second start while the first is still reserving is refused atomically, and the slot frees after", async () => {

@@ -10,7 +10,16 @@ import { describe, expect, test } from "bun:test";
 import type { RunEvent } from "../events";
 import { defineWorkflow, Schema } from "../workflow";
 import { createSlowFakeAdapter } from "../replay/adapter";
-import { startRun } from "./run";
+import { startRun, RunCancelledSignal } from "./run";
+
+describe("RunCancelledSignal as TaggedError (#34)", () => {
+  test("carries the _tag and the cancellation message", () => {
+    const signal = RunCancelledSignal.of();
+    expect(signal._tag).toBe("RunCancelledSignal");
+    expect(signal.message).toBe("run cancelled");
+    expect(signal instanceof Error).toBe(true);
+  });
+});
 
 const SLOW_CHUNKS = [
   { type: "TEXT_MESSAGE_START" },

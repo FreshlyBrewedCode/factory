@@ -14,6 +14,22 @@
 import { describe, expect, test } from "bun:test";
 import { createDedupeRegistry, DedupeKeyError } from "./dedupe";
 
+describe("DedupeKeyError as TaggedError (#34)", () => {
+  test("carries the _tag, key, and holderRunId fields", () => {
+    const err = DedupeKeyError.of({ key: "issue:41", holderRunId: "run-a" });
+    expect(err._tag).toBe("DedupeKeyError");
+    expect(err.key).toBe("issue:41");
+    expect(err.holderRunId).toBe("run-a");
+    expect(err instanceof Error).toBe(true);
+  });
+
+  test("constructs its message, so the stack header names the error and the key", () => {
+    const err = DedupeKeyError.of({ key: "issue:41", holderRunId: "run-a" });
+    expect(err.message).toBe('dedupe key held: "issue:41" is currently held by run run-a');
+    expect(err.stack?.split("\n")[0]).toBe(`DedupeKeyError: ${err.message}`);
+  });
+});
+
 describe("the holder registry (issue #15)", () => {
   test("an unclaimed key claims silently and reports its holder", () => {
     const registry = createDedupeRegistry();
@@ -40,10 +56,9 @@ describe("the holder registry (issue #15)", () => {
       }
       throw new Error("unreachable");
     })();
+    expect(err._tag).toBe("DedupeKeyError");
     expect(err.key).toBe("issue:41");
     expect(err.holderRunId).toBe("run-a");
-    expect(err.message).toContain("issue:41");
-    expect(err.message).toContain("run-a");
   });
 
   test("release frees the key when the holder releases it", () => {

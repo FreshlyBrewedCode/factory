@@ -18,15 +18,29 @@
  * see `startTrackedRun` in server/runs.ts.
  */
 
-export class DedupeKeyError extends Error {
-  readonly key: string;
-  readonly holderRunId: string;
+import { Schema } from "effect";
 
-  constructor(key: string, holderRunId: string) {
-    super(`dedupe key held: "${key}" is currently held by run ${holderRunId}`);
-    this.name = "DedupeKeyError";
-    this.key = key;
-    this.holderRunId = holderRunId;
+export class DedupeKeyError extends Schema.TaggedError<DedupeKeyError>()("DedupeKeyError", {
+  key: Schema.String,
+  holderRunId: Schema.String,
+  message: Schema.String,
+}) {
+  // Bun takes the `.stack` header from the *immediate* prototype's `name`;
+  // the schema class sets it one level up, which would leave `Error: …`.
+  static {
+    this.prototype.name = "DedupeKeyError";
+  }
+
+  /**
+   * The single source of truth for the collision message (HTTP, runtime,
+   * scheduler alike). Built at construction — not a getter — so `.stack`
+   * opens with it too.
+   */
+  static of(props: { readonly key: string; readonly holderRunId: string }): DedupeKeyError {
+    return new DedupeKeyError({
+      ...props,
+      message: `dedupe key held: "${props.key}" is currently held by run ${props.holderRunId}`,
+    });
   }
 }
 
@@ -49,7 +63,8 @@ export function createDedupeRegistry(): DedupeRegistry {
     holderOf: (key) => held.get(key),
     claim(key, runId) {
       const holder = held.get(key);
-      if (holder !== undefined && holder !== runId) throw new DedupeKeyError(key, holder);
+      if (holder !== undefined && holder !== runId)
+        throw DedupeKeyError.of({ key, holderRunId: holder });
       held.set(key, runId);
     },
     release(key, runId) {

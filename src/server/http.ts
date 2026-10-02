@@ -348,7 +348,7 @@ export function createHandler(options: ServerOptions): (req: Request) => Promise
       const maxConcurrentRuns = options.config?.maxConcurrentRuns;
       if (maxConcurrentRuns !== undefined && !admitRun(maxConcurrentRuns, activeRunIds().length)) {
         return json(
-          { error: `concurrency limit reached (max ${maxConcurrentRuns} concurrent runs)` },
+          { error: ConcurrencyLimitError.of({ maxConcurrentRuns }).message },
           { status: 409 },
         );
       }
@@ -544,7 +544,7 @@ export function createHandler(options: ServerOptions): (req: Request) => Promise
       const maxConcurrentRuns = options.config.maxConcurrentRuns;
       if (!admitRun(maxConcurrentRuns, activeRunIds().length)) {
         return json(
-          { error: `concurrency limit reached (max ${maxConcurrentRuns} concurrent runs)` },
+          { error: ConcurrencyLimitError.of({ maxConcurrentRuns }).message },
           { status: 409 },
         );
       }
