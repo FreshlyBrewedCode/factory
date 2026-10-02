@@ -26,26 +26,30 @@
  * read completes. Without this ordering a live event emitted between the
  * subscribe and the read could be lost.
  *
- * #38: the handler receives DaemonServices (registry, pubsub, dedupe) as
- * required parameters rather than accessing module-level singletons.
+ * #38: the handler resolves the daemon's registry and pubsub from the daemon
+ * runtime it is given (`server/daemon-runtime.ts`) rather than reading
+ * module-level singletons. The handlers themselves stay plain functions
+ * (ADR 0009 §5) — the runtime is only the way into the context.
  */
 
 import type { Database } from "bun:sqlite";
 import { isTerminal, type RunEvent } from "../events";
 import type { FactoryConfig } from "../config";
-import { Schema, SchemaParser, type ManagedRuntime } from "effect";
+import { Schema, SchemaParser } from "effect";
 import { resetClone, type GitIdentity } from "../lib/clone";
 import { loadWorkflow } from "../lib/load-workflow";
 import { getRunEvents, listRuns, type RunSummary } from "../persistence/store";
-import type { AgentRuntime } from "../runtime/agent-runtime";
 import index from "../web/index.html";
 import { admitRun } from "./admission";
 import { DedupeKeyError } from "../lib/dedupe";
+import { serviceOf, type DaemonRuntime } from "./daemon-runtime";
+import { RunPubSub, type PubSub } from "./pubsub";
 import {
   ConcurrencyLimitError,
+  RunRegistry,
   startTrackedRun,
-  type DaemonServices,
   type DispatchEnv,
+  type RunRegistryShape,
   type StartTrackedRunOptions,
 } from "./runs";
 import { nextFireAt, toRuntimeSchedules } from "./scheduler";
@@ -74,14 +78,14 @@ export interface ScheduleSummary {
 
 export interface ServerOptions {
   readonly db: Database;
-  /** Issue #38: this daemon's run registry, pubsub, dedupe registry and refresh gates. */
-  readonly services: DaemonServices;
   /**
    * Issue #36: the Effect managed runtime that provides the agent runtime
    * service. The adapter is resolved from its context inside the agent step
-   * rather than threaded through `ServerOptions`.
+   * rather than threaded through `ServerOptions`. #38: the same runtime
+   * provides this daemon's run registry, pubsub, dedupe registry and refresh
+   * gates.
    */
-  readonly runtime: ManagedRuntime.ManagedRuntime<AgentRuntime, never>;
+  readonly runtime: DaemonRuntime;
   /**
    * The loaded `factory.config.ts` (D27). Absent = the phase 3 path-based API
    * behaves exactly as before (no limit, explicit dir+clone, `/api/workflows`
@@ -127,8 +131,11 @@ export type RunSummaryResponse = RunSummary & { readonly active: boolean };
  * that bit to group live rows, so it is derived here from the in-memory
  * registry (`server/runs.ts`) rather than stored (D24: active is process state).
  */
-function listSummaries(db: Database, services: DaemonServices): ReadonlyArray<RunSummaryResponse> {
-  return listRuns(db).map((run) => ({ ...run, active: services.registry.isActive(run.runId) }));
+function listSummaries(
+  db: Database,
+  registry: RunRegistryShape,
+): ReadonlyArray<RunSummaryResponse> {
+  return listRuns(db).map((run) => ({ ...run, active: registry.isActive(run.runId) }));
 }
 
 /**
@@ -218,7 +225,8 @@ function parseLastEventId(req: Request): number | undefined {
 
 function sseStream(
   db: Database,
-  services: DaemonServices,
+  registry: RunRegistryShape,
+  pubsub: PubSub,
   runId: string,
   lastEventId?: number,
   keepaliveMs: number = DEFAULT_SSE_KEEPALIVE_MS,
@@ -270,7 +278,7 @@ function sseStream(
         controller.close();
       };
 
-      unsubscribe = services.pubsub.subscribe(runId, (event) => {
+      unsubscribe = pubsub.subscribe(runId, (event) => {
         if (!draining) {
           buffered.push(event);
           return;
@@ -293,7 +301,7 @@ function sseStream(
         if (isTerminal(event.payload)) sawTerminal = true;
       }
 
-      if (sawTerminal || !services.registry.isActive(runId)) {
+      if (sawTerminal || !registry.isActive(runId)) {
         finish();
         return;
       }
@@ -329,12 +337,13 @@ function sseStream(
 }
 
 export function createHandler(options: ServerOptions): (req: Request) => Promise<Response> {
-  const services = options.services;
+  const registry = serviceOf(options.runtime, RunRegistry);
+  const pubsub = serviceOf(options.runtime, RunPubSub);
   return async (req: Request): Promise<Response> => {
     const url = new URL(req.url);
 
     if (req.method === "GET" && url.pathname === "/api/runs") {
-      return json(listSummaries(options.db, services));
+      return json(listSummaries(options.db, registry));
     }
 
     if (req.method === "GET" && url.pathname === "/api/workflows") {
@@ -355,7 +364,7 @@ export function createHandler(options: ServerOptions): (req: Request) => Promise
       const maxConcurrentRuns = options.config?.maxConcurrentRuns;
       if (
         maxConcurrentRuns !== undefined &&
-        !admitRun(maxConcurrentRuns, services.registry.activeRunIds().length)
+        !admitRun(maxConcurrentRuns, registry.activeRunIds().length)
       ) {
         return json(
           { error: ConcurrencyLimitError.of({ maxConcurrentRuns }).message },
@@ -405,13 +414,7 @@ export function createHandler(options: ServerOptions): (req: Request) => Promise
         };
         let runId: string;
         try {
-          runId = await startTrackedRun(
-            options.runtime,
-            options.db,
-            services,
-            workflow,
-            startOptions,
-          );
+          runId = await startTrackedRun(options.runtime, options.db, workflow, startOptions);
         } catch (err) {
           if (err instanceof ConcurrencyLimitError) {
             return json({ error: err.message }, { status: 409 });
@@ -480,13 +483,7 @@ export function createHandler(options: ServerOptions): (req: Request) => Promise
       };
       let runId: string;
       try {
-        runId = await startTrackedRun(
-          options.runtime,
-          options.db,
-          services,
-          workflow,
-          startOptions,
-        );
+        runId = await startTrackedRun(options.runtime, options.db, workflow, startOptions);
       } catch (err) {
         if (err instanceof ConcurrencyLimitError) {
           return json({ error: err.message }, { status: 409 });
@@ -565,7 +562,7 @@ export function createHandler(options: ServerOptions): (req: Request) => Promise
       // D29 admission, checked here exactly like POST /api/runs so a manual
       // trigger over the limit is a visible 409 rather than a surprise.
       const maxConcurrentRuns = options.config.maxConcurrentRuns;
-      if (!admitRun(maxConcurrentRuns, services.registry.activeRunIds().length)) {
+      if (!admitRun(maxConcurrentRuns, registry.activeRunIds().length)) {
         return json(
           { error: ConcurrencyLimitError.of({ maxConcurrentRuns }).message },
           { status: 409 },
@@ -579,7 +576,7 @@ export function createHandler(options: ServerOptions): (req: Request) => Promise
       // it fires regardless.
       let runId: string;
       try {
-        runId = await startTrackedRun(options.runtime, options.db, services, workflow, {
+        runId = await startTrackedRun(options.runtime, options.db, workflow, {
           ...configRunOptions(options.config, maxConcurrentRuns, {
             scheduleId: schedule.id,
             ...(schedule.overlap === "skip" ? { dedupeKey: `schedule:${schedule.id}` } : {}),
@@ -605,7 +602,7 @@ export function createHandler(options: ServerOptions): (req: Request) => Promise
     const cancelMatch = /^\/api\/runs\/([^/]+)\/cancel$/.exec(url.pathname);
     if (req.method === "POST" && cancelMatch) {
       const runId = cancelMatch[1] as string;
-      const target = services.registry.cancelRegisteredRun(runId);
+      const target = registry.cancelRegisteredRun(runId);
       if (target === undefined) return json({ error: "run not active" }, { status: 409 });
       if (target.kind === "handle") await target.handle.cancel();
       return json({ runId, cancelled: true });
@@ -614,10 +611,17 @@ export function createHandler(options: ServerOptions): (req: Request) => Promise
     const eventsMatch = /^\/api\/runs\/([^/]+)\/events$/.exec(url.pathname);
     if (req.method === "GET" && eventsMatch) {
       const runId = eventsMatch[1] as string;
-      const exists = listSummaries(options.db, services).some((r) => r.runId === runId);
+      const exists = listSummaries(options.db, registry).some((r) => r.runId === runId);
       if (!exists) return json({ error: "not found" }, { status: 404 });
       return new Response(
-        sseStream(options.db, services, runId, parseLastEventId(req), options.sseKeepaliveMs),
+        sseStream(
+          options.db,
+          registry,
+          pubsub,
+          runId,
+          parseLastEventId(req),
+          options.sseKeepaliveMs,
+        ),
         {
           headers: {
             "content-type": "text/event-stream",
@@ -631,7 +635,7 @@ export function createHandler(options: ServerOptions): (req: Request) => Promise
     const runMatch = /^\/api\/runs\/([^/]+)$/.exec(url.pathname);
     if (req.method === "GET" && runMatch) {
       const runId = runMatch[1] as string;
-      const run = listSummaries(options.db, services).find((r) => r.runId === runId);
+      const run = listSummaries(options.db, registry).find((r) => r.runId === runId);
       if (run === undefined) return json({ error: "not found" }, { status: 404 });
       return json(run);
     }

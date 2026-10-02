@@ -22,6 +22,7 @@
  * non-host workspace is plumbing or a rewrite.
  */
 
+import { Context, Layer } from "effect";
 import { existsSync, readdirSync, statSync } from "node:fs";
 import { mkdir, rm } from "node:fs/promises";
 import { join } from "node:path";
@@ -31,12 +32,18 @@ import type { WorkspaceKind } from "../workflow";
 
 const MIRROR_DIR = ".mirror.git";
 
-export interface RefreshGates {
+/**
+ * The mirror-refresh promise queue, keyed by mirror path (see the
+ * concurrency note above). #38: per daemon, not per module — it is the
+ * `RefreshGates` service below, and `allocateWorkspace` takes the resolved
+ * value as a plain argument.
+ */
+export interface RefreshGatesShape {
   get(mirrorPath: string): Promise<void> | undefined;
   set(mirrorPath: string, promise: Promise<void>): void;
 }
 
-export function createRefreshGates(): RefreshGates {
+export function createRefreshGates(): RefreshGatesShape {
   const gates = new Map<string, Promise<void>>();
   return {
     get: (mirrorPath) => gates.get(mirrorPath),
@@ -45,6 +52,19 @@ export function createRefreshGates(): RefreshGates {
     },
   };
 }
+
+/**
+ * The refresh gates as a daemon service (#38, ADR 0009 §5); provided by
+ * `RefreshGatesLayer`, one fresh queue per daemon runtime.
+ */
+export class RefreshGates extends Context.Service<RefreshGates, RefreshGatesShape>()(
+  "RefreshGates",
+) {}
+
+export const RefreshGatesLayer: Layer.Layer<RefreshGates> = Layer.sync(
+  RefreshGates,
+  createRefreshGates,
+);
 
 export interface WorkspaceAllocationInput {
   readonly runId: string;
@@ -72,11 +92,11 @@ export interface WorkspaceAllocationInput {
   /** Injectable host-exec seam; defaults to `hostExec` (no behaviour change). */
   readonly exec?: ExecFn;
   /** Per-daemon refresh gates for serializing mirror maintenance. */
-  readonly refreshGates: RefreshGates;
+  readonly refreshGates: RefreshGatesShape;
 }
 
 function enqueueRefresh(
-  refreshGates: RefreshGates,
+  refreshGates: RefreshGatesShape,
   mirrorPath: string,
   task: () => Promise<void>,
 ): Promise<void> {

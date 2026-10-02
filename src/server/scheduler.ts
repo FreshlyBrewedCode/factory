@@ -25,23 +25,25 @@
  *
  * #38: the clock comes from Effect's Clock service. Tests use TestClock or
  * provide a custom Clock instance rather than an injected `now` function.
+ * In the daemon, `runSchedulerLoop` resolves both the clock and the dedupe
+ * registry from the context of the daemon runtime it is forked on; the plain
+ * `tickOnce` receives them as ordinary arguments in `SchedulerDeps`.
  */
 
-import { Clock, Cron, Effect, Schedule, Schema, type ManagedRuntime } from "effect";
+import { Clock, Cron, Effect, Schedule, Schema } from "effect";
 import type { Database } from "bun:sqlite";
 import type { FactoryConfig } from "../config";
-import { DedupeKeyError, type DedupeRegistry } from "../lib/dedupe";
+import { DedupeKeyError, DedupeRegistry, type DedupeRegistryShape } from "../lib/dedupe";
 import type { WorkflowDefinition } from "../workflow";
 import {
   ConcurrencyLimitError,
   DispatchCapError,
   startTrackedRun,
-  type DaemonServices,
   type DispatchEnv,
   type WorkspaceSpec,
 } from "./runs";
 import { RunCancelledSignal, type RunRepo } from "../runtime/run";
-import type { AgentRuntime } from "../runtime/agent-runtime";
+import type { DaemonRuntime } from "./daemon-runtime";
 
 export class SchedulerError extends Schema.TaggedError<SchedulerError>()("SchedulerError", {
   cause: Schema.Defect(),
@@ -100,7 +102,7 @@ export interface SchedulerDeps {
   /** Starts the scheduled run; the daemon wires it to `startTrackedRun`. */
   readonly fire: (schedule: RuntimeSchedule) => Promise<string>;
   /** Issue #38: the daemon's own dedupe registry — where schedule keys are held. */
-  readonly dedupeRegistry: DedupeRegistry;
+  readonly dedupeRegistry: DedupeRegistryShape;
   /** Issue #38: the wall clock windows are judged against; tests pass a `TestClock`. */
   readonly clock: Clock.Clock;
 }
@@ -221,8 +223,31 @@ export async function tickOnce(
   return results;
 }
 
-/** The daemon's scheduler loop — `Effect.repeat` around the plain `tickOnce`. */
+/**
+ * The daemon's scheduler loop — `Effect.repeat` around the plain `tickOnce`.
+ * The dedupe registry and the clock come from the context it runs in (#38):
+ * forked on the daemon runtime, that is the daemon's own registry and
+ * Effect's wall clock. The session state (`lastTick` = now) is taken when the
+ * loop starts.
+ */
 export function runSchedulerLoop(
+  schedules: ReadonlyArray<RuntimeSchedule>,
+  fire: SchedulerDeps["fire"],
+  intervalMs: number,
+): Effect.Effect<unknown, never, DedupeRegistry> {
+  return Effect.gen(function* () {
+    const deps: SchedulerDeps = {
+      schedules,
+      fire,
+      dedupeRegistry: yield* DedupeRegistry,
+      clock: yield* Clock.Clock,
+    };
+    const state = createSchedulerState(deps);
+    return yield* schedulerTicks(deps, state, intervalMs);
+  });
+}
+
+function schedulerTicks(
   deps: SchedulerDeps,
   state: SchedulerState,
   intervalMs: number,
@@ -256,8 +281,7 @@ export function runSchedulerLoop(
  */
 export function makeScheduleFire(options: {
   readonly db: Database;
-  readonly runtime: ManagedRuntime.ManagedRuntime<AgentRuntime, never>;
-  readonly services: DaemonServices;
+  readonly runtime: DaemonRuntime;
   readonly maxConcurrentRuns: number;
   readonly workspace: WorkspaceSpec;
   readonly repo: RunRepo;
@@ -265,7 +289,7 @@ export function makeScheduleFire(options: {
 }): (schedule: RuntimeSchedule) => Promise<string> {
   const env = options;
   return async (schedule: RuntimeSchedule): Promise<string> => {
-    return startTrackedRun(env.runtime, env.db, env.services, schedule.workflow, {
+    return startTrackedRun(env.runtime, env.db, schedule.workflow, {
       input: schedule.input,
       repo: env.repo,
       maxConcurrentRuns: options.maxConcurrentRuns,

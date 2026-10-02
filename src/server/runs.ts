@@ -12,12 +12,17 @@
  * `cancel` that arrives while a run is still reserving is deferred into run
  * start rather than dropped.
  *
- * #38: the active-run registry, pubsub, and dedupe registry are now
- * per-daemon instances passed through `DaemonServices`, so two daemons can
- * coexist in one process without sharing state.
+ * #38 (ADR 0009 §5): the registry is a `Context.Service` (`RunRegistry`)
+ * whose layer builds a fresh map per daemon runtime, alongside the pubsub,
+ * dedupe registry and refresh gates. Nothing here holds module-level state:
+ * `startTrackedRun` resolves the services from the daemon runtime it is
+ * handed (`server/daemon-runtime.ts`), so two daemons can coexist in one
+ * process without sharing state. Resolution happens up front, synchronously,
+ * so the check-then-set below is still one uninterrupted stretch of plain
+ * code over plain maps.
  */
 
-import { Schema, type ManagedRuntime } from "effect";
+import { Context, Layer, Schema } from "effect";
 import type { Database } from "bun:sqlite";
 import { rm } from "node:fs/promises";
 import { admitRun } from "./admission";
@@ -25,11 +30,11 @@ import { appendEvent, getRunEvents, listRuns } from "../persistence/store";
 import type { RunRepo } from "../runtime/run";
 import { startRun, type RunHandle } from "../runtime/run";
 import type { GitIdentity } from "../lib/clone";
-import { allocateWorkspace, type RefreshGates } from "../lib/workspace";
-import type { DedupeRegistry } from "../lib/dedupe";
-import type { AgentRuntime } from "../runtime/agent-runtime";
+import { allocateWorkspace, RefreshGates } from "../lib/workspace";
+import { DedupeRegistry } from "../lib/dedupe";
 import type { DispatchChildFn, WorkflowDefinition, WorkspaceKind } from "../workflow";
-import type { PubSub } from "./pubsub";
+import { serviceOf, type DaemonRuntime } from "./daemon-runtime";
+import { RunPubSub } from "./pubsub";
 
 interface ReservedSlot {
   cancelled: boolean;
@@ -74,14 +79,7 @@ export class ConcurrencyLimitError extends Schema.TaggedError<ConcurrencyLimitEr
   }
 }
 
-export interface DaemonServices {
-  readonly registry: RunRegistry;
-  readonly pubsub: PubSub;
-  readonly dedupeRegistry: DedupeRegistry;
-  readonly refreshGates: RefreshGates;
-}
-
-export interface RunRegistry {
+export interface RunRegistryShape {
   isActive(runId: string): boolean;
   activeRunIds(): ReadonlyArray<string>;
   getActiveHandle(runId: string): RunHandle<unknown> | undefined;
@@ -104,7 +102,7 @@ export interface RunRegistry {
   size: number;
 }
 
-export function createRunRegistry(): RunRegistry {
+export function createRunRegistry(): RunRegistryShape {
   const active = new Map<string, RunHandle<unknown> | ReservedSlot>();
   return {
     isActive: (runId) => active.has(runId),
@@ -140,6 +138,18 @@ export function createRunRegistry(): RunRegistry {
     },
   };
 }
+
+/**
+ * The active-run registry as a daemon service (#38, ADR 0009 §5). Resolve it
+ * from the daemon runtime's context; provide it with `RunRegistryLayer`.
+ */
+export class RunRegistry extends Context.Service<RunRegistry, RunRegistryShape>()("RunRegistry") {}
+
+/** A fresh, empty registry per layer build — i.e. per daemon runtime. */
+export const RunRegistryLayer: Layer.Layer<RunRegistry> = Layer.sync(
+  RunRegistry,
+  createRunRegistry,
+);
 
 export interface WorkspaceSpec {
   readonly workspaceRoot: string;
@@ -260,9 +270,8 @@ function dispatchDepth(db: Database, runId: string): number {
  * parent's.
  */
 async function dispatchChildRun(
-  runtime: ManagedRuntime.ManagedRuntime<AgentRuntime, never>,
+  runtime: DaemonRuntime,
   db: Database,
-  services: DaemonServices,
   env: DispatchEnv,
   parentRunId: string,
   child: WorkflowDefinition<any, any>,
@@ -271,7 +280,8 @@ async function dispatchChildRun(
 ): Promise<string> {
   const maxDepth = env.maxDispatchDepth ?? DEFAULT_MAX_DISPATCH_DEPTH;
   const maxChildren = env.maxChildrenPerRun ?? DEFAULT_MAX_CHILDREN_PER_RUN;
-  const registry = services.registry;
+  const registry = serviceOf(runtime, RunRegistry);
+  const dedupeRegistry = serviceOf(runtime, DedupeRegistry);
 
   if (
     env.maxConcurrentRuns !== undefined &&
@@ -299,10 +309,10 @@ async function dispatchChildRun(
   // and *before* the fire-and-forget start, so a collision throws into the
   // parent here instead of being swallowed by the un-awaited start's catch.
   const childRunId = `run-${crypto.randomUUID()}`;
-  if (opts?.dedupeKey !== undefined) services.dedupeRegistry.claim(opts.dedupeKey, childRunId);
+  if (opts?.dedupeKey !== undefined) dedupeRegistry.claim(opts.dedupeKey, childRunId);
 
   void (async () => {
-    await startTrackedRun(runtime, db, services, child, {
+    await startTrackedRun(runtime, db, child, {
       runId: childRunId,
       ...(env.workspace !== undefined ? { workspace: env.workspace } : {}),
       ...(env.repo !== undefined ? { repo: env.repo } : {}),
@@ -314,7 +324,7 @@ async function dispatchChildRun(
       ...(opts?.dedupeKey !== undefined ? { dedupeKeyClaimed: true } : {}),
     }).catch((err: unknown) => {
       if (opts?.dedupeKey !== undefined) {
-        services.dedupeRegistry.release(opts.dedupeKey, childRunId);
+        dedupeRegistry.release(opts.dedupeKey, childRunId);
       }
       console.error(
         `nested run start failed (parent ${parentRunId}, child ${childRunId}):` +
@@ -330,11 +340,17 @@ function countDispatchedChildren(db: Database, runId: string): number {
   return getRunEvents(db, runId).filter((event) => event.payload._tag === "RunDispatched").length;
 }
 
-/** Starts a run, persists+publishes every event, and tracks it until terminal. */
+/**
+ * Starts a run, persists+publishes every event, and tracks it until terminal.
+ *
+ * `runtime` is the daemon's composition root (#36/#38): the run's agent steps
+ * resolve their adapter from it, and this function resolves the registry,
+ * pubsub, dedupe registry and refresh gates from it — synchronously, before
+ * the admission check, so resolution never opens a gap inside it.
+ */
 export async function startTrackedRun(
-  runtime: ManagedRuntime.ManagedRuntime<AgentRuntime, never>,
+  runtime: DaemonRuntime,
   db: Database,
-  services: DaemonServices,
   workflow: WorkflowDefinition<any, any>,
   options: StartTrackedRunOptions,
 ): Promise<string> {
@@ -344,7 +360,10 @@ export async function startTrackedRun(
   // unrelated runs — one run's SSE watcher can then see the other's terminal event and close
   // its own db while its real run is still writing to it.
   const runId = options.runId ?? `run-${crypto.randomUUID()}`;
-  const registry = services.registry;
+  const registry = serviceOf(runtime, RunRegistry);
+  const dedupeRegistry = serviceOf(runtime, DedupeRegistry);
+  const pubsub = serviceOf(runtime, RunPubSub);
+  const refreshGates = serviceOf(runtime, RefreshGates);
 
   const existing = registry.get(runId);
   if (existing !== undefined && !isReserved(existing)) {
@@ -363,7 +382,7 @@ export async function startTrackedRun(
   // so two near-simultaneous starts on the same key cannot both slip past. A
   // collision throws before anything is started, leaving no trace.
   if (options.dedupeKey !== undefined && options.dedupeKeyClaimed !== true) {
-    services.dedupeRegistry.claim(options.dedupeKey, runId);
+    dedupeRegistry.claim(options.dedupeKey, runId);
   }
   if (limit !== undefined) registry.reserve(runId);
 
@@ -391,7 +410,7 @@ export async function startTrackedRun(
             kind,
             ...(scratchEntries !== undefined ? { scratchEntries } : {}),
             protectedEntries: [runId, ...registry.activeRunIds()],
-            refreshGates: services.refreshGates,
+            refreshGates,
           }));
 
     if (dir === undefined) throw new Error("startTrackedRun needs `dir` or `workspace`");
@@ -407,16 +426,7 @@ export async function startTrackedRun(
       options.dispatchEnv === undefined
         ? undefined
         : (child, input, opts) =>
-            dispatchChildRun(
-              runtime,
-              db,
-              services,
-              options.dispatchEnv!,
-              runId,
-              child,
-              input,
-              opts,
-            );
+            dispatchChildRun(runtime, db, options.dispatchEnv!, runId, child, input, opts);
 
     const handle = startRun(workflow, runtime, {
       runId,
@@ -433,7 +443,7 @@ export async function startTrackedRun(
       input: options.input,
       onEvent: (event) => {
         appendEvent(db, event);
-        services.pubsub.publish(runId, event);
+        pubsub.publish(runId, event);
       },
     });
 
@@ -453,8 +463,7 @@ export async function startTrackedRun(
       // releases the run's key. (An interrupted run — process death — is
       // covered by the registry being per-daemon: a new daemon holds
       // nothing.)
-      if (options.dedupeKey !== undefined)
-        services.dedupeRegistry.release(options.dedupeKey, runId);
+      if (options.dedupeKey !== undefined) dedupeRegistry.release(options.dedupeKey, runId);
     });
 
     // Issue #13: a scratch dir is reaped when the run succeeds — there is no
@@ -471,7 +480,7 @@ export async function startTrackedRun(
 
     return runId;
   } catch (err) {
-    if (options.dedupeKey !== undefined) services.dedupeRegistry.release(options.dedupeKey, runId);
+    if (options.dedupeKey !== undefined) dedupeRegistry.release(options.dedupeKey, runId);
     const current = registry.get(runId);
     if (current === undefined || isReserved(current)) registry.delete(runId);
     throw err;

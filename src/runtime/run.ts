@@ -143,6 +143,18 @@ function resolveOutput<O>(
 }
 
 /**
+ * What `startRun` needs from a runtime: forking and running effects that
+ * require `AgentRuntime`. Any `ManagedRuntime` that provides at least the
+ * agent runtime satisfies it — the CLI's agent-only runtime and the daemon's
+ * runtime (#38), which provides more. (`ManagedRuntime` itself is invariant
+ * in its services, so naming the two methods is what lets both through.)
+ */
+export type AgentRunner = Pick<
+  ManagedRuntime.ManagedRuntime<AgentRuntime, never>,
+  "runFork" | "runPromise"
+>;
+
+/**
  * `runtime` is the composition root's `ManagedRuntime` (issue #36): agent
  * steps resolve their adapter from its `AgentRuntime` service and their
  * fibers are forked on it. `startRun` stays synchronous: nothing is resolved
@@ -150,7 +162,7 @@ function resolveOutput<O>(
  */
 export function startRun<I, O>(
   workflow: WorkflowDefinition<I, O>,
-  runtime: ManagedRuntime.ManagedRuntime<AgentRuntime, never>,
+  runtime: AgentRunner,
   options: StartRunOptions,
 ): RunHandle<O> {
   let seq = 0;

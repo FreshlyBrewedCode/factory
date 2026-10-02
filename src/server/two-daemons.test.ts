@@ -17,6 +17,16 @@ import { createSlowFakeAdapter } from "../replay/adapter";
 import { startDaemon } from "./daemon";
 import { isTerminal, type RunEvent } from "../events";
 import type { DaemonHandle } from "./daemon";
+import { serviceOf } from "./daemon-runtime";
+import { RunRegistry } from "./runs";
+import { RunPubSub } from "./pubsub";
+import { DedupeRegistry } from "../lib/dedupe";
+import { RefreshGates } from "../lib/workspace";
+
+/** Each daemon's own services, resolved from its own runtime's context. */
+const registryOf = (daemon: DaemonHandle) => serviceOf(daemon.runtime, RunRegistry);
+const pubsubOf = (daemon: DaemonHandle) => serviceOf(daemon.runtime, RunPubSub);
+const dedupeOf = (daemon: DaemonHandle) => serviceOf(daemon.runtime, DedupeRegistry);
 
 let releaseRuns: () => void = () => undefined;
 let runsGate = Promise.resolve();
@@ -59,8 +69,8 @@ function watch(
 ): { readonly own: Array<RunEvent>; readonly foreign: Array<RunEvent>; readonly stop: () => void } {
   const own: Array<RunEvent> = [];
   const foreign: Array<RunEvent> = [];
-  const unsubOwn = owner.services.pubsub.subscribe(runId, (event) => own.push(event));
-  const unsubOther = other.services.pubsub.subscribe(runId, (event) => foreign.push(event));
+  const unsubOwn = pubsubOf(owner).subscribe(runId, (event) => own.push(event));
+  const unsubOther = pubsubOf(other).subscribe(runId, (event) => foreign.push(event));
   return {
     own,
     foreign,
@@ -119,6 +129,15 @@ describe("two daemons in one process (#38)", () => {
     });
 
     try {
+      // Two runtimes, two builds of every per-daemon layer: no service
+      // instance is shared.
+      expect(registryOf(daemon1)).not.toBe(registryOf(daemon2));
+      expect(pubsubOf(daemon1)).not.toBe(pubsubOf(daemon2));
+      expect(dedupeOf(daemon1)).not.toBe(dedupeOf(daemon2));
+      expect(serviceOf(daemon1.runtime, RefreshGates)).not.toBe(
+        serviceOf(daemon2.runtime, RefreshGates),
+      );
+
       closeGate();
       const port1 = daemon1.server.port;
       const port2 = daemon2.server.port;
@@ -145,8 +164,8 @@ describe("two daemons in one process (#38)", () => {
       const watch1 = watch(daemon1, daemon2, runId1);
       const watch2 = watch(daemon2, daemon1, runId2);
 
-      expect(daemon1.services.registry.activeRunIds()).toEqual([runId1]);
-      expect(daemon2.services.registry.activeRunIds()).toEqual([runId2]);
+      expect(registryOf(daemon1).activeRunIds()).toEqual([runId1]);
+      expect(registryOf(daemon2).activeRunIds()).toEqual([runId2]);
 
       const list1 = (await fetch(`http://localhost:${port1}/api/runs`).then((r) =>
         r.json(),
@@ -178,8 +197,8 @@ describe("two daemons in one process (#38)", () => {
       watch1.stop();
       watch2.stop();
 
-      expect(daemon1.services.registry.activeRunIds()).toEqual([]);
-      expect(daemon2.services.registry.activeRunIds()).toEqual([]);
+      expect(registryOf(daemon1).activeRunIds()).toEqual([]);
+      expect(registryOf(daemon2).activeRunIds()).toEqual([]);
 
       const dedupeKey = "shared-key";
       closeGate();
@@ -192,8 +211,8 @@ describe("two daemons in one process (#38)", () => {
 
       // Daemon 1 still holds the key (run 3 is gated) when daemon 2 is asked
       // for the same key — and daemon 2 knows nothing of it.
-      expect(daemon1.services.dedupeRegistry.holderOf(dedupeKey)).toBe(runId3);
-      expect(daemon2.services.dedupeRegistry.holderOf(dedupeKey)).toBeUndefined();
+      expect(dedupeOf(daemon1).holderOf(dedupeKey)).toBe(runId3);
+      expect(dedupeOf(daemon2).holderOf(dedupeKey)).toBeUndefined();
 
       const res4 = await fetch(`http://localhost:${port2}/api/runs`, {
         method: "POST",
@@ -203,8 +222,8 @@ describe("two daemons in one process (#38)", () => {
       const { runId: runId4 } = (await res4.json()) as { runId: string };
 
       expect(runId3).not.toBe(runId4);
-      expect(daemon1.services.dedupeRegistry.holderOf(dedupeKey)).toBe(runId3);
-      expect(daemon2.services.dedupeRegistry.holderOf(dedupeKey)).toBe(runId4);
+      expect(dedupeOf(daemon1).holderOf(dedupeKey)).toBe(runId3);
+      expect(dedupeOf(daemon2).holderOf(dedupeKey)).toBe(runId4);
 
       releaseRuns();
       await waitForTerminal(port1, runId3);

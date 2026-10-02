@@ -8,8 +8,8 @@
  *   run start (L1): the run starts, is cancelled immediately, and ends as a
  *   clean RunCancelled with no orphaned slot.
  *
- * #38: tests create their own DaemonServices instead of using module-level
- * singletons. The reserved-but-not-started window is held open by pre-seeding
+ * #38: each test builds its own daemon runtime (`createTestDaemon`) instead
+ * of sharing module-level singletons. The reserved-but-not-started window is held open by pre-seeding
  * the daemon's refresh gate for the workspace mirror, so allocation blocks
  * until the test releases it.
  */
@@ -23,19 +23,14 @@ import type { AgentAdapter } from "../runtime/agent-adapter";
 import echoWorkflow from "../../test/fixtures/echo-workflow";
 import { appendEvent, openStore, getRunEvents } from "../persistence/store";
 import { createSlowFakeAdapter } from "../replay/adapter";
-import { makeAgentRuntime } from "../runtime/agent-runtime";
 import { defineWorkflow, Schema } from "../workflow";
 import {
   ConcurrencyLimitError,
   DispatchCapError,
-  createRunRegistry,
   startTrackedRun,
-  type DaemonServices,
   type WorkspaceSpec,
 } from "./runs";
-import { createPubSub } from "./pubsub";
-import { createDedupeRegistry } from "../lib/dedupe";
-import { createRefreshGates } from "../lib/workspace";
+import { createTestDaemon, type TestDaemon } from "./test-daemon";
 
 const SLOW_ADAPTER = createSlowFakeAdapter(
   [
@@ -45,8 +40,6 @@ const SLOW_ADAPTER = createSlowFakeAdapter(
   ],
   25,
 );
-
-const runtime = makeAgentRuntime(SLOW_ADAPTER);
 
 const sleepWorkflow = defineWorkflow("sleep-test", {
   input: Schema.Struct({}),
@@ -59,15 +52,6 @@ const sleepWorkflow = defineWorkflow("sleep-test", {
 function tmpRoot(): { root: string; finish: () => void } {
   const root = mkdtempSync(join(tmpdir(), "factory-runs-test-"));
   return { root, finish: () => rmSync(root, { recursive: true, force: true }) };
-}
-
-function createTestServices(): DaemonServices {
-  return {
-    registry: createRunRegistry(),
-    pubsub: createPubSub(),
-    dedupeRegistry: createDedupeRegistry(),
-    refreshGates: createRefreshGates(),
-  };
 }
 
 interface Gate {
@@ -90,14 +74,14 @@ function makeGate(): Gate {
  */
 async function gatedWorkspace(
   root: string,
-  services: DaemonServices,
+  daemon: TestDaemon,
   gate: Gate,
 ): Promise<WorkspaceSpec> {
   const seed = join(root, "seed");
   await Bun.$`git init -b main -q ${seed}`.quiet();
   await Bun.$`git -C ${seed} -c user.name=seed -c user.email=seed@seed.local commit -q --allow-empty -m seed`.quiet();
   const workspaceRoot = join(root, "workspaces");
-  services.refreshGates.set(join(workspaceRoot, ".mirror.git"), gate.promise);
+  daemon.refreshGates.set(join(workspaceRoot, ".mirror.git"), gate.promise);
   return {
     workspaceRoot,
     sshUrl: seed,
@@ -141,21 +125,21 @@ describe("startTrackedRun admission (M1: the slot is reserved before any await)"
   test("a second start while the first is still reserving is refused atomically, and the slot frees after", async () => {
     const { root, finish } = tmpRoot();
     const db = openStore(join(root, "factory.db"));
-    const services = createTestServices();
+    const daemon = createTestDaemon(SLOW_ADAPTER);
     const gate = makeGate();
 
-    const first = startTrackedRun(runtime, db, services, echoWorkflow, {
+    const first = startTrackedRun(daemon.runtime, db, echoWorkflow, {
       runId: "run-first",
-      workspace: await gatedWorkspace(root, services, gate),
+      workspace: await gatedWorkspace(root, daemon, gate),
       input: {},
       maxConcurrentRuns: 1,
     });
 
-    await waitFor(() => services.registry.activeRunIds().length === 1);
-    expect(services.registry.activeRunIds()).toEqual(["run-first"]);
-    expect(services.registry.getActiveHandle("run-first")).toBeUndefined();
+    await waitFor(() => daemon.registry.activeRunIds().length === 1);
+    expect(daemon.registry.activeRunIds()).toEqual(["run-first"]);
+    expect(daemon.registry.getActiveHandle("run-first")).toBeUndefined();
 
-    const second = startTrackedRun(runtime, db, services, echoWorkflow, {
+    const second = startTrackedRun(daemon.runtime, db, echoWorkflow, {
       runId: "run-second",
       dir: join(root, "second-dir"),
       input: {},
@@ -172,8 +156,8 @@ describe("startTrackedRun admission (M1: the slot is reserved before any await)"
     gate.release();
     const firstRunId = await first;
     expect(firstRunId).toBe("run-first");
-    await waitFor(() => !services.registry.isActive(firstRunId));
-    expect(services.registry.activeRunIds()).toEqual([]);
+    await waitFor(() => !daemon.registry.isActive(firstRunId));
+    expect(daemon.registry.activeRunIds()).toEqual([]);
 
     db.close();
     finish();
@@ -182,18 +166,18 @@ describe("startTrackedRun admission (M1: the slot is reserved before any await)"
   test("a second start issued synchronously, before the first is awaited, is refused", async () => {
     const { root, finish } = tmpRoot();
     const db = openStore(join(root, "factory.db"));
-    const services = createTestServices();
+    const daemon = createTestDaemon(SLOW_ADAPTER);
     const gate = makeGate();
-    const workspace = await gatedWorkspace(root, services, gate);
+    const workspace = await gatedWorkspace(root, daemon, gate);
 
     // No await between the two calls: the first must already hold its slot.
-    const first = startTrackedRun(runtime, db, services, echoWorkflow, {
+    const first = startTrackedRun(daemon.runtime, db, echoWorkflow, {
       runId: "run-sync-first",
       workspace,
       input: {},
       maxConcurrentRuns: 1,
     });
-    const second = startTrackedRun(runtime, db, services, echoWorkflow, {
+    const second = startTrackedRun(daemon.runtime, db, echoWorkflow, {
       runId: "run-sync-second",
       workspace,
       input: {},
@@ -201,11 +185,11 @@ describe("startTrackedRun admission (M1: the slot is reserved before any await)"
     });
 
     expect(await second.catch((err: unknown) => err)).toBeInstanceOf(ConcurrencyLimitError);
-    expect(services.registry.activeRunIds()).toEqual(["run-sync-first"]);
+    expect(daemon.registry.activeRunIds()).toEqual(["run-sync-first"]);
 
     gate.release();
     const firstRunId = await first;
-    await waitFor(() => !services.registry.isActive(firstRunId));
+    await waitFor(() => !daemon.registry.isActive(firstRunId));
 
     db.close();
     finish();
@@ -214,18 +198,18 @@ describe("startTrackedRun admission (M1: the slot is reserved before any await)"
   test("a start refused at the limit does not keep its dedupe key", async () => {
     const { root, finish } = tmpRoot();
     const db = openStore(join(root, "factory.db"));
-    const services = createTestServices();
+    const daemon = createTestDaemon(SLOW_ADAPTER);
     const gate = makeGate();
 
-    const first = startTrackedRun(runtime, db, services, echoWorkflow, {
+    const first = startTrackedRun(daemon.runtime, db, echoWorkflow, {
       runId: "run-holding-slot",
-      workspace: await gatedWorkspace(root, services, gate),
+      workspace: await gatedWorkspace(root, daemon, gate),
       input: {},
       maxConcurrentRuns: 1,
     });
 
     // e.g. a scheduled fire with `overlap: "skip"` while the daemon is full.
-    const refused = startTrackedRun(runtime, db, services, echoWorkflow, {
+    const refused = startTrackedRun(daemon.runtime, db, echoWorkflow, {
       runId: "run-refused",
       dir: join(root, "refused-dir"),
       input: {},
@@ -233,11 +217,11 @@ describe("startTrackedRun admission (M1: the slot is reserved before any await)"
       dedupeKey: "schedule:nightly",
     });
     expect(await refused.catch((err: unknown) => err)).toBeInstanceOf(ConcurrencyLimitError);
-    expect(services.dedupeRegistry.holderOf("schedule:nightly")).toBeUndefined();
+    expect(daemon.dedupeRegistry.holderOf("schedule:nightly")).toBeUndefined();
 
     gate.release();
     const firstRunId = await first;
-    await waitFor(() => !services.registry.isActive(firstRunId));
+    await waitFor(() => !daemon.registry.isActive(firstRunId));
 
     db.close();
     finish();
@@ -246,10 +230,10 @@ describe("startTrackedRun admission (M1: the slot is reserved before any await)"
   test("a failed allocation releases the reserved slot", async () => {
     const { root, finish } = tmpRoot();
     const db = openStore(join(root, "factory.db"));
-    const services = createTestServices();
+    const daemon = createTestDaemon(SLOW_ADAPTER);
 
     await expect(
-      startTrackedRun(runtime, db, services, echoWorkflow, {
+      startTrackedRun(daemon.runtime, db, echoWorkflow, {
         runId: "run-doomed",
         input: {},
         maxConcurrentRuns: 1,
@@ -262,15 +246,15 @@ describe("startTrackedRun admission (M1: the slot is reserved before any await)"
       }),
     ).rejects.toThrow(/workspace/);
 
-    expect(services.registry.activeRunIds()).toEqual([]);
+    expect(daemon.registry.activeRunIds()).toEqual([]);
 
-    const runId = await startTrackedRun(runtime, db, services, echoWorkflow, {
+    const runId = await startTrackedRun(daemon.runtime, db, echoWorkflow, {
       dir: join(root, "dir"),
       input: {},
       maxConcurrentRuns: 1,
     });
-    expect(services.registry.activeRunIds()).toEqual([runId]);
-    await waitFor(() => !services.registry.isActive(runId));
+    expect(daemon.registry.activeRunIds()).toEqual([runId]);
+    await waitFor(() => !daemon.registry.isActive(runId));
 
     db.close();
     finish();
@@ -281,34 +265,34 @@ describe("cancel of a reserved-but-not-started run (L1)", () => {
   test("cancelling during the allocation window defers into run start; the run ends cancelled with no leak", async () => {
     const { root, finish } = tmpRoot();
     const db = openStore(join(root, "factory.db"));
-    const services = createTestServices();
+    const daemon = createTestDaemon(SLOW_ADAPTER);
     const gate = makeGate();
 
-    const starting = startTrackedRun(runtime, db, services, sleepWorkflow, {
+    const starting = startTrackedRun(daemon.runtime, db, sleepWorkflow, {
       runId: "run-gated",
-      workspace: await gatedWorkspace(root, services, gate),
+      workspace: await gatedWorkspace(root, daemon, gate),
       input: {},
       maxConcurrentRuns: 1,
     });
 
-    await waitFor(() => services.registry.activeRunIds().length === 1);
-    expect(services.registry.getActiveHandle("run-gated")).toBeUndefined();
+    await waitFor(() => daemon.registry.activeRunIds().length === 1);
+    expect(daemon.registry.getActiveHandle("run-gated")).toBeUndefined();
 
-    const cancelled = services.registry.cancelRegisteredRun("run-gated");
+    const cancelled = daemon.registry.cancelRegisteredRun("run-gated");
     expect(cancelled).toEqual({ kind: "reserved" });
 
     gate.release();
     const runId = await starting;
     expect(runId).toBe("run-gated");
 
-    await waitFor(() => services.registry.activeRunIds().length === 0);
+    await waitFor(() => daemon.registry.activeRunIds().length === 0);
     const events = getRunEvents(db, runId).map((e) => e.payload._tag);
     expect(events).toContain("RunStarted");
     expect(events).toContain("RunCancelled");
-    expect(services.registry.cancelRegisteredRun(runId)).toBeUndefined();
+    expect(daemon.registry.cancelRegisteredRun(runId)).toBeUndefined();
 
     await Bun.sleep(50);
-    expect(services.registry.activeRunIds()).toEqual([]);
+    expect(daemon.registry.activeRunIds()).toEqual([]);
 
     db.close();
     finish();
@@ -350,15 +334,15 @@ describe("scratch workspaces through startTrackedRun (issue #13)", () => {
     const { root, finish } = tmpRoot();
     _tmp = root;
     const db = openStore(join(root, "factory.db"));
-    const services = createTestServices();
+    const daemon = createTestDaemon(SLOW_ADAPTER);
     mkdirSync(join(root, "seed"), { recursive: true });
 
-    const runId = await startTrackedRun(runtime, db, services, failingScratchWorkflow, {
+    const runId = await startTrackedRun(daemon.runtime, db, failingScratchWorkflow, {
       runId: "run-scratch-empty",
       workspace: { ...workspaceSpec(), sshUrl: join(root, "no-such-remote") },
       input: {},
     });
-    await waitFor(() => !services.registry.isActive(runId));
+    await waitFor(() => !daemon.registry.isActive(runId));
 
     const dir = join(root, "workspaces", "run-scratch-empty");
     expect(existsSync(dir)).toBe(true);
@@ -372,24 +356,24 @@ describe("scratch workspaces through startTrackedRun (issue #13)", () => {
     const { root, finish } = tmpRoot();
     _tmp = root;
     const db = openStore(join(root, "factory.db"));
-    const services = createTestServices();
+    const daemon = createTestDaemon(SLOW_ADAPTER);
     mkdirSync(join(root, "seed"), { recursive: true });
 
-    const okId = await startTrackedRun(runtime, db, services, scratchWorkflow, {
+    const okId = await startTrackedRun(daemon.runtime, db, scratchWorkflow, {
       runId: "run-scratch-ok",
       workspace: workspaceSpec(),
       input: {},
     });
-    await waitFor(() => !services.registry.isActive(okId));
+    await waitFor(() => !daemon.registry.isActive(okId));
     await new Promise((resolve) => setTimeout(resolve, 50)); // reap lands async
     expect(existsSync(join(root, "workspaces", "run-scratch-ok"))).toBe(false);
 
-    const badId = await startTrackedRun(runtime, db, services, failingScratchWorkflow, {
+    const badId = await startTrackedRun(daemon.runtime, db, failingScratchWorkflow, {
       runId: "run-scratch-bad",
       workspace: workspaceSpec(),
       input: {},
     });
-    await waitFor(() => !services.registry.isActive(badId));
+    await waitFor(() => !daemon.registry.isActive(badId));
     await new Promise((resolve) => setTimeout(resolve, 50));
     expect(existsSync(join(root, "workspaces", "run-scratch-bad"))).toBe(true);
     finish();
@@ -399,7 +383,7 @@ describe("scratch workspaces through startTrackedRun (issue #13)", () => {
     const { root, finish } = tmpRoot();
     _tmp = root;
     const db = openStore(join(root, "factory.db"));
-    const services = createTestServices();
+    const daemon = createTestDaemon(SLOW_ADAPTER);
     const seed = join(root, "seed");
     await Bun.$`git init -b main -q ${seed}`.quiet();
 
@@ -420,12 +404,12 @@ describe("scratch workspaces through startTrackedRun (issue #13)", () => {
 
     // retention = 1: with the scratch dir correctly excluded, the only clone
     // survives: the leftover must not count toward retention.
-    await startTrackedRun(runtime, db, services, echoWorkflow, {
+    await startTrackedRun(daemon.runtime, db, echoWorkflow, {
       runId: "run-clone",
       workspace: { ...workspaceSpec(), sshUrl: seed, retainedWorkspaces: 1 },
       input: {},
     });
-    await waitFor(() => !services.registry.isActive("run-clone"));
+    await waitFor(() => !daemon.registry.isActive("run-clone"));
 
     expect(existsSync(join(root, "workspaces", "run-clone"))).toBe(true);
     expect(existsSync(join(root, "workspaces", "run-scratch-kept"))).toBe(true);
@@ -460,12 +444,12 @@ describe("adapter.prepareWorkspace through startTrackedRun (#37)", () => {
   test("an allocated clone workspace is prepared on the allocated dir", async () => {
     const { root, finish } = tmpRoot();
     const db = openStore(join(root, "factory.db"));
-    const services = createTestServices();
+    const adapter = trackingAdapter();
     const seed = join(root, "seed");
     await Bun.$`git init -b main -q ${seed}`.quiet();
-    const adapter = trackingAdapter();
+    const daemon = createTestDaemon(adapter);
 
-    const runId = await startTrackedRun(makeAgentRuntime(adapter), db, services, echoWorkflow, {
+    const runId = await startTrackedRun(daemon.runtime, db, echoWorkflow, {
       runId: "run-prep-clone",
       workspace: {
         workspaceRoot: join(root, "workspaces"),
@@ -475,7 +459,7 @@ describe("adapter.prepareWorkspace through startTrackedRun (#37)", () => {
       },
       input: {},
     });
-    await waitFor(() => !services.registry.isActive(runId));
+    await waitFor(() => !daemon.registry.isActive(runId));
 
     expect(adapter.prepared).toEqual([join(root, "workspaces", "run-prep-clone")]);
     finish();
@@ -484,10 +468,10 @@ describe("adapter.prepareWorkspace through startTrackedRun (#37)", () => {
   test("a scratch workspace is not prepared", async () => {
     const { root, finish } = tmpRoot();
     const db = openStore(join(root, "factory.db"));
-    const services = createTestServices();
     const adapter = trackingAdapter();
+    const daemon = createTestDaemon(adapter);
 
-    const runId = await startTrackedRun(makeAgentRuntime(adapter), db, services, scratchWorkflow, {
+    const runId = await startTrackedRun(daemon.runtime, db, scratchWorkflow, {
       runId: "run-prep-scratch",
       workspace: {
         workspaceRoot: join(root, "workspaces"),
@@ -497,7 +481,7 @@ describe("adapter.prepareWorkspace through startTrackedRun (#37)", () => {
       },
       input: {},
     });
-    await waitFor(() => !services.registry.isActive(runId));
+    await waitFor(() => !daemon.registry.isActive(runId));
 
     expect(adapter.prepared).toEqual([]);
     finish();

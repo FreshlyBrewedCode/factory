@@ -19,13 +19,9 @@ import { describe, expect, test } from "bun:test";
 import { defineConfig } from "../config";
 import { getRunEvents, openStore } from "../persistence/store";
 import { createSlowFakeAdapter } from "../replay/adapter";
-import { makeAgentRuntime } from "../runtime/agent-runtime";
 import { admitRun } from "./admission";
 import { serve } from "./http";
-import { createRunRegistry } from "./runs";
-import { createPubSub } from "./pubsub";
-import { createDedupeRegistry } from "../lib/dedupe";
-import { createRefreshGates } from "../lib/workspace";
+import { makeDaemonRuntime } from "./daemon-runtime";
 
 const TREE_WORKFLOW = `${import.meta.dir}/../../test/fixtures/tree-workflow.ts`;
 
@@ -75,16 +71,9 @@ describe("phase 5 P1: per-run working trees (D28) over the real server", () => {
 
     const workspaceRoot = join(root, "workspaces");
     const db = openStore(join(root, "factory.db"));
-    const services = {
-      registry: createRunRegistry(),
-      pubsub: createPubSub(),
-      dedupeRegistry: createDedupeRegistry(),
-      refreshGates: createRefreshGates(),
-    };
     const server = serve({
-      services,
       db,
-      runtime: makeAgentRuntime(
+      runtime: makeDaemonRuntime(
         createSlowFakeAdapter(
           [
             { type: "TEXT_MESSAGE_START" },
@@ -171,16 +160,9 @@ describe("phase 5 P1: per-run working trees (D28) over the real server", () => {
     await Bun.$`git -C ${seed} -c user.name=seed -c user.email=seed@seed.local commit -q --allow-empty -m seed`.quiet();
 
     const db = openStore(join(root, "factory.db"));
-    const services = {
-      registry: createRunRegistry(),
-      pubsub: createPubSub(),
-      dedupeRegistry: createDedupeRegistry(),
-      refreshGates: createRefreshGates(),
-    };
     const server = serve({
-      services,
       db,
-      runtime: makeAgentRuntime(
+      runtime: makeDaemonRuntime(
         createSlowFakeAdapter(
           [
             { type: "TEXT_MESSAGE_START" },
@@ -240,16 +222,9 @@ describe("phase 5 P1: per-run working trees (D28) over the real server", () => {
 
     const workspaceRoot = join(root, "workspaces");
     const db = openStore(join(root, "factory.db"));
-    const services = {
-      registry: createRunRegistry(),
-      pubsub: createPubSub(),
-      dedupeRegistry: createDedupeRegistry(),
-      refreshGates: createRefreshGates(),
-    };
     const server = serve({
-      services,
       db,
-      runtime: makeAgentRuntime(
+      runtime: makeDaemonRuntime(
         createSlowFakeAdapter(
           [
             { type: "TEXT_MESSAGE_START" },

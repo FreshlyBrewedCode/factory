@@ -5,10 +5,12 @@
  * (`src/persistence/store.ts`); this is the gap between "last flushed to
  * sqlite" and "just happened", not a second source of truth.
  *
- * Each daemon creates its own PubSub via `createPubSub()` so two daemons in
- * one process do not share subscriber state (#38).
+ * #38: the subscriber map is per daemon, not per module. It is the
+ * `RunPubSub` service below; its layer builds a fresh map each time a daemon
+ * runtime is built, so two daemons in one process do not share subscribers.
  */
 
+import { Context, Layer } from "effect";
 import type { RunEvent } from "../events";
 
 type Listener = (event: RunEvent) => void;
@@ -38,3 +40,11 @@ export function createPubSub(): PubSub {
     },
   };
 }
+
+/**
+ * The live run-event fan-out as a daemon service (#38, ADR 0009 §5). Named
+ * `RunPubSub` rather than `PubSub` so it never reads as Effect's own module.
+ */
+export class RunPubSub extends Context.Service<RunPubSub, PubSub>()("RunPubSub") {}
+
+export const RunPubSubLayer: Layer.Layer<RunPubSub> = Layer.sync(RunPubSub, createPubSub);

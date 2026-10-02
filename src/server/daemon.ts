@@ -11,35 +11,24 @@
  * `runtime/agent-step.ts` instead of being threaded through every options
  * type. `DaemonHandle.stop` disposes it.
  *
- * #38: the daemon creates per-instance services (run registry, pubsub,
- * dedupe registry, refresh gates) so two daemons can coexist in one process
- * without sharing state.
+ * #38: that runtime is the daemon runtime (`server/daemon-runtime.ts`): the
+ * agent runtime layer composed with the per-daemon state layers (run
+ * registry, pubsub, dedupe registry, refresh gates). Building it builds fresh
+ * state, so two daemons are two runtimes and coexist in one process without
+ * sharing anything. The scheduler loop is forked on it and resolves its
+ * dedupe registry and clock from its context.
  */
 
 import { mkdir } from "node:fs/promises";
 import { dirname } from "node:path";
-import { Clock, Effect, Fiber } from "effect";
+import { Effect, Fiber } from "effect";
 type AnyFiber = Fiber.Fiber<unknown, unknown>;
 import type { FactoryConfig } from "../config";
 import { openStore } from "../persistence/store";
 import { serve } from "./http";
-import {
-  createRunRegistry,
-  type DaemonServices,
-  type DispatchEnv,
-  type WorkspaceSpec,
-} from "./runs";
-import { createPubSub } from "./pubsub";
-import { createDedupeRegistry } from "../lib/dedupe";
-import { createRefreshGates } from "../lib/workspace";
-import {
-  createSchedulerState,
-  makeScheduleFire,
-  runSchedulerLoop,
-  toRuntimeSchedules,
-  type SchedulerDeps,
-} from "./scheduler";
-import { makeAgentRuntime } from "../runtime/agent-runtime";
+import type { DispatchEnv, WorkspaceSpec } from "./runs";
+import { makeScheduleFire, runSchedulerLoop, toRuntimeSchedules } from "./scheduler";
+import { makeDaemonRuntime, type DaemonRuntime } from "./daemon-runtime";
 
 export interface DaemonOptions {
   readonly dbPath: string;
@@ -53,16 +42,18 @@ export interface DaemonOptions {
    * Absent, the legacy per-request `{dir, clone}` behaviour is kept.
    */
   readonly config?: FactoryConfig;
-  /** Issue #38: the scheduler's clock, over Effect's default wall clock. */
-  readonly clock?: Clock.Clock;
 }
 
 export interface DaemonHandle {
   readonly server: ReturnType<typeof serve>;
   /** Issue #16: the loop that fires the config's schedules, when it has any. */
   readonly schedulerFiber: AnyFiber | undefined;
-  /** Issue #38: this daemon's own registry, pubsub, dedupe registry and refresh gates. */
-  readonly services: DaemonServices;
+  /**
+   * Issue #38: this daemon's runtime — its agent runtime plus its own
+   * registry, pubsub, dedupe registry and refresh gates, resolvable with
+   * `serviceOf`.
+   */
+  readonly runtime: DaemonRuntime;
   /**
    * Shut the daemon down: interrupt the scheduler, stop the HTTP server, and
    * dispose the agent runtime (issue #36).
@@ -77,19 +68,11 @@ export async function startDaemon(options: DaemonOptions): Promise<DaemonHandle>
   await mkdir(dirname(options.dbPath), { recursive: true });
   const db = openStore(options.dbPath);
 
-  const runtime = makeAgentRuntime(options.config?.agent.adapter);
-
-  const services: DaemonServices = {
-    registry: createRunRegistry(),
-    pubsub: createPubSub(),
-    dedupeRegistry: createDedupeRegistry(),
-    refreshGates: createRefreshGates(),
-  };
+  const runtime = makeDaemonRuntime(options.config?.agent.adapter);
 
   const server = serve({
     db,
     runtime,
-    services,
     port: options.port,
     ...(options.config !== undefined ? { config: options.config } : {}),
   });
@@ -113,25 +96,18 @@ export async function startDaemon(options: DaemonOptions): Promise<DaemonHandle>
             maxDispatchDepth: config.maxDispatchDepth,
             maxChildrenPerRun: config.maxChildrenPerRun,
           };
-          const deps: SchedulerDeps = {
-            schedules: toRuntimeSchedules(config),
-            fire: makeScheduleFire({
-              db,
-              runtime,
-              services,
-              maxConcurrentRuns,
-              workspace,
-              repo,
-              dispatchEnv,
-            }),
-            dedupeRegistry: services.dedupeRegistry,
-            clock: options.clock ?? Clock.Clock.defaultValue(),
-          };
-          const state = createSchedulerState(deps);
-          return Effect.runFork(
+          const fire = makeScheduleFire({
+            db,
+            runtime,
+            maxConcurrentRuns,
+            workspace,
+            repo,
+            dispatchEnv,
+          });
+          return runtime.runFork(
             runSchedulerLoop(
-              deps,
-              state,
+              toRuntimeSchedules(config),
+              fire,
               options.schedulerIntervalMs ?? DEFAULT_SCHEDULER_INTERVAL_MS,
             ),
           );
@@ -144,5 +120,5 @@ export async function startDaemon(options: DaemonOptions): Promise<DaemonHandle>
     await runtime.dispose();
   };
 
-  return { server, schedulerFiber, services, stop };
+  return { server, schedulerFiber, runtime, stop };
 }
